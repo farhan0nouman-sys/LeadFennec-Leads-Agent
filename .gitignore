@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output and caches
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+coverage/
+
+# Test output (Vitest 5 artifacts, Playwright reports and traces)
+.vitest/
+test-results/
+playwright-report/
+blob-report/
+
+# Secrets: never commit real credentials
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Third-party repos cloned for reference (each has its own .git)
+reference-repos/
+
+# OS / editor
+.DS_Store
+Thumbs.db

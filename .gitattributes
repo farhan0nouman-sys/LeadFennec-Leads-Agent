@@ -1,0 +1,4 @@
+# LF everywhere (Prettier endOfLine: lf). Shell scripts run inside Linux containers
+# and break with CRLF.
+* text=auto eol=lf
+*.sh text eol=lf

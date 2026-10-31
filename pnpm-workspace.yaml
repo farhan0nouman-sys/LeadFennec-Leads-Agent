@@ -1,0 +1,58 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Single source of pinned versions. Packages reference these with "catalog:".
+# Versions, sources and compatibility notes: docs/decisions.md (D-02A-*, D-02B-*, D-02C-*).
+catalog:
+  '@eslint/js': 10.0.1
+  '@nestjs/cli': 12.0.11
+  '@nestjs/common': 12.3.2
+  '@nestjs/core': 12.3.2
+  '@nestjs/platform-express': 12.3.2
+  '@nestjs/testing': 12.3.2
+  '@playwright/test': 1.64.1
+  '@types/node': 24.19.2
+  '@types/pg': 8.23.1
+  '@types/react': 19.3.0
+  '@types/react-dom': 19.3.0
+  eslint: 10.14.0
+  eslint-config-next: 16.4.3
+  eslint-config-prettier: 10.1.8
+  globals: 17.13.0
+  ioredis: 6.0.0
+  nestjs-pino: 5.3.1
+  next: 16.4.3
+  pg: 8.23.1
+  pino: 10.4.0
+  pino-http: 11.0.0
+  prettier: 3.9.10
+  react: 19.3.1
+  react-dom: 19.3.1
+  reflect-metadata: 0.2.2
+  rxjs: 7.8.2
+  tslib: 2.8.1
+  tsx: 4.23.15
+  turbo: 2.11.10
+  typescript: 6.0.3
+  typescript-eslint: 8.72.1
+  vite: 8.3.5
+  vitest: 5.0.5
+  zod: 4.6.7
+
+saveExact: true
+
+# Reviewed dependency build scripts (pnpm fails on unreviewed ones by default).
+# Both are fallbacks that fetch or verify a native binary; pnpm already installs the
+# platform binary as an optional dependency, so the scripts stay disabled.
+allowBuilds:
+  esbuild: false
+  unrs-resolver: false
+
+# eslint-config-next 16.4 supports ESLint 10, but three plugins it bundles don't list
+# ESLint 10 as a peer yet (documented by Next.js). Allowed for those plugins only.
+peerDependencyRules:
+  allowedVersions:
+    eslint-plugin-import>eslint: '10'
+    eslint-plugin-jsx-a11y>eslint: '10'
+    eslint-plugin-react>eslint: '10'

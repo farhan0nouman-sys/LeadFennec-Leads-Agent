@@ -1,0 +1,17 @@
+# Third-party reference clones
+reference-repos/
+
+# Hand-maintained docs and agent rules are not auto-formatted
+docs/
+CLAUDE.md
+
+# Generated
+pnpm-lock.yaml
+**/dist/
+**/.next/
+**/.turbo/
+**/next-env.d.ts
+**/.vitest/
+**/test-results/
+**/playwright-report/
+**/blob-report/

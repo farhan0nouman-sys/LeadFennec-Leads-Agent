@@ -173,3 +173,45 @@ describe('WEB_APP_URL', () => {
     ).toBe('https://app.example.test');
   });
 });
+
+describe('DATABASE_POOL_MAX', () => {
+  const base = {
+    APP_ENV: 'test',
+    DATABASE_URL: 'postgresql://u:p@127.0.0.1:5432/db',
+    REDIS_URL: 'redis://127.0.0.1:6379/0',
+  };
+
+  it('defaults to 10 and accepts 1 to 100', () => {
+    expect(apiEnvSchema.parse(base).DATABASE_POOL_MAX).toBe(10);
+    expect(
+      apiEnvSchema.parse({ ...base, DATABASE_POOL_MAX: '1' }).DATABASE_POOL_MAX,
+    ).toBe(1);
+    for (const value of ['0', '101', '2.5', 'many']) {
+      expect(
+        apiEnvSchema.safeParse({ ...base, DATABASE_POOL_MAX: value }).success,
+        value,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('TRUST_PROXY_HOPS', () => {
+  const base = {
+    APP_ENV: 'test',
+    DATABASE_URL: 'postgresql://u:p@127.0.0.1:5432/db',
+    REDIS_URL: 'redis://127.0.0.1:6379/0',
+  };
+
+  it('trusts no proxy by default and accepts 0 to 5', () => {
+    expect(apiEnvSchema.parse(base).TRUST_PROXY_HOPS).toBe(0);
+    expect(
+      apiEnvSchema.parse({ ...base, TRUST_PROXY_HOPS: '1' }).TRUST_PROXY_HOPS,
+    ).toBe(1);
+    for (const value of ['-1', '6', 'true', 'loopback']) {
+      expect(
+        apiEnvSchema.safeParse({ ...base, TRUST_PROXY_HOPS: value }).success,
+        value,
+      ).toBe(false);
+    }
+  });
+});

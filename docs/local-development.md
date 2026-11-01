@@ -109,6 +109,8 @@ schemas are in `apps/api/src/env.ts`, `apps/worker/src/env.ts` and `apps/web/env
 | `REDIS_PORT` | compose | `6379` | Host port |
 | `DATABASE_URL` | api, worker | none (required) | `postgres://` or `postgresql://` URL |
 | `REDIS_URL` | api, worker | none (required) | `redis://` or `rediss://` URL |
+| `TRUST_PROXY_HOPS` | api | `0` | Integer 0–5: proxies in front of the API whose `X-Forwarded-For` entry is trusted (Express `trust proxy`). Per-address rate limits use the resulting client address. `1` when the browser goes through the web app's `/api` proxy (local development, browser tests). In a deployment, count the load balancer too, and make it overwrite `X-Forwarded-For` (O-24). |
+| `DATABASE_POOL_MAX` | api | `10` | Integer 1–100: the most PostgreSQL connections the API opens. The browser tests set `1` (PGlite serves one session). |
 | `API_PORT` | api | `3001` | Integer 1–65535 |
 | `WORKER_HEALTH_PORT` | worker | `3002` | Integer 1–65535 |
 | `HEALTH_CHECK_TIMEOUT_MS` | api, worker | `2000` | Integer 100–30000 |
@@ -118,6 +120,23 @@ schemas are in `apps/api/src/env.ts`, `apps/worker/src/env.ts` and `apps/web/env
 
 Turborepo runs in strict environment mode: the `dev` task only passes the variables listed in
 `turbo.json` (`passThroughEnv`). When an app gains a variable, add it there too.
+
+### Browser tests
+
+`pnpm test:e2e` builds the web app and the API, then runs Playwright (Chromium).
+
+- The smoke test always runs.
+- The account and team scenarios (`apps/web/e2e/accounts-and-teams.spec.ts`) start the built
+  API on port 3101 and the web app on 3100, and need `E2E_DATABASE_URL`: a PostgreSQL URL
+  whose database name ends in `_test`. Migrations are applied to it first
+  (`prisma migrate deploy`), into its `public` schema. Without the variable the scenarios
+  are reported as skipped.
+- Emails are never sent: the scenarios read and write tokens in the database instead.
+- Example (the isolated test database from Docker Compose):
+
+  ```bash
+  E2E_DATABASE_URL=postgresql://leadfennec:<password>@127.0.0.1:5432/leadfennec_test pnpm test:e2e
+  ```
 
 ### Test-only variables
 

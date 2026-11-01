@@ -240,10 +240,13 @@ export function createAuthStore(prisma: PrismaClient) {
 
     /**
      * Verifies an email address with a token: marks the token used and the user verified,
-     * atomically. False when the token is unknown, used, expired, for another purpose, or
-     * no longer matches the user's address or an active user.
+     * atomically. Returns the user id, or null when the token is unknown, used, expired, for
+     * another purpose, or no longer matches the user's address or an active user.
      */
-    async verifyEmailWithToken(tokenHash: string, now: Date): Promise<boolean> {
+    async verifyEmailWithToken(
+      tokenHash: string,
+      now: Date,
+    ): Promise<string | null> {
       return prisma
         .$transaction(async (tx) => {
           const token = await consumeToken(
@@ -253,7 +256,7 @@ export function createAuthStore(prisma: PrismaClient) {
             now,
           );
           if (token === null) {
-            return false;
+            return null;
           }
           const { count } = await tx.user.updateMany({
             where: {
@@ -267,11 +270,11 @@ export function createAuthStore(prisma: PrismaClient) {
             // Roll back: the token stays unused but can never succeed.
             throw new TokenMismatch();
           }
-          return true;
+          return token.userId;
         })
         .catch((error: unknown) => {
           if (error instanceof TokenMismatch) {
-            return false;
+            return null;
           }
           throw error;
         });
@@ -417,6 +420,37 @@ export function createAuthStore(prisma: PrismaClient) {
         }
       }
       throw new Error('auth_throttles: too many concurrent updates');
+    },
+
+    /**
+     * Records a security event about a user's account in the platform audit records (task
+     * 04C, D-04C-03): the user as actor when they acted themselves, otherwise the system actor
+     * "auth". Callers pass ids and codes only: never tokens, passwords or addresses.
+     */
+    async recordSecurityEvent(input: {
+      action: string;
+      userId: string;
+      byUser: boolean;
+      target?: { type: string; id: string };
+      metadata?: Prisma.InputJsonObject;
+      requestId?: string | undefined;
+      now: Date;
+    }): Promise<void> {
+      await prisma.platformAuditRecord.create({
+        data: {
+          actorType: input.byUser ? 'USER' : 'SYSTEM',
+          actorUserId: input.byUser ? input.userId : null,
+          actorName: input.byUser ? null : 'auth',
+          action: input.action,
+          targetType: input.target?.type ?? 'user',
+          targetId: input.target?.id ?? input.userId,
+          occurredAt: input.now,
+          ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+          ...(input.requestId === undefined
+            ? {}
+            : { requestId: input.requestId }),
+        },
+      });
     },
 
     async clearAttempts(

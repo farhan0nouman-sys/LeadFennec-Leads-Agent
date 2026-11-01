@@ -175,6 +175,22 @@ if needed; next prompt ID.
   - never trust a tenant id carried in a job.
 - **Platform admins:** add operations only as explicit `/platform/*` routes with a required
   reason. Each one writes audit records in the same transaction as its change.
+- **New API routes:** add each one to `apps/api/src/http/route-guards.test.ts` and to
+  `docs/security/authorization-review.md` after checking its guards and repository checks.
+  `scope.db` checks no permission: routes use repositories or call `requirePermission`.
+- **Audit:** membership changes go to the workspace's `audit_records`; a user's own security
+  events go to `platform_audit_records` (`recordSecurityEvent`). Never put tokens, passwords,
+  CSRF tokens or email addresses in audit metadata.
+- **Web app:**
+  - the browser calls the API only through `/api/*` (`apps/web/lib/api-proxy.ts`); add new
+    API roots there deliberately;
+  - client code uses `apiRequest` with the shared response schema, and forms validate with
+    the shared request schemas;
+  - keep the CSRF token in memory only; read emailed tokens with `useLinkToken`, which removes
+    them from the address bar;
+  - redirects after sign-in go through `safeNextPath`.
+- **Browser tests:** scenarios that need the API go in `apps/web/e2e`, skip without
+  `E2E_DATABASE_URL`, and use `e2e/support/db.ts` instead of an inbox.
 - **Account email:** goes through `TransactionalMailProvider`; tests read links from the
   fake's `sent` list.
 

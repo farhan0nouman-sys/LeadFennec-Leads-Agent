@@ -92,4 +92,21 @@ The session token itself is only ever in the `Set-Cookie` header.
 | A successful reset | Sets the password, verifies the address, ends every session, emails a notice and lifts a sign-in lock. The user then signs in. |
 | Sign-in failures | 5 per address in 15 minutes, then the address is locked for 15 minutes (`429`), for existing and unknown addresses alike |
 | Account emails | At most 3 verification or "already registered" emails, and 3 reset emails, per address and hour. Further requests still answer `202`. |
-| Per client IP | At most 20 requests per minute to each auth `POST` route (`429`). `GET /auth/session` is not limited. |
+| Per client IP | At most 20 requests per minute to each auth `POST` route (`429`). `GET /auth/session` is not limited. Behind proxies, the client address depends on `TRUST_PROXY_HOPS` (D-04C-06). |
+
+## Security audit events (task 04C)
+
+Account events are written to `platform_audit_records` with the request id
+(`docs/decisions.md` D-04C-03). They never contain a token, a password, a CSRF or session
+token, or an email address.
+
+| Action | When | Actor |
+|---|---|---|
+| `user.registered` | A new account was created | The user |
+| `user.registration_repeated` | Someone registered an existing address (metadata `verified`) | System `auth` |
+| `user.email_verified` | A confirmation link was used | The user |
+| `user.sign_in_failed` | Wrong password, inactive account, or unconfirmed address (metadata `reason`); existing accounts only | System `auth` |
+| `user.sign_in_locked` | The failure that started a lock (metadata `lockedSeconds`) | System `auth` |
+| `user.signed_in`, `user.signed_out` | Target: the session | The user |
+| `user.password_reset_requested` | A reset email was sent | System `auth` |
+| `user.password_reset` | A new password was set | The user |

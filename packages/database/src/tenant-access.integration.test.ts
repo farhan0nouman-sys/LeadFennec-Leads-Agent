@@ -12,6 +12,7 @@ import { FIXTURE_USERS, fixtureIds } from './fixtures/fixture-data.js';
 import { loadFixtureTenants } from './fixtures/load.js';
 import type { PrismaClient } from './generated/prisma/client.js';
 import { InvalidCursorError } from './pagination.js';
+import { PermissionDeniedError } from './tenancy/authorization.js';
 import {
   memberScope,
   platformAdminScope,
@@ -670,9 +671,9 @@ describe.runIf(testDatabaseUrl !== undefined)(
           admin.audit.list({ cursor: 'not-a-cursor!' }),
         ).rejects.toThrow(InvalidCursorError);
         // A cursor from this tenant used in Alpha's scope only filters Alpha's rows.
-        const alphaScope = systemScope(prisma, {
+        const alphaScope = await memberScope(prisma, {
           tenantId: alpha.tenant,
-          name: 'test_worker',
+          userId: FIXTURE_USERS.alphaAdmin.id,
         });
         const foreign = await alphaScope.audit.list({
           limit: 50,
@@ -681,6 +682,64 @@ describe.runIf(testDatabaseUrl !== undefined)(
         expect(foreign.items.every((r) => r.tenantId === alpha.tenant)).toBe(
           true,
         );
+      });
+
+      it('requires audit.read and billing.read; only the system actor notifies (task 04C)', async () => {
+        const memberUser = await factory.user();
+        await factory.membership({
+          tenantId: workspace.tenant.id,
+          userId: memberUser.id,
+          roleId: workspace.memberRole.id,
+        });
+        const member = await memberScope(prisma, {
+          tenantId: workspace.tenant.id,
+          userId: memberUser.id,
+        });
+        const support = await platformAdminScope(prisma, {
+          tenantId: workspace.tenant.id,
+          userId: FIXTURE_USERS.platformAdmin.id,
+          reason: REASON,
+        });
+        // A Client Team Member's role grants neither audit.read nor billing.read.
+        await expect(member.audit.list({})).rejects.toThrow(
+          PermissionDeniedError,
+        );
+        await expect(member.billing.currentSubscription()).rejects.toThrow(
+          PermissionDeniedError,
+        );
+        await expect(member.billing.effectiveLimits()).rejects.toThrow(
+          PermissionDeniedError,
+        );
+        await expect(member.usage.summary('AI_TOKENS')).rejects.toThrow(
+          PermissionDeniedError,
+        );
+        // Admins, the platform admin's audited scope and the system actor may read.
+        for (const reader of [admin, support]) {
+          await expect(reader.audit.list({})).resolves.toBeDefined();
+          await expect(
+            reader.billing.currentSubscription(),
+          ).resolves.toMatchObject({ tenantId: workspace.tenant.id });
+          await expect(
+            reader.usage.summary('AI_TOKENS'),
+          ).resolves.not.toBeNull();
+        }
+        await expect(worker.billing.effectiveLimits()).resolves.toMatchObject({
+          AI_TOKENS: expect.any(BigInt) as bigint,
+        });
+        // Workers do not browse audit records.
+        await expect(worker.audit.list({})).rejects.toThrow(
+          ActorNotAllowedError,
+        );
+        // No member, admin or platform admin writes notifications to other members.
+        for (const scope of [member, admin, support]) {
+          await expect(
+            scope.notifications.notify({
+              recipientMembershipId: workspace.adminMembership.id,
+              type: 'test.notice',
+              title: 'From a member',
+            }),
+          ).rejects.toThrow(ActorNotAllowedError);
+        }
       });
 
       it('shows a member only their own notifications', async () => {

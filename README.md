@@ -5,8 +5,9 @@ background worker in a pnpm/Turborepo monorepo, with PostgreSQL and Redis.
 
 > **Status:** early. Infrastructure, configuration, health checks, logging, the test setup,
 > the data model, the account API (registration, email verification, sign-in, sessions,
-> password reset) and the workspace API (workspaces, invitations, roles, platform-admin
-> operations) exist. There are no product screens yet. Build progress: `docs/build-progress.md`.
+> password reset), the workspace API (workspaces, invitations, roles, platform-admin
+> operations) and their screens exist. There are no lead-generation screens yet. Build
+> progress: `docs/build-progress.md`.
 > Decisions and pinned versions: `docs/decisions.md`. Rules for contributors and coding
 > agents: `CLAUDE.md`.
 
@@ -42,7 +43,8 @@ are covered in **[docs/local-development.md](docs/local-development.md)**.
 ## Repository layout
 
 ```
-apps/web            Next.js 16 (App Router)
+apps/web            Next.js 16 (App Router), Tailwind CSS 4, shadcn/ui-style components:
+                    account, workspace, team and platform-console screens; /api proxy
 apps/api            NestJS 12 API: health, auth (docs/api/auth.md), workspaces and teams
                     (docs/api/workspaces.md)
 apps/worker         Background worker (job processors not added yet)
@@ -64,7 +66,7 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
 | `pnpm lint`                         | ESLint (strict, type-aware) for every package and the root scripts        |
 | `pnpm typecheck`                    | Strict TypeScript checks for every package, including tests               |
 | `pnpm test`                         | Unit and integration tests (Vitest)                                       |
-| `pnpm test:e2e`                     | Builds, then runs the Playwright browser smoke test                       |
+| `pnpm test:e2e`                     | Builds the web app and API, then runs the Playwright browser tests        |
 | `pnpm db:migrate`                   | Applies pending migrations to `DATABASE_URL` (`prisma migrate deploy`)    |
 | `pnpm db:fixtures [--reset]`        | Loads the two fixture tenants into `DATABASE_URL` (development/test only) |
 | `pnpm format` / `pnpm format:check` | Prettier                                                                  |
@@ -103,9 +105,13 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
   - One test (concurrent usage reservations) needs real PostgreSQL. It skips itself on PGlite
     and runs in CI.
   - The database package runs its test files one at a time.
-- **Browser smoke test:** `apps/web/e2e/smoke.spec.ts` uses Playwright (Chromium) against the
-  production build on `127.0.0.1:3100`. Install the browser once with
-  `pnpm --filter @lead-fennec-ai/web exec playwright install chromium --only-shell`.
+- **Browser tests** (Playwright, Chromium) run against the production builds. Install the
+  browser once with `pnpm --filter @lead-fennec-ai/web exec playwright install chromium --only-shell`.
+  - `apps/web/e2e/smoke.spec.ts` always runs (web app on `127.0.0.1:3100`).
+  - `apps/web/e2e/accounts-and-teams.spec.ts` (11 scenarios: two workspaces, all three roles)
+    also starts the built API on `127.0.0.1:3101`. It needs `E2E_DATABASE_URL` (a `*_test`
+    database; migrations are applied first) and is reported as skipped without it. See
+    `docs/local-development.md` → Browser tests.
 
 ### Safety in tests
 
@@ -160,6 +166,9 @@ The schema is `packages/database/prisma/schema.prisma` (Prisma 7). Migrations li
   qualifiers removed): `invitations`, the enum changes, and a unique index on `job_tasks.id`.
 - `20261101001000_invitation_integrity_checks` is hand-written: invitation CHECKs and the
   trigger that keeps an invitation's binding immutable.
+- `20261101001100_user_audit_actor` was generated: the `USER` audit actor.
+- `20261101001200_user_audit_actor_checks` is hand-written: `USER` only in platform audit
+  records; explicit actor lists in both audit tables.
 
 **Apply migrations:** `pnpm db:migrate` runs `prisma migrate deploy` against `DATABASE_URL`
 (read from the environment, or from the root `.env`). It only applies pending migrations and
@@ -288,6 +297,21 @@ decisions: `docs/decisions.md` D-04B-*.
   `claimJob(prisma, defineWorker({ name, taskTypes }), message)`, which takes the workspace
   from the task row, never from the message.
 
+## Screens
+
+The web app has the account and team screens (`docs/decisions.md` D-04C-*): sign-in,
+registration, email confirmation, password reset, the workspace list, a workspace overview with
+a workspace switcher, the team page (members, roles, invitations) and the platform console.
+
+- **API access:** the browser calls only the web app's `/api/*`, which forwards to
+  `API_BASE_URL` with the session cookie (`apps/web/lib/api-proxy.ts`). Client code calls
+  `apiRequest` (`apps/web/lib/api.ts`) with the shared response schema.
+- **Session:** `SessionProvider` (`apps/web/lib/session.tsx`) holds the user and the CSRF token
+  in memory. Pages that need a user call `useRequiredSession()`.
+- **Security events** (sign-in, sign-out, reset…) are written to the platform audit records;
+  see `docs/api/auth.md`. The authorization review is in
+  **[docs/security/authorization-review.md](docs/security/authorization-review.md)**.
+
 ## Tenant-aware data access
 
 Server code reads and writes tenant data only through the entry points in
@@ -325,7 +349,7 @@ CI (`.github/workflows/ci.yml`) runs on every push to `main` and every pull requ
 2. Format check, lint and typecheck.
 3. Unit and integration tests, with PostgreSQL and Redis test databases as service containers.
 4. Build.
-5. Playwright smoke test.
+5. Playwright browser tests, including the account and team scenarios against the built API.
 
 It uses no secrets. To reproduce locally:
 

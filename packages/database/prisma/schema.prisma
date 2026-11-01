@@ -2007,6 +2007,9 @@ enum AuditActorType {
   PLATFORM_ADMIN
   /// A worker or provider callback, named by actor_name.
   SYSTEM
+  /// A user acting on their own account (sign-in, sign-out, password reset): platform records
+  /// only (task 04C).
+  USER
 
   @@map("audit_actor_type")
 }

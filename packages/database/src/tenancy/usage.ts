@@ -15,6 +15,7 @@ import {
   type TenantActor,
 } from './actors.js';
 import type { DbClient } from './audit.js';
+import { requireReadPermissionOrSystem } from './authorization.js';
 import {
   ENTITLED_SUBSCRIPTION_STATUSES,
   findCurrentSubscription,
@@ -92,7 +93,7 @@ export interface UsageRepository {
   release(reservationId: string): Promise<UsageReservation>;
   /** Marks HELD reservations whose hold ran out as EXPIRED (workers only). */
   expireHolds(): Promise<number>;
-  /** Null without an entitled subscription. */
+  /** Null without an entitled subscription. Needs `billing.read` (or the system actor). */
   summary(metric: UsageMetric): Promise<UsageSummary | null>;
 }
 
@@ -286,6 +287,7 @@ export function createUsageRepository(
       return count;
     },
     async summary(metric) {
+      requireReadPermissionOrSystem(actor, 'billing.read');
       const subscription = await entitledSubscription(prisma, tenantId);
       if (subscription === null) {
         return null;

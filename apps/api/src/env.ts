@@ -16,7 +16,15 @@ export const apiEnvSchema = z
     LOG_LEVEL: logLevelSchema,
     API_PORT: portSchema(3001),
     DATABASE_URL: postgresUrlSchema,
+    /** Most PostgreSQL connections this process opens (default 10). */
+    DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
     REDIS_URL: redisUrlSchema,
+    /**
+     * Reverse proxies in front of the API whose X-Forwarded-For entry is trusted (Express
+     * "trust proxy" hop count). 0: the client address is the socket's. 1: behind the web app's
+     * proxy. Rate limits per client address depend on it (D-04C-06).
+     */
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
     HEALTH_CHECK_TIMEOUT_MS: healthCheckTimeoutSchema,
     /**
      * Public URL of the web app (no path): emailed links point here, and mutations whose

@@ -34,7 +34,10 @@ class PrismaShutdown implements OnApplicationShutdown {
       provide: PRISMA_CLIENT,
       inject: [API_ENV],
       useFactory: (env: ApiEnv): PrismaClient =>
-        createPrismaClient({ databaseUrl: env.DATABASE_URL }),
+        createPrismaClient({
+          databaseUrl: env.DATABASE_URL,
+          maxConnections: env.DATABASE_POOL_MAX,
+        }),
     },
     {
       provide: AUTH_STORE,

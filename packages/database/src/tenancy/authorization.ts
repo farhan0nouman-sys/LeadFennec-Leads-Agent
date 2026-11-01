@@ -57,3 +57,18 @@ export function requireReadPermission(
   }
   requirePermission(actor, permission);
 }
+
+/**
+ * For reads that application code also needs without a member (billing state and usage, task
+ * 04C, D-04C-04): the system actor, a platform admin's audited scope, or a member whose role
+ * grants `permission`.
+ */
+export function requireReadPermissionOrSystem(
+  actor: TenantActor,
+  permission: PermissionKey,
+): void {
+  if (actor.kind === 'system') {
+    return;
+  }
+  requireReadPermission(actor, permission);
+}

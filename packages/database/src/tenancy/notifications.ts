@@ -30,7 +30,10 @@ const notifySchema = z
 export type NotifyInput = z.input<typeof notifySchema>;
 
 export interface NotificationRepository {
-  /** Creates a notification; with a dedupeKey, a repeated call returns the existing one. */
+  /**
+   * Creates a notification; with a dedupeKey, a repeated call returns the existing one. System
+   * actor only.
+   */
   notify(input: NotifyInput): Promise<Notification>;
   /** The acting member's notifications, newest first. */
   listMine(page: PageRequest): Promise<Page<Notification>>;
@@ -54,7 +57,9 @@ export function createNotificationRepository(
 
   return {
     async notify(input) {
-      if (actor.kind === 'platform_admin') {
+      // Application code notifies (system actor); a member's scope cannot write messages to
+      // other members (task 04C, D-04C-04).
+      if (actor.kind !== 'system') {
         throw new ActorNotAllowedError('notifications.notify');
       }
       const parsed = notifySchema.parse(input);

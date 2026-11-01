@@ -13,18 +13,27 @@
   },
   "dependencies": {
     "@lead-fennec-ai/shared": "workspace:*",
+    "class-variance-authority": "catalog:",
+    "clsx": "catalog:",
     "next": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "tailwind-merge": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@lead-fennec-ai/database": "workspace:*",
     "@playwright/test": "catalog:",
+    "@tailwindcss/postcss": "catalog:",
     "@types/node": "catalog:",
+    "@types/pg": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "eslint": "catalog:",
     "eslint-config-next": "catalog:",
+    "pg": "catalog:",
+    "postcss": "catalog:",
+    "tailwindcss": "catalog:",
     "typescript": "catalog:"
   }
 }

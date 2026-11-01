@@ -1534,6 +1534,193 @@ didn't ask for it. Expiring unverified accounts is O-21.
 
 ---
 
+## 04C: Account and team screens, security audit events, authorization review (2026-11-01)
+
+**Basis.** The plan is still missing (O-01). The screens use the 04A and 04B API contracts
+unchanged, except for plain-language validation messages (D-04C-09).
+
+### D-04C-01: Screens
+
+| Path | Screen |
+|---|---|
+| `/login` | Sign in; unconfirmed accounts can request the link again; `?next=` returns to the page that needed a session |
+| `/register` | Create an account (name optional, password twice); the same "check your inbox" answer for any address |
+| `/verify-email` | Opened from the email: confirming takes a click (D-04C-07) |
+| `/forgot-password`, `/reset-password` | Request a link; choose a new password (every session ends) |
+| `/workspaces` | The user's workspaces; create one |
+| `/workspaces/[workspaceId]` | Overview: role and permissions. The layout has the workspace switcher and the navigation. |
+| `/workspaces/[workspaceId]/team` | Members (role changes), open invitations (revoke), invite form. Members without `members.manage` see the team read-only. |
+| `/invitations/accept` | Opened from the invitation email: sign in, preview, join |
+| `/platform` | Platform-admin console: reason, workspace list, member count, suspend and reactivate |
+
+- **Rendering:** client components that call the API through `/api` (D-04C-05). The API
+  decides everything; the screens only hide controls the role can't use.
+- **Validation:** forms check input with the shared zod schemas before sending, and show the
+  API's `validation_failed` issues per field. Every response is parsed with its shared schema
+  before use; anything else is a generic error.
+- **States:** loading, unavailable (with retry), field errors, expired or used links, expired
+  sessions (back to sign-in, then to the page), unknown or foreign workspaces ("Workspace not
+  found", the same for every reason), and "Platform admins only".
+- **Not built:** removing or suspending members (O-23), workspace settings, profile pages.
+
+### D-04C-02: UI stack: Tailwind CSS 4 and shadcn/ui components as source
+
+| Package | Version | Use |
+|---|---|---|
+| `tailwindcss`, `@tailwindcss/postcss` | 4.3.3 | Styles (dev dependencies; build time only) |
+| `postcss` | 8.5.32 | Required by the Tailwind PostCSS plugin |
+| `class-variance-authority` | 0.7.1 | Component variants |
+| `clsx`, `tailwind-merge` | 2.1.1, 3.7.0 | `cn()` class merging |
+
+- **Docs checked 2026-11-01:**
+  - Tailwind with Next.js: <https://tailwindcss.com/docs/installation/framework-guides/nextjs>
+    (`postcss.config.mjs` with `@tailwindcss/postcss`, `@import "tailwindcss"`);
+  - shadcn/ui manual installation:
+    <https://ui.shadcn.com/docs/installation/manual> (CSS-variable tokens, `@theme inline`,
+    `components.json`, `cn()`).
+- **Components** (`apps/web/components/ui`: button, input, label, native select, card, alert,
+  badge, table) are written as source in the shadcn/ui style, with the neutral tokens in
+  `app/globals.css`. They use native elements, so no Radix or Base UI package is needed yet.
+  `components.json` is there, so the shadcn CLI can add components later.
+- **Two deliberate differences from the current manual-install page:**
+  1. It now uses the `cn` package (0.x, first published by shadcn in September 2026). We keep
+     the long-established `clsx` + `tailwind-merge` that `cn` replaces; revisit when `cn` is
+     stable.
+  2. It installs the `shadcn` package (the CLI, with a large dependency tree) at runtime for
+     one stylesheet. Not installed; the tokens are in `globals.css`.
+
+### D-04C-03: Security events in the audit records
+
+- **Where:** a user's own account events are platform-level (no workspace), so they go to
+  `platform_audit_records`. Membership changes stay in each workspace's `audit_records`
+  (04B: `workspace.created`, `invitation.created`, `invitation.revoked`, `invitation.accepted`,
+  `membership.role_changed`).
+- **New actor `USER`** (`audit_actor_type`): the user acting on their own account, named by
+  `actor_user_id`. `20261101001100_user_audit_actor` adds the value (generated);
+  `20261101001200_user_audit_actor_checks` (hand-written) allows it in platform records only,
+  and turns both actor CHECKs into explicit lists (`ELSE false`).
+- **Events** (`AuthStore.recordSecurityEvent`, called by `AuthService`):
+
+  | Action | Actor | Target | Metadata |
+  |---|---|---|---|
+  | `user.registered` | USER | user | — |
+  | `user.registration_repeated` | SYSTEM `auth` | user | `{ verified }` |
+  | `user.email_verified` | USER | user | — |
+  | `user.sign_in_failed` | SYSTEM `auth` | user | `{ reason: wrong_password \| account_inactive \| email_not_verified }` |
+  | `user.sign_in_locked` | SYSTEM `auth` | user | `{ lockedSeconds }` |
+  | `user.signed_in`, `user.signed_out` | USER | `user_session` | — |
+  | `user.password_reset_requested` | SYSTEM `auth` | user | — |
+  | `user.password_reset` | USER | user | — |
+
+- **Rules:**
+  - recorded only for existing accounts (an unknown address has no user to name);
+  - never a token, password, CSRF token, session token or email address; metadata is reason
+    codes and numbers;
+  - the request id (`X-Request-Id`) is kept, so a record can be matched with the logs;
+  - a request that can't write its record fails (the record and the action belong together).
+- **Tested:** the API suite checks every event, its actor, target and request id, and searches
+  the stored records for every secret the tests saw; the browser scenarios do the same for the
+  whole run.
+
+### D-04C-04: Authorization review
+
+Every route and every repository function was reviewed:
+**[docs/security/authorization-review.md](security/authorization-review.md)**.
+
+- **Three gaps in 03C repositories, fixed:**
+
+  | Function | Was | Now |
+  |---|---|---|
+  | `audit.list` | Any actor in the scope | `audit.read` (members), or a platform admin's audited scope |
+  | `billing.currentSubscription`, `billing.effectiveLimits`, `usage.summary` | Any actor | `billing.read` (members), the system actor, or a platform admin's scope (`requireReadPermissionOrSystem`) |
+  | `notifications.notify` | Members and the system actor | The system actor only: members could have written arbitrary messages to each other |
+
+  No route used them yet. The tenant-access suite now checks them with a Client Team Member's
+  scope.
+- **Route guard test** (`apps/api/src/http/route-guards.test.ts`): reads the guards of every
+  route the API registers, and fails if
+  - a route is missing from the reviewed list (24 routes);
+  - a route other than the 8 public ones lacks `SessionGuard`;
+  - a state-changing route lacks `OriginGuard`, or `CsrfGuard` when it has a session;
+  - a route outside the health probes lacks `ThrottlerGuard`;
+  - a `/workspaces/:workspaceId` route lacks `WorkspaceGuard`, or (except the workspace itself)
+    `PermissionGuard` with known permission keys, in that order;
+  - a `/platform/*` route uses membership guards.
+- **Known limit:** `scope.db` (03C) can read and write every tenant table for any member; only
+  the repositories check permissions. New routes must use the repositories, or check
+  permissions themselves (`requirePermission`).
+
+### D-04C-05: The browser calls the API through the web app
+
+- **`/api/[...path]`** (`apps/web/lib/api-proxy.ts`), a Next.js route handler, forwards to
+  `API_BASE_URL` at request time:
+  - only the API roots `auth`, `workspaces`, `invitations` and `platform`, and safe path
+    segments; anything else is `404` without reaching the API;
+  - `GET`, `POST`, `PATCH`, `DELETE`; bodies up to 64 KiB; 15-second timeout; no redirects
+    followed;
+  - request headers: content type, origin, `sec-fetch-site`, user agent, `x-forwarded-for`,
+    `x-request-id`, the CSRF and access-reason headers, and **only the session cookie**;
+  - response headers: content type, cache control, `retry-after`, `x-request-id`, and
+    `set-cookie`;
+  - if the API can't be reached: `502` without details.
+- **Why:**
+  - the session cookie (`__Host-`, HttpOnly) stays first-party to the web origin, with no CORS;
+  - `API_BASE_URL` stays server-side;
+  - the API's own checks (origin, CSRF, session) apply unchanged, because the browser's origin
+    and Fetch Metadata headers are forwarded.
+
+### D-04C-06: Client addresses and connections
+
+- **`TRUST_PROXY_HOPS`** (API, 0–5, default 0) sets Express `trust proxy`. With the web proxy
+  in front, every browser request reached the API from the web server's address, so the per-IP
+  limits would have counted all users together. Local development and the browser tests use 1.
+  A deployment counts its load balancer too, and the outermost proxy must overwrite
+  `X-Forwarded-For` (O-20).
+- **`DATABASE_POOL_MAX`** (API, 1–100, default 10): the browser tests use 1, so they can run on
+  PGlite locally.
+
+### D-04C-07: Tokens and redirects in the browser
+
+- **CSRF token:** kept in React state only (from `GET /auth/session`), never in storage, URLs or
+  logs.
+- **Emailed links:**
+  - the page reads `#token=` and removes the fragment from the address bar at once;
+  - a new link opened in the same tab (a fragment-only navigation) is read too;
+  - confirming an email address needs a click, so link scanners that open pages don't use up
+    the link;
+  - the invitation token is kept in `sessionStorage` (this tab only) while the user signs in,
+    and removed once the invitation is accepted or unusable.
+- **`?next=` after sign-in** accepts only paths inside the app (`/…`); absolute URLs, `//host`,
+  backslashes and control characters fall back to `/workspaces`.
+
+### D-04C-08: Browser scenarios against the real API
+
+- **`apps/web/e2e/accounts-and-teams.spec.ts`** (11 scenarios, serial): two workspaces and the
+  three roles. Registration with validation, confirmation, sign-in, creating a workspace,
+  inviting, revoking, accepting (signed out first, and with the wrong account), single use,
+  expired and revoked invitations, the switcher, unknown and foreign workspaces, role changes
+  and the last-admin rule, a member refused by the screens and by the API, the platform
+  console (reason, suspend, reactivate, no member access), password reset ending other
+  sessions, sign-out, safe redirects, and the audit records (expected actions, no secrets).
+- **Setup:**
+  - runs only with `E2E_DATABASE_URL` (a `*_test` database; `assertTestDatabaseUrl`),
+    otherwise the 11 scenarios show as skipped and only the smoke test runs;
+  - global setup applies the migrations (`prisma migrate deploy`);
+  - Playwright starts the built API (`apps/api/dist`, test mode: fake mail, nothing sent) on
+    port 3101, and the web app on 3100;
+  - mail stays inside the API, so the scenarios stand in for the inbox: they replace the token
+    the API issued with one they know, stored as the API stores it (SHA-256);
+  - CI runs them on the job's PostgreSQL (`public` schema of `leadfennec_test`; the other
+    suites use their own schemas). `test:e2e` now also builds the API.
+
+### D-04C-09: Validation messages
+
+The shared contracts now carry plain-language messages ("Enter an email address.", "Use at
+least 15 characters.", "State the reason in at least 10 characters."). The rules are unchanged;
+the API returns the same messages in `validation_failed` issues. They never echo the input.
+
+---
+
 ## Open choices (need a decision from the user)
 
 | ID | Choice | Current state | Options |
@@ -1557,7 +1744,8 @@ didn't ask for it. Expiring unverified accounts is O-21.
 | O-17 | Billing integration | 03C models subscriptions, payment facts, limits and usage provider-neutrally (D-03C-01, D-03C-03); billing uses the fake provider. Open: the Stripe adapter (SDK and API version to pin, thin or snapshot events, webhook endpoint), whether usage is reported to Stripe (e.g. billing meters) or billed from our ledger, whether a billing status suspends a tenant, which statuses are entitled (now TRIALING, ACTIVE, PAST_DUE), invoices and tax, and how real plans are created (only fixture plans exist). | Decide in the billing task, after re-checking Stripe's docs. |
 | O-18 | Platform-admin access policy | 03C: explicit entry point, stated reason, audit record before access, read-only generic client, refusals recorded (D-03C-05). Open: time-limited access grants, tenant consent or notifying the tenant's admins, which audited admin write operations exist beyond limit overrides, and audit retention. | Decide with the admin console and support tooling. |
 | O-19 | Transactional mail provider and a local inbox | Account email goes through `TransactionalMailProvider`; only the fake exists, so staging and production refuse to start (D-04A-11). In development the emails stay in memory; there is no inbox to click links by hand. | Choose a provider (after checking its official docs) with a live adapter, and a development inbox (e.g. a local SMTP catcher), which would be a new local service. |
-| O-20 | Auth work across instances and restarts | Account emails run in-process after the response, and are lost if the API stops at that moment (D-04A-07). Per-IP limits are kept in memory per instance, and the API does not trust any proxy, so behind a proxy all users would share one IP (D-04A-09). | Move account email to BullMQ (Redis, already in the stack); use a Redis store for the throttler; set Express `trust proxy` to the deployed proxy. |
+| O-20 | Auth work across instances and restarts | Account emails run in-process after the response, and are lost if the API stops at that moment (D-04A-07). Per-IP limits are kept in memory per instance (D-04A-09). Since 04C, `TRUST_PROXY_HOPS` sets how many proxies the API trusts (1 behind the web app's proxy); a client can still send its own `X-Forwarded-For` unless the outermost proxy overwrites it (D-04C-06). | Move account email to BullMQ (Redis, already in the stack); use a Redis store for the throttler; when deploying, count the load balancer in `TRUST_PROXY_HOPS` and make it overwrite `X-Forwarded-For`. |
 | O-21 | Further account security | Not in 04A: MFA (it would allow the 8-character minimum), blocking common and breached passwords, CAPTCHA after failures, a session list with "sign out everywhere", email change, account deletion, expiring unverified accounts, and retention for `user_sessions`, `auth_tokens` and `auth_throttles` rows (D-04A-03, D-04A-08, D-04A-13). | Decide per feature; a breached-password service is an external provider (official docs first). |
 | O-22 | The auth decision against the plan | The plan was unavailable; 04A chose first-party sessions with Argon2id, HttpOnly cookies and synchronizer CSRF tokens (D-04A-01). | Confirm, or reconcile with the plan, e.g. if it prescribes a hosted identity provider. |
-| O-23 | Team management beyond 04B | Not built: suspending or removing members, custom roles per workspace, limits on workspaces per user, ownership transfer, and invitations to platform staff (D-04B-01 to D-04B-04). | Decide with the team-management screens and the billing limits. |
+| O-23 | Team management beyond 04B | The 04C screens cover inviting, revoking and role changes. Not built: suspending or removing members, custom roles per workspace, limits on workspaces per user, ownership transfer, and invitations to platform staff (D-04B-01 to D-04B-04, D-04C-01). | Decide before the next team-management task, and with the billing limits. |
+| O-24 | Screen design and copy | The 04C screens use shadcn/ui's neutral defaults and English copy written without the plan: no brand (the `branding` table is unused), no dark-mode switch, no translations; dates use the browser's locale (D-04C-01, D-04C-02). | Reconcile with the plan's design and copy, and with tenant branding. |

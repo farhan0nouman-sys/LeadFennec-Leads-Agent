@@ -4,6 +4,119 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## GIT-05: Commit 04C (2026-11-01)
+
+**Status: Done (local commit only).** The request was `git commit`.
+
+| Step | Actual result |
+|---|---|
+| Branch and author | `feat/04a-auth` (on top of `9ef306e`); author `LeadFennec-Leads-Agent` with the GitHub `noreply` address |
+| Content | One commit for 04C: screens, security audit events, authorization review, browser scenarios, docs |
+| Checks before committing | The 04C regression (see the 04C entry); format check exit 0; a scan of the staged files for credentials and the personal email found nothing |
+| Commit | The commit that contains this entry (`git log`) |
+
+- **Not pushed:** CI hasn't run on 03A–04C.
+
+---
+
+## 04C: Account and team screens, security audit events, authorization review (2026-11-01)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL:** the API, database and browser suites ran on PGlite only, not on a real
+  server, in Docker or in CI (not pushed).
+- **Concurrency:** the two concurrency tests skip themselves on PGlite.
+- **Not pushed:** committed locally (GIT-05); CI hasn't run on it.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Schema and migrations | `audit_actor_type` gains `USER`. `20261101001100_user_audit_actor` (generated), `20261101001200_user_audit_actor_checks` (hand-written: `USER` only in platform records, explicit actor lists). |
+| Database package | `auth/store.ts`: `recordSecurityEvent`; `verifyEmailWithToken` returns the user id. Authorization fixes: `audit.list` needs `audit.read`; billing reads and `usage.summary` need `billing.read` (or the system actor, or a platform admin; `requireReadPermissionOrSystem`); `notifications.notify` is system-only. |
+| Shared | Plain-language validation messages in the auth and workspace contracts (rules unchanged). |
+| API | `AuthService` records 9 security events with the request id; `http/request-id.ts` (moved from the workspace guards); `REQUIRED_PERMISSIONS` exported; new env `DATABASE_POOL_MAX` and `TRUST_PROXY_HOPS` (Express `trust proxy`), in the env schema, `.env.example`, `turbo.json` and `docs/local-development.md`. |
+| Web | Tailwind CSS 4 and shadcn/ui-style components (`components/ui`, `components.json`, `app/globals.css`); `/api/[...path]` proxy (`lib/api-proxy.ts`); `lib/api.ts`, `lib/session.tsx`, `lib/forms.ts`, `lib/links.ts`, `lib/workspace.tsx`; 10 screens: `/login`, `/register`, `/verify-email`, `/forgot-password`, `/reset-password`, `/workspaces`, `/workspaces/[id]` (switcher, navigation), `/workspaces/[id]/team`, `/invitations/accept`, `/platform`; `not-found`. New dependencies: `tailwindcss`, `@tailwindcss/postcss` 4.3.3, `postcss` 8.5.32, `class-variance-authority` 0.7.1, `clsx` 2.1.1, `tailwind-merge` 3.7.0; dev: `@lead-fennec-ai/database`, `pg`, `@types/pg`. |
+| Tests | API: security-event tests (2), `http/route-guards.test.ts` (6, every route's guards), env tests (2). Database: tenant-access authorization test (1), `USER` actor CHECKs (1); the audit pagination test now reads as a member. Browser: `e2e/accounts-and-teams.spec.ts` (11 scenarios) with `e2e/support/` (global setup migrates; `db.ts` stands in for the inbox). |
+| CI and Turborepo | The browser step gets `E2E_DATABASE_URL` (job database, `public` schema); `test:e2e` also builds the API and passes `E2E_DATABASE_URL` through. |
+| Docs | `docs/decisions.md` D-04C-01 to 09, O-20 and O-23 updated, O-24 new; `docs/security/authorization-review.md` (new); `docs/api/auth.md` (security events); `docs/local-development.md` (variables, browser tests); README (status, layout, browser tests, migrations, "Screens"); `CLAUDE.md` (new routes, audit, web app, browser tests). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329, restarted fresh before
+each database run and stopped at the end.
+
+| Command / check | Actual result |
+|---|---|
+| `prisma migrate diff … --script` (`USER` value) | One `ALTER TYPE … ADD VALUE 'USER'`; the CHECK changes are in the hand-written migration after it |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 13 migrations applied; "Database schema is up to date!"; drift exit 0 |
+| Catalog after all migrations | 54 tables, 112 foreign keys, 152 CHECK constraints, 198 indexes, 51 triggers (unchanged: the two actor CHECKs were replaced) |
+| Web screens, by eye | Screenshots of sign-in (with an error), the overview and the team page at 1200 px and 390 px wide, taken with a temporary spec (deleted afterwards) |
+
+**Final regression.** The generated Prisma client was deleted first; Turborepo ran without its
+cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | **First run: exit 1** (`packages/database/src/auth/store.ts`, from this task); formatted, then exit 0 |
+| `pnpm typecheck --force` | Exit 0; 14/14, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14, 0 cached. Earlier in the task, 18 web lint findings were fixed (deprecated `FormEvent`, state set synchronously in effects, a control-character regex), and 4 in the route test. |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 9/9, 0 cached: shared **134**, integrations **13**, database **46 passed, 302 skipped**, worker **4**, api **26 passed, 38 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 9/9, 0 cached: shared **134**, integrations **13**, database **346 passed, 2 skipped**, worker **4**, api **64** |
+| Database package again, after adding the `USER` CHECK test | **347 passed, 2 skipped** with the database; 46 passed, 303 skipped without |
+| `pnpm build --force` | Exit 0; 11/11, 0 cached; 13 web routes |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **12 passed** (11 scenarios + smoke) |
+| `pnpm test:e2e` without it | **1 passed, 11 skipped** |
+| Reference repos / credential and personal-email scan of the 80 changed files | 0 changes in each of the 9 / no matches |
+
+**Earlier failures in this task (logged honestly):**
+1. Browser run 1: re-opening a second emailed link in an open page didn't re-read the token
+   (a fragment-only navigation). Fixed in the app: `useLinkToken` follows `hashchange`, and
+   the link pages reset their state per token.
+2. Browser run 2: the test re-opened the same token in the same page; it now navigates away
+   first, as a second click from an email would.
+3. Browser run 3: an ambiguous "Team" link selector in the test.
+4. The route test first expected at least 25 routes; there are 24. It now pins the exact list.
+
+### What 04C proves (local)
+
+- **Screens against the real API:** every screen in the browser scenarios talks to the built
+  API and a migrated database through the web app's proxy, with two workspaces and the three
+  roles (D-04C-08).
+- **Membership and security audit:** workspace records for creation, invitations (created,
+  revoked, accepted) and role changes; platform records for registration, confirmation,
+  sign-in (and failures and locks), sign-out, and password reset. No password, token, CSRF or
+  session token appears in any audit record (API suite and the whole browser run).
+- **Authorization review:** 24 routes and every repository function reviewed; three gaps fixed;
+  the route test fails on any unreviewed route or missing guard.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL (CI not run: nothing pushed); the concurrency tests (PGlite).
+- `pg` 8.23's deprecation warning from Prisma's `adapter-pg` also appears in the browser runs
+  (O-14).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker (O-06).
+3. Open: O-19 (mail provider), O-20 (queue, instances, proxies), O-21 (account security),
+   O-22 (auth decision), O-23 (member suspension and removal, custom roles), O-24 (screen
+   design and copy).
+
+### Manual check
+
+With Docker running (O-06): `pnpm dev`, register at `http://localhost:3000/register`. Emails
+stay in the API process (O-19), so confirm the address by issuing a token as
+`apps/web/e2e/support/db.ts` does, or run the browser tests with
+`E2E_DATABASE_URL=postgresql://leadfennec:<password>@127.0.0.1:5432/leadfennec_test pnpm test:e2e`.
+
+### Next prompt
+
+Not known: the plan is missing (O-01).
+
+---
+
 ## GIT-04: Commit 04A–04B (2026-11-01)
 
 **Status: Done (local commit only).** The request was `git commit` (sent together with the

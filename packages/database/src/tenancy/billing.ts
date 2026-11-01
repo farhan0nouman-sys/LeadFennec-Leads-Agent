@@ -10,6 +10,7 @@ import {
   type TenantLimitOverride,
 } from '../generated/prisma/client.js';
 import { ActorNotAllowedError, type TenantActor } from './actors.js';
+import { requireReadPermissionOrSystem } from './authorization.js';
 import { writeAuditRecord, type DbClient } from './audit.js';
 
 /** Subscriptions that are not ended (at most one per tenant, subscriptions_one_current_key). */
@@ -64,6 +65,7 @@ const limitOverrideSchema = z
   })
   .strict();
 
+/** Reads need `billing.read` (or the system actor). */
 export interface BillingRepository {
   currentSubscription(): Promise<Subscription | null>;
   /** Effective limit per metric for the current subscription; empty without one. */
@@ -80,8 +82,12 @@ export function createBillingRepository(
   actor: TenantActor,
 ): BillingRepository {
   return {
-    currentSubscription: () => findCurrentSubscription(prisma, tenantId),
+    async currentSubscription() {
+      requireReadPermissionOrSystem(actor, 'billing.read');
+      return findCurrentSubscription(prisma, tenantId);
+    },
     async effectiveLimits() {
+      requireReadPermissionOrSystem(actor, 'billing.read');
       const subscription = await findCurrentSubscription(prisma, tenantId);
       if (subscription === null) {
         return {};

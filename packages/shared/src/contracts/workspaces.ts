@@ -33,15 +33,19 @@ const iso = z.iso.datetime();
 
 export const workspaceSlugSchema = z
   .string()
-  .min(3)
-  .max(63)
+  .min(3, 'Use at least 3 characters.')
+  .max(63, 'Use at most 63 characters.')
   .regex(
     /^[a-z0-9]+(-[a-z0-9]+)*$/,
     'Use lower-case letters, digits and single hyphens.',
   );
 
 /** A platform admin's reason for an access or a change; it is stored in the audit records. */
-export const accessReasonSchema = z.string().trim().min(10).max(500);
+export const accessReasonSchema = z
+  .string('State the reason.')
+  .trim()
+  .min(10, 'State the reason in at least 10 characters.')
+  .max(500, 'Use at most 500 characters.');
 
 export const pageQuerySchema = z
   .object({
@@ -52,18 +56,22 @@ export const pageQuerySchema = z
 
 export const createWorkspaceRequestSchema = z
   .object({
-    name: z.string().trim().min(1).max(100),
+    name: z
+      .string('Enter a name.')
+      .trim()
+      .min(1, 'Enter a name.')
+      .max(100, 'Use at most 100 characters.'),
     /** Omitted: derived from the name, with a random suffix. */
     slug: workspaceSlugSchema.optional(),
   })
   .strict();
 
 export const changeMemberRoleRequestSchema = z
-  .object({ roleId: z.uuid() })
+  .object({ roleId: z.uuid('Choose a role.') })
   .strict();
 
 export const createInvitationRequestSchema = z
-  .object({ email: emailInputSchema, roleId: z.uuid() })
+  .object({ email: emailInputSchema, roleId: z.uuid('Choose a role.') })
   .strict();
 
 export const invitationTokenRequestSchema = z

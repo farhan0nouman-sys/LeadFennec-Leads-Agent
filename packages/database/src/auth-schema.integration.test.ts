@@ -180,6 +180,36 @@ describe.runIf(testDatabaseUrl !== undefined)(
           expect(left.rows, table).toEqual([{ n: 0 }]);
         }
       });
+
+      it('allows the USER audit actor in platform records only, named by user id (04C)', async () => {
+        const { id } = await newUser();
+        await client.query(
+          `INSERT INTO platform_audit_records
+             (id, actor_type, actor_user_id, action, target_type, target_id, occurred_at)
+           VALUES ($1, 'USER', $2, 'user.signed_in', 'user', $2, now())`,
+          [randomUUID(), id],
+        );
+        // Named by user id, never by a system name.
+        await rejects(
+          `INSERT INTO platform_audit_records (id, actor_type, actor_user_id, actor_name, action, occurred_at)
+           VALUES ($1, 'USER', $2, 'auth', 'user.signed_in', now())`,
+          [randomUUID(), id],
+          CHECK,
+        );
+        await rejects(
+          `INSERT INTO platform_audit_records (id, actor_type, action, occurred_at)
+           VALUES ($1, 'USER', 'user.signed_in', now())`,
+          [randomUUID()],
+          CHECK,
+        );
+        // A workspace's records name members, platform admins or the system, never USER.
+        await rejects(
+          `INSERT INTO audit_records (tenant_id, id, actor_type, actor_user_id, action, occurred_at)
+           VALUES ($1, $2, 'USER', $3, 'user.signed_in', now())`,
+          [randomUUID(), randomUUID(), id],
+          CHECK,
+        );
+      });
     });
 
     describe('store', () => {
@@ -277,7 +307,7 @@ describe.runIf(testDatabaseUrl !== undefined)(
           where: { id },
           data: { normalizedEmail: `changed.${email}` },
         });
-        expect(await store.verifyEmailWithToken(second, now)).toBe(false);
+        expect(await store.verifyEmailWithToken(second, now)).toBeNull();
         expect(
           await store.isTokenUsable(second, 'EMAIL_VERIFICATION', now),
         ).toBe(true);

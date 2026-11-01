@@ -39,7 +39,8 @@ import {
 import { AUTH_CLOCK, type AuthClock } from '../auth/auth.policy.js';
 import { PRISMA_CLIENT } from '../database/database.module.js';
 import { ApiExceptionFilter, forbidden, ZodPipe } from '../http/api-errors.js';
-import { requestIdOf, type WorkspaceRequest } from './workspace-guards.js';
+import { requestIdOf } from '../http/request-id.js';
+import type { WorkspaceRequest } from './workspace-guards.js';
 
 /** Refusals (not an admin, or no such workspace) are recorded by the database layer, then 403. */
 async function asAdmin<T>(work: () => Promise<T>): Promise<T> {

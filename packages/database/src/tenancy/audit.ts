@@ -13,6 +13,7 @@ import {
   uuidSchema,
   type TenantActor,
 } from './actors.js';
+import { requireReadPermission } from './authorization.js';
 
 /** A client or an interactive-transaction client. */
 export type DbClient = PrismaClient | Prisma.TransactionClient;
@@ -88,7 +89,7 @@ export async function writeAuditRecord(
 
 export interface AuditRepository {
   record(entry: AuditEntry): Promise<AuditRecord>;
-  /** Newest first; optionally only the records about one row. */
+  /** Newest first; optionally only the records about one row. Needs `audit.read`. */
   list(
     page: PageRequest,
     filter?: { readonly targetType: string; readonly targetId: string },
@@ -103,6 +104,7 @@ export function createAuditRepository(
   return {
     record: (entry) => writeAuditRecord(prisma, tenantId, actor, entry),
     list: async (page, filter) => {
+      requireReadPermission(actor, 'audit.read');
       const target =
         filter === undefined
           ? {}

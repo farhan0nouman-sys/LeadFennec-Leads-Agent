@@ -23,6 +23,7 @@ import {
 import { SkipThrottle, ThrottlerGuard } from '@nestjs/throttler';
 import type { z } from 'zod';
 import { ApiExceptionFilter, ZodPipe } from '../http/api-errors.js';
+import { requestIdOf } from '../http/request-id.js';
 import {
   CsrfGuard,
   OriginGuard,
@@ -53,8 +54,9 @@ export class AuthController {
   register(
     @Body(new ZodPipe(registerRequestSchema))
     body: z.output<typeof registerRequestSchema>,
+    @Req() request: ApiRequest,
   ): typeof ACCEPTED {
-    this.auth.register(body);
+    this.auth.register(body, requestIdOf(request));
     return ACCEPTED;
   }
 
@@ -65,8 +67,9 @@ export class AuthController {
   async verifyEmail(
     @Body(new ZodPipe(verifyEmailRequestSchema))
     body: z.output<typeof verifyEmailRequestSchema>,
+    @Req() request: ApiRequest,
   ): Promise<{ status: 'verified' }> {
-    await this.auth.verifyEmail(body.token);
+    await this.auth.verifyEmail(body.token, requestIdOf(request));
     return { status: 'verified' };
   }
 
@@ -95,6 +98,7 @@ export class AuthController {
     const { sessionToken, session } = await this.auth.login(
       body,
       readSessionToken(request),
+      requestIdOf(request),
     );
     response.appendHeader('Set-Cookie', sessionCookie(sessionToken));
     return this.auth.sessionResponse(session);
@@ -109,7 +113,7 @@ export class AuthController {
     @Req() request: ApiRequest,
     @Res({ passthrough: true }) response: ServerResponse,
   ): Promise<void> {
-    await this.auth.logout(requireSession(request));
+    await this.auth.logout(requireSession(request), requestIdOf(request));
     response.appendHeader('Set-Cookie', clearedSessionCookie());
   }
 
@@ -130,8 +134,9 @@ export class AuthController {
   requestPasswordReset(
     @Body(new ZodPipe(emailRequestSchema))
     body: z.output<typeof emailRequestSchema>,
+    @Req() request: ApiRequest,
   ): typeof ACCEPTED {
-    this.auth.requestPasswordReset(body.email);
+    this.auth.requestPasswordReset(body.email, requestIdOf(request));
     return ACCEPTED;
   }
 
@@ -143,8 +148,13 @@ export class AuthController {
   async confirmPasswordReset(
     @Body(new ZodPipe(passwordResetConfirmRequestSchema))
     body: z.output<typeof passwordResetConfirmRequestSchema>,
+    @Req() request: ApiRequest,
   ): Promise<{ status: 'password_reset' }> {
-    await this.auth.confirmPasswordReset(body.token, body.newPassword);
+    await this.auth.confirmPasswordReset(
+      body.token,
+      body.newPassword,
+      requestIdOf(request),
+    );
     return { status: 'password_reset' };
   }
 }

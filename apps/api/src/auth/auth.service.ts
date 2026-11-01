@@ -61,6 +61,21 @@ export interface SessionContext {
   readonly absoluteExpiresAt: Date;
 }
 
+/**
+ * Security events about a user's own account (platform audit records, D-04C-03). Metadata holds
+ * reason codes and numbers only: never a token, a password or an address.
+ */
+export type SecurityAction =
+  | 'user.registered'
+  | 'user.registration_repeated'
+  | 'user.email_verified'
+  | 'user.sign_in_failed'
+  | 'user.sign_in_locked'
+  | 'user.signed_in'
+  | 'user.signed_out'
+  | 'user.password_reset_requested'
+  | 'user.password_reset';
+
 const plus = (date: Date, seconds: number) =>
   new Date(date.getTime() + seconds * 1000);
 
@@ -96,17 +111,20 @@ export class AuthService {
 
   // ─── Requests answered with 202, whatever the account state ────────────────
 
-  register(input: {
-    email: string;
-    password: string;
-    displayName?: string | undefined;
-  }): void {
+  register(
+    input: {
+      email: string;
+      password: string;
+      displayName?: string | undefined;
+    },
+    requestId?: string,
+  ): void {
     const normalized = this.normalize(input.email);
     const email = input.email.trim();
     this.tasks.run('register', async () => {
       const existing = await this.store.findLoginCandidate(normalized);
       if (existing !== null) {
-        await this.registeredAgain(existing, normalized);
+        await this.registeredAgain(existing, normalized, requestId);
         return;
       }
       const passwordHash = await this.hasher.hash(input.password);
@@ -121,10 +139,14 @@ export class AuthService {
         // Registered concurrently: treat like a repeated registration.
         const raced = await this.store.findLoginCandidate(normalized);
         if (raced !== null) {
-          await this.registeredAgain(raced, normalized);
+          await this.registeredAgain(raced, normalized, requestId);
         }
         return;
       }
+      await this.securityEvent('user.registered', created.id, {
+        byUser: true,
+        requestId,
+      });
       await this.sendVerification({ id: created.id, email }, normalized);
     });
   }
@@ -140,7 +162,7 @@ export class AuthService {
     });
   }
 
-  requestPasswordReset(rawEmail: string): void {
+  requestPasswordReset(rawEmail: string, requestId?: string): void {
     const normalized = this.normalize(rawEmail);
     this.tasks.run('password_reset_request', async () => {
       const user = await this.store.findLoginCandidate(normalized);
@@ -162,6 +184,11 @@ export class AuthService {
         normalized,
         this.policy.passwordResetTokenSeconds,
       );
+      // The requester is not authenticated: the system acts, for the account.
+      await this.securityEvent('user.password_reset_requested', user.id, {
+        byUser: false,
+        requestId,
+      });
       await this.mail.send(
         passwordResetMessage(
           user.email,
@@ -174,18 +201,25 @@ export class AuthService {
 
   // ─── Emailed links ─────────────────────────────────────────────────────────
 
-  async verifyEmail(token: string): Promise<void> {
-    if (
-      !(await this.store.verifyEmailWithToken(sha256Hex(token), this.clock()))
-    ) {
+  async verifyEmail(token: string, requestId?: string): Promise<void> {
+    const userId = await this.store.verifyEmailWithToken(
+      sha256Hex(token),
+      this.clock(),
+    );
+    if (userId === null) {
       throw invalidToken();
     }
+    await this.securityEvent('user.email_verified', userId, {
+      byUser: true,
+      requestId,
+    });
   }
 
   /** Sets a new password, verifies the address and ends every session of the user. */
   async confirmPasswordReset(
     token: string,
     newPassword: string,
+    requestId?: string,
   ): Promise<void> {
     const tokenHash = sha256Hex(token);
     // Cheap check first, so an unknown token never costs a password hash.
@@ -207,6 +241,10 @@ export class AuthService {
     if (user === null) {
       throw invalidToken();
     }
+    await this.securityEvent('user.password_reset', user.id, {
+      byUser: true,
+      requestId,
+    });
     // The owner proved control of the address: lift any sign-in lock.
     await this.store.clearAttempts(
       'LOGIN',
@@ -227,6 +265,7 @@ export class AuthService {
   async login(
     input: LoginRequest,
     previousSessionToken: string | null,
+    requestId?: string,
   ): Promise<{ sessionToken: string; session: SessionContext }> {
     const normalized = this.normalize(input.email);
     const key = emailKeyHash(normalized);
@@ -247,12 +286,35 @@ export class AuthService {
         this.policy.loginFailures,
         now,
       );
+      // Recorded only for existing accounts: there is no user to name otherwise.
+      if (user !== null) {
+        await this.securityEvent('user.sign_in_failed', user.id, {
+          byUser: false,
+          requestId,
+          metadata: {
+            reason:
+              user.status === 'ACTIVE' ? 'wrong_password' : 'account_inactive',
+          },
+        });
+        if (attempt.allowed && attempt.retryAfterSeconds !== null) {
+          await this.securityEvent('user.sign_in_locked', user.id, {
+            byUser: false,
+            requestId,
+            metadata: { lockedSeconds: attempt.retryAfterSeconds },
+          });
+        }
+      }
       if (!attempt.allowed && attempt.retryAfterSeconds !== null) {
         throw tooManyRequests(attempt.retryAfterSeconds);
       }
       throw invalidCredentials();
     }
     if (user.emailVerifiedAt === null) {
+      await this.securityEvent('user.sign_in_failed', user.id, {
+        byUser: false,
+        requestId,
+        metadata: { reason: 'email_not_verified' },
+      });
       throw new ApiHttpException(
         403,
         'email_not_verified',
@@ -291,6 +353,11 @@ export class AuthService {
       now,
       idleExpiresAt,
       absoluteExpiresAt,
+    });
+    await this.securityEvent('user.signed_in', user.id, {
+      byUser: true,
+      requestId,
+      target: { type: 'user_session', id },
     });
     return {
       sessionToken,
@@ -354,8 +421,13 @@ export class AuthService {
     };
   }
 
-  async logout(session: SessionContext): Promise<void> {
+  async logout(session: SessionContext, requestId?: string): Promise<void> {
     await this.store.endSession(session.sessionId, 'LOGOUT', this.clock());
+    await this.securityEvent('user.signed_out', session.user.id, {
+      byUser: true,
+      requestId,
+      target: { type: 'user_session', id: session.sessionId },
+    });
   }
 
   sessionResponse(session: SessionContext): SessionResponse {
@@ -400,10 +472,16 @@ export class AuthService {
   private async registeredAgain(
     user: LoginCandidate,
     normalized: string,
+    requestId: string | undefined,
   ): Promise<void> {
     if (user.status !== 'ACTIVE') {
       return;
     }
+    await this.securityEvent('user.registration_repeated', user.id, {
+      byUser: false,
+      requestId,
+      metadata: { verified: user.emailVerifiedAt !== null },
+    });
     if (
       !(await this.allowEmail(
         'VERIFICATION_EMAIL',
@@ -461,6 +539,28 @@ export class AuthService {
         this.policy.verificationTokenSeconds / 3600,
       ),
     );
+  }
+
+  /** Writes a platform audit record about the user's account (D-04C-03). */
+  private async securityEvent(
+    action: SecurityAction,
+    userId: string,
+    options: {
+      byUser: boolean;
+      requestId: string | undefined;
+      target?: { type: 'user_session'; id: string };
+      metadata?: Record<string, string | number | boolean>;
+    },
+  ): Promise<void> {
+    await this.store.recordSecurityEvent({
+      action,
+      userId,
+      byUser: options.byUser,
+      requestId: options.requestId,
+      now: this.clock(),
+      ...(options.target === undefined ? {} : { target: options.target }),
+      ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+    });
   }
 
   /** Issues a token and returns its value; only the hash is stored. */

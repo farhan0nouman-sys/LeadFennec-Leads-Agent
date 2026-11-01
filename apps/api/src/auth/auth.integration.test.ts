@@ -898,5 +898,168 @@ describe.runIf(testDatabaseUrl !== undefined)(
         }
       });
     });
+
+    describe('security audit events (task 04C)', () => {
+      /** The platform audit records about one account, by action. */
+      async function eventsOf(email: string) {
+        const user = await api.prisma.user.findUniqueOrThrow({
+          where: { normalizedEmail: normalized(email) },
+        });
+        const records = await api.prisma.platformAuditRecord.findMany({
+          where: { OR: [{ actorUserId: user.id }, { targetId: user.id }] },
+          orderBy: { id: 'asc' },
+        });
+        const of = (action: string) =>
+          records.filter((record) => record.action === action);
+        return { user, records, of };
+      }
+
+      it('records sign-up, verification, sign-in, sign-out and reset, without secrets', async () => {
+        const email = await verifiedAccount('audit-trail');
+        expectError(
+          await call(api, AUTH_ROUTES.login, {
+            body: { email, password: OTHER_PASSWORD },
+          }),
+          401,
+          'invalid_credentials',
+        );
+        const session = await signIn(email);
+        expect(
+          (
+            await call(api, AUTH_ROUTES.logout, {
+              cookie: session.token,
+              csrf: session.body.csrfToken,
+            })
+          ).status,
+        ).toBe(204);
+        await call(api, AUTH_ROUTES.passwordResetRequest, { body: { email } });
+        await api.tasks.drain();
+        const { token } = lastMail(api, email, 'auth.password_reset');
+        expect(
+          (
+            await call(api, AUTH_ROUTES.passwordResetConfirm, {
+              body: { token, newPassword: OTHER_PASSWORD },
+            })
+          ).status,
+        ).toBe(200);
+
+        const { user, records, of } = await eventsOf(email);
+        const sessionRow = await api.prisma.userSession.findFirstOrThrow({
+          where: { userId: user.id, endReason: 'LOGOUT' },
+        });
+        // The user acted: registration, verification, sign-in, sign-out, the new password.
+        for (const action of [
+          'user.registered',
+          'user.email_verified',
+          'user.signed_in',
+          'user.signed_out',
+          'user.password_reset',
+        ]) {
+          const [record, ...more] = of(action);
+          expect(more, action).toHaveLength(0);
+          expect(record, action).toMatchObject({
+            actorType: 'USER',
+            actorUserId: user.id,
+            actorName: null,
+            subjectTenantId: null,
+          });
+        }
+        expect(of('user.signed_in')[0]).toMatchObject({
+          targetType: 'user_session',
+          targetId: sessionRow.id,
+        });
+        expect(of('user.signed_out')[0]).toMatchObject({
+          targetType: 'user_session',
+          targetId: sessionRow.id,
+        });
+        // Nobody proven acted: a failed sign-in and a reset request are the system's records.
+        expect(of('user.sign_in_failed')).toEqual([
+          expect.objectContaining({
+            actorType: 'SYSTEM',
+            actorUserId: null,
+            actorName: 'auth',
+            targetType: 'user',
+            targetId: user.id,
+            metadata: { reason: 'wrong_password' },
+          }),
+        ]);
+        expect(of('user.password_reset_requested')).toEqual([
+          expect.objectContaining({ actorType: 'SYSTEM', targetId: user.id }),
+        ]);
+        // Every record carries the request id, and no token, password or address.
+        for (const record of records) {
+          expect(record.requestId, record.action).toMatch(
+            /^[A-Za-z0-9._:-]{1,128}$/,
+          );
+        }
+        const stored = JSON.stringify(records).toLowerCase();
+        expect(stored.includes(normalized(email))).toBe(false);
+        for (const secret of secrets) {
+          expect(
+            stored.includes(secret.toLowerCase()),
+            'a secret was stored',
+          ).toBe(false);
+        }
+      });
+
+      it('records refusals for existing accounts only, and the start of a lock once', async () => {
+        const before = await api.prisma.platformAuditRecord.count();
+        expectError(
+          await call(api, AUTH_ROUTES.login, {
+            body: { email: freshEmail('nobody'), password: OTHER_PASSWORD },
+          }),
+          401,
+          'invalid_credentials',
+        );
+        expect(await api.prisma.platformAuditRecord.count()).toBe(before);
+
+        const email = await verifiedAccount('audit-lock');
+        for (let i = 0; i < 6; i += 1) {
+          await call(api, AUTH_ROUTES.login, {
+            body: { email, password: OTHER_PASSWORD },
+          });
+        }
+        const { of } = await eventsOf(email);
+        // Five counted failures; the sixth was refused by the lock before any check.
+        expect(of('user.sign_in_failed')).toHaveLength(5);
+        expect(of('user.sign_in_locked')).toEqual([
+          expect.objectContaining({
+            actorType: 'SYSTEM',
+            metadata: { lockedSeconds: 15 * 60 },
+          }),
+        ]);
+        advance(15 * 60);
+
+        const unverified = freshEmail('audit-unverified');
+        await call(api, AUTH_ROUTES.register, {
+          body: { email: unverified, password: PASSWORD },
+        });
+        await api.tasks.drain();
+        expectError(
+          await call(api, AUTH_ROUTES.login, {
+            body: { email: unverified, password: PASSWORD },
+          }),
+          403,
+          'email_not_verified',
+        );
+        // Registering the address again is recorded for its owner, without the address.
+        await call(api, AUTH_ROUTES.register, {
+          body: { email: unverified, password: OTHER_PASSWORD },
+        });
+        await api.tasks.drain();
+        const events = await eventsOf(unverified);
+        expect(events.of('user.sign_in_failed')).toEqual([
+          expect.objectContaining({
+            metadata: { reason: 'email_not_verified' },
+          }),
+        ]);
+        expect(events.of('user.registration_repeated')).toEqual([
+          expect.objectContaining({
+            actorType: 'SYSTEM',
+            metadata: { verified: false },
+          }),
+        ]);
+      });
+    });
   },
 );

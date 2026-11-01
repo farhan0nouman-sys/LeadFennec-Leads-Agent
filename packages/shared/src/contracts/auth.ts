@@ -43,15 +43,15 @@ export function passwordLength(password: string): number {
 
 /** Shape check only; the server normalizes the address (normalizeEmail). */
 export const emailInputSchema = z
-  .string()
+  .string('Enter an email address.')
   .trim()
-  .min(3)
-  .max(254)
+  .min(3, 'Enter an email address.')
+  .max(254, 'Use at most 254 characters.')
   .regex(/^[^\s@]+@[^\s@]+$/, 'Enter an email address.');
 
 /** A new password: length policy only, any characters allowed. */
 export const newPasswordSchema = z
-  .string()
+  .string('Enter a password.')
   .refine((p) => passwordLength(p) >= PASSWORD_MIN_LENGTH, {
     message: `Use at least ${String(PASSWORD_MIN_LENGTH)} characters.`,
   })
@@ -61,20 +61,25 @@ export const newPasswordSchema = z
 
 /** A password being checked at sign-in: no policy, only a size cap. */
 export const currentPasswordSchema = z
-  .string()
-  .min(1)
-  .max(PASSWORD_MAX_LENGTH * 4);
+  .string('Enter your password.')
+  .min(1, 'Enter your password.')
+  .max(PASSWORD_MAX_LENGTH * 4, 'The password is too long.');
 
 /** A token from an emailed link: 32 random bytes, base64url. */
 export const linkTokenSchema = z
-  .string()
+  .string('The link is invalid.')
   .regex(/^[A-Za-z0-9_-]{43}$/, 'The link is invalid.');
 
 export const registerRequestSchema = z
   .object({
     email: emailInputSchema,
     password: newPasswordSchema,
-    displayName: z.string().trim().min(1).max(100).optional(),
+    displayName: z
+      .string()
+      .trim()
+      .min(1, 'Enter a name, or leave it out.')
+      .max(100, 'Use at most 100 characters.')
+      .optional(),
   })
   .strict();
 

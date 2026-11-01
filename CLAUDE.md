@@ -72,13 +72,79 @@ if needed; next prompt ID.
   - Don't copy code without checking the license. Only `google-maps-scraper-kit` and
     `Lead-Generation-System-using-Google-Map` ship an MIT license file. `agentsource-plugin`,
     `leadGenerationAgent` and `outreach-agent` have no license, and `OpenOutreach` is GPLv3.
-- Git repository initialized 2026-11-01 on `main`, with no remote yet. `reference-repos/` is
-  git-ignored. Commit, push or rewrite history only when asked; new work goes on branches.
+- Git: default branch `main`, remote `origin` = github.com/farhan0nouman-sys/LeadFennec-Leads-Agent
+  (**public**). `reference-repos/` is git-ignored. Commit, push or rewrite history only when
+  asked; new work goes on branches. This repository's `.git/config` sets the GitHub noreply
+  commit email.
 - Local development: `pnpm dev` starts PostgreSQL and Redis (Docker Compose) and all apps. See
   `docs/local-development.md`. Decisions and pinned versions: `docs/decisions.md`.
 - Apps read configuration only from `process.env`, validated at startup. A new variable must be
   added in four places: the app's env schema, `.env.example` (fake placeholder),
   `turbo.json` → `tasks.dev.passThroughEnv`, and `docs/local-development.md`.
+
+## Database
+
+- **Location:** the schema is `packages/database/prisma/schema.prisma` (Prisma 7.10.1).
+  Migrations are in `prisma/migrations`. Never edit an applied migration; add a new one
+  (`README.md` → Migrations). Rules Prisma can't express go in hand-written SQL migrations.
+- **Tenant-owned tables:**
+  - `tenant_id` NOT NULL, a composite primary key `(tenant_id, id)`, and the immutability
+    trigger.
+  - Every reference to another tenant-owned row is a composite foreign key
+    `(tenant_id, x_id) → (tenant_id, id)`.
+  - Never use `onDelete: SetNull` (it nulls `tenant_id`); use NoAction or Cascade.
+- **Tenant-scoped queries:**
+  - API handlers and workers get tenant data only through the entry points in
+    `packages/database/src/tenancy/access.ts`:
+    - `memberScope` (active member of an active tenant);
+    - `platformAdminScope` (stated reason, audited, read-only client);
+    - `systemScope` (named worker);
+    - `platformConsole` (the only cross-tenant view, audited).
+  - Use `scope.db` (the tenant-scoped client) and the scope's repositories. Never hand a
+    raw `PrismaClient` to request or job code.
+  - A platform admin never gets implicit tenant access. Any new admin write is a repository
+    method that writes an audit record in the same transaction.
+  - Repository code inside the database package filters every query by `tenantId`. Prisma
+    unique lookups use `tenantId_id`.
+  - Background workers (relays, schedulers) iterate `tenants` and then run tenant-scoped
+    queries.
+  - Keys named `*_partial` are partial unique constraints, not lookup keys: Prisma ignores
+    their WHERE clause, and ESLint forbids them.
+  - Lists page with `paginate` (`src/pagination.ts`): keyset on `id`, never OFFSET.
+- **One table per concept** (`docs/decisions.md` D-03C-01):
+  - a tenant's plan and billing state live only in `subscriptions`;
+  - limits only in `plan_limits` and `tenant_limit_overrides`;
+  - usage only in `usage_ledger_entries` (totals are sums, never stored counters);
+  - raw provider notifications only in `inbound_events`, payment facts in `payment_events`;
+  - audit in `audit_records` (tenant) or `platform_audit_records` (platform).
+
+  Extend these tables; never add a copy (the structure test lists forbidden duplicates).
+- **Budgets:** paid work (AI, enrichment, verification, sending) reserves usage first
+  (`scope.usage.reserve`), then commits what was used or releases the hold. Read plan,
+  status and limits from the database, never from the billing provider at request time.
+- **Append-only rows** (triggers reject updates): draft content, approvals, payment facts,
+  usage ledger entries, audit and platform audit records. Correct with a new row.
+- **Identity keys:** only from `normalizeEmail` / `normalizeDomain` (`@lead-fennec-ai/shared`).
+  Keep the raw value in its own column.
+- **Time:**
+  - Timestamps are `timestamptz` (UTC instants).
+  - Where local time matters, store the IANA zone from `normalizeTimeZone` next to the
+    instant, never a fixed offset.
+  - Set the timestamps of one row from one clock.
+- **Credentials:** never store tokens, passwords or API keys in the database. Store a secret
+  reference (`parseSecretRef`, `<store>://<path>`); development uses `fake://`.
+- **Sending:**
+  - Every outbound email goes through `outbound_intents`, one per campaign lead and sequence
+    step.
+  - An intent references an immutable draft version and, when approval is required, the
+    APPROVED decision on that exact version.
+  - Drafts and approvals are append-only.
+  - Check `suppressions` before creating an intent and again before each attempt.
+- **Untrusted data:** JSON payloads, excerpts and message content (`source_records.payload`,
+  `evidence.excerpt`, `inbound_events.payload`, `inbound_messages`) are never executed. AI
+  output is validated before it's written to `research`, `scores` or `drafts`.
+- **Don't run** `prisma migrate dev`, `prisma migrate reset` (they can reset data) or
+  `prisma dev` (it downloads unpinned code at runtime).
 
 ## Testing and logging
 

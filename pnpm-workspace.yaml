@@ -12,6 +12,8 @@ catalog:
   '@nestjs/platform-express': 12.3.2
   '@nestjs/testing': 12.3.2
   '@playwright/test': 1.64.1
+  '@prisma/adapter-pg': 7.10.1
+  '@prisma/client': 7.10.1
   '@types/node': 24.19.2
   '@types/pg': 8.23.1
   '@types/react': 19.3.0
@@ -27,6 +29,7 @@ catalog:
   pino: 10.4.0
   pino-http: 11.0.0
   prettier: 3.9.10
+  prisma: 7.10.1
   react: 19.3.1
   react-dom: 19.3.1
   reflect-metadata: 0.2.2
@@ -43,10 +46,14 @@ catalog:
 saveExact: true
 
 # Reviewed dependency build scripts (pnpm fails on unreviewed ones by default).
-# Both are fallbacks that fetch or verify a native binary; pnpm already installs the
-# platform binary as an optional dependency, so the scripts stay disabled.
+# esbuild / unrs-resolver: fallbacks that fetch or verify a native binary that pnpm already
+# installs as an optional dependency, so they stay disabled.
+# @prisma/engines: downloads Prisma's schema (migration) engine from binaries.prisma.sh,
+# required by `prisma migrate`. prisma: preinstall only checks the Node.js version.
 allowBuilds:
+  '@prisma/engines': true
   esbuild: false
+  prisma: false
   unrs-resolver: false
 
 # eslint-config-next 16.4 supports ESLint 10, but three plugins it bundles don't list

@@ -28,6 +28,7 @@ jobs:
       # CI only; local telemetry is an open choice (docs/decisions.md O-02).
       NEXT_TELEMETRY_DISABLED: '1'
       TURBO_TELEMETRY_DISABLED: '1'
+      CHECKPOINT_DISABLE: '1'
       # Isolated test stores (database name must end in _test; Redis DB must not be 0).
       TEST_DATABASE_URL: postgresql://leadfennec:ci-ephemeral-not-secret@127.0.0.1:5432/leadfennec_test
       TEST_REDIS_URL: redis://127.0.0.1:6379/15

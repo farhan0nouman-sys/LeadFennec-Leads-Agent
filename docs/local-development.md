@@ -146,6 +146,21 @@ Testing, fake providers and the network guard are documented in [README.md](../R
 | `[api] Invalid environment configuration:` (also `[web]`, `[worker]`) | The listed variables are missing or invalid in `.env`. Values are never printed. |
 | `[api] Port already in use` (also `[worker]`) | Stop the other process or change `API_PORT` / `WORKER_HEALTH_PORT`. |
 | Readiness log: `password authentication failed for user ...` | Something else answers on the `DATABASE_URL` port, often a native PostgreSQL on 5432. See [Ports](#ports). |
+| `[fixtures] Fixture tenants are for development and test databases only` | `pnpm db:fixtures` refuses `APP_ENV=staging` or `production`. |
+
+## Database schema and fixtures
+
+With PostgreSQL running (`pnpm dev`), in a second terminal:
+
+```bash
+pnpm db:migrate     # prisma migrate deploy: applies pending migrations, never resets
+pnpm db:fixtures    # loads the two fixture tenants (idempotent); --reset reloads them
+```
+
+Both read `DATABASE_URL` from the environment or from the root `.env`; the environment wins.
+After `pnpm db:migrate`, `pnpm --filter @lead-fennec-ai/database exec prisma migrate status`
+should report "Database schema is up to date!". Adding migrations and the fixture contents
+are described in [README.md](../README.md#migrations).
 
 ## Data and resets
 

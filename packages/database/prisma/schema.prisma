@@ -1,0 +1,1927 @@
+// Lead Fennec AI data model: core entities (task 03A), outreach and background jobs (task 03B),
+// billing, usage, branding, audit and notifications (task 03C).
+//
+// Tenant ownership, deletion rules and the queries behind each index are recorded in
+// docs/decisions.md (D-03A-*, D-03B-*, D-03C-*). Rules Prisma cannot express (CHECK constraints,
+// tenant_id immutability and append-only triggers) are in the hand-written
+// prisma/migrations/*_integrity_checks migrations.
+//
+// Conventions
+// - Platform scope (no tenant_id): tenants, users (one login identity across tenants),
+//   permissions (a catalog defined by application code), the billing plan catalog
+//   (billing_plans, plan_limits) and platform_audit_records.
+// - Every other table is tenant-owned: tenant_id NOT NULL, composite primary key
+//   (tenant_id, id), and every reference to another tenant-owned row is a composite
+//   foreign key (tenant_id, x_id) → (tenant_id, id). A row can therefore never point at a
+//   row of another tenant. Optional references share the row's tenant_id; a NULL x_id
+//   skips the check (MATCH SIMPLE).
+// - Deletes: CASCADE for data owned by its parent, NO ACTION to protect referenced rows
+//   (checked at the end of the statement, so deleting a whole tenant still cascades).
+//   Never SET NULL: it would also null tenant_id. Updates never cascade (NO ACTION).
+// - normalized_* columns hold identity keys produced by normalizeEmail / normalizeDomain in
+//   @lead-fennec-ai/shared; the raw input is kept separately for display only.
+// - Json columns hold untrusted provider data or application-validated documents.
+// - Timestamps are timestamptz (absolute instants, UTC). Where local time matters, the IANA
+//   time zone is stored next to them (normalizeTimeZone), never a fixed offset.
+// - Credentials are never stored: only references into the secret store (parseSecretRef).
+// - Some rules need a composite foreign key onto a "superkey" such as (tenant_id, id,
+//   sequence_id): it makes related rows agree (e.g. a draft's step belongs to its lead's
+//   sequence). Those extra unique constraints exist only to be referenced.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  runtime             = "nodejs"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+  // Partial unique indexes (where: raw(...)); docs/decisions.md D-03B-01.
+  previewFeatures     = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Platform scope ───────────────────────────────────────────────────────────
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+
+  @@map("tenant_status")
+}
+
+/// Hosted SaaS tenant or a dedicated deployment for one client.
+enum DeploymentMode {
+  HOSTED
+  DEDICATED
+
+  @@map("deployment_mode")
+}
+
+model Tenant {
+  id             String         @id @default(uuid(7)) @db.Uuid
+  /// Lower-case URL slug, unique across the platform.
+  slug           String         @unique
+  name           String
+  status         TenantStatus   @default(ACTIVE)
+  deploymentMode DeploymentMode @default(HOSTED) @map("deployment_mode")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  settings        TenantSettings?
+  roles           Role[]
+  rolePermissions RolePermission[]
+  memberships     Membership[]
+  icps            Icp[]
+  organizations   Organization[]
+  contacts        Contact[]
+  leadLists       LeadList[]
+  leadListMembers LeadListMember[]
+  imports         Import[]
+  sourceRecords   SourceRecord[]
+  research        Research[]
+  evidence        Evidence[]
+  scores          Score[]
+  verifications   Verification[]
+
+  emailAccounts          EmailAccount[]
+  templates              Template[]
+  campaigns              Campaign[]
+  sequences              Sequence[]
+  sequenceSteps          SequenceStep[]
+  campaignLeads          CampaignLead[]
+  drafts                 Draft[]
+  approvals              Approval[]
+  outboundIntents        OutboundIntent[]
+  outboundAttempts       OutboundAttempt[]
+  emailThreads           EmailThread[]
+  inboundMessages        InboundMessage[]
+  suppressions           Suppression[]
+  jobSchedules           JobSchedule[]
+  jobRuns                JobRun[]
+  jobTasks               JobTask[]
+  workerLeases           WorkerLease[]
+  outboxEvents           OutboxEvent[]
+  inboundEvents          InboundEvent[]
+  integrationSyncCursors IntegrationSyncCursor[]
+
+  subscriptions      Subscription[]
+  paymentEvents      PaymentEvent[]
+  limitOverrides     TenantLimitOverride[]
+  usageReservations  UsageReservation[]
+  usageLedgerEntries UsageLedgerEntry[]
+  branding           TenantBranding?
+  auditRecords       AuditRecord[]
+  notifications      Notification[]
+
+  @@map("tenants")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+
+  @@map("user_status")
+}
+
+/// A person who can sign in. Users span tenants through memberships.
+model User {
+  id              String     @id @default(uuid(7)) @db.Uuid
+  /// As entered, for display only.
+  email           String
+  /// Identity key (normalizeEmail). Unique across the platform.
+  normalizedEmail String     @unique @map("normalized_email")
+  displayName     String?    @map("display_name")
+  /// Platform Admin: operates the platform; not a tenant role.
+  isPlatformAdmin Boolean    @default(false) @map("is_platform_admin")
+  status          UserStatus @default(ACTIVE)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  memberships Membership[]
+
+  @@map("users")
+}
+
+/// Catalog of permission keys (e.g. "contacts.read"), defined by application code.
+model Permission {
+  key         String @id
+  description String
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+// ─── Tenant administration ────────────────────────────────────────────────────
+
+model TenantSettings {
+  tenantId               String   @id @map("tenant_id") @db.Uuid
+  /// IANA time zone used for scheduling.
+  timezone               String   @default("UTC")
+  /// Outbound messages need human approval before sending (on by default).
+  requireSendApproval    Boolean  @default(true) @map("require_send_approval")
+  /// Real sending stays disabled until a tenant is explicitly enabled.
+  outboundSendingEnabled Boolean  @default(false) @map("outbound_sending_enabled")
+  updatedAt              DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("tenant_settings")
+}
+
+/// Tenant role, e.g. Client Admin ("client_admin") or Client Team Member ("client_member").
+model Role {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  id        String   @default(uuid(7)) @db.Uuid
+  key       String
+  name      String
+  /// Created by the platform defaults; tenants cannot delete or rename it.
+  isSystem  Boolean  @default(false) @map("is_system")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  permissions RolePermission[]
+  memberships Membership[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, key])
+  @@map("roles")
+}
+
+model RolePermission {
+  tenantId      String @map("tenant_id") @db.Uuid
+  roleId        String @map("role_id") @db.Uuid
+  permissionKey String @map("permission_key")
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  role       Role       @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  permission Permission @relation(fields: [permissionKey], references: [key], onDelete: Restrict, onUpdate: NoAction)
+
+  @@id([tenantId, roleId, permissionKey])
+  @@index([permissionKey])
+  @@map("role_permissions")
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+
+  @@map("membership_status")
+}
+
+/// A user's membership in one tenant, with exactly one role in that tenant.
+model Membership {
+  tenantId  String           @map("tenant_id") @db.Uuid
+  id        String           @default(uuid(7)) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  roleId    String           @map("role_id") @db.Uuid
+  status    MembershipStatus @default(INVITED)
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  /// A role cannot be deleted while memberships use it.
+  role          Role           @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  /// Draft versions this member wrote, and approval decisions this member made (audit).
+  draftsWritten Draft[]
+  approvals     Approval[]
+  notifications Notification[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@index([tenantId, roleId])
+  @@map("memberships")
+}
+
+// ─── Targeting ────────────────────────────────────────────────────────────────
+
+enum IcpStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+
+  @@map("icp_status")
+}
+
+/// Ideal customer profile.
+model Icp {
+  tenantId    String    @map("tenant_id") @db.Uuid
+  id          String    @default(uuid(7)) @db.Uuid
+  name        String
+  description String?   @db.Text
+  /// Targeting criteria; validated by the application schema before every write.
+  criteria    Json
+  status      IcpStatus @default(DRAFT)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  leadLists LeadList[]
+  research  Research[]
+  scores    Score[]
+  campaigns Campaign[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, status])
+  @@map("icps")
+}
+
+// ─── Leads ────────────────────────────────────────────────────────────────────
+
+model Organization {
+  tenantId         String   @map("tenant_id") @db.Uuid
+  id               String   @default(uuid(7)) @db.Uuid
+  name             String
+  /// Identity key (normalizeDomain): bare lower-case ASCII host, no www.
+  normalizedDomain String?  @map("normalized_domain")
+  /// As provided, for display only (untrusted).
+  websiteUrl       String?  @map("website_url")
+  industry         String?
+  employeeCount    Int?     @map("employee_count")
+  /// ISO 3166-1 alpha-2, upper case.
+  countryCode      String?  @map("country_code") @db.Char(2)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contacts      Contact[]
+  sourceRecords SourceRecord[]
+  research      Research[]
+  evidence      Evidence[]
+  scores        Score[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, normalizedDomain])
+  @@index([tenantId, name])
+  @@map("organizations")
+}
+
+enum ContactStatus {
+  ACTIVE
+  ARCHIVED
+
+  @@map("contact_status")
+}
+
+model Contact {
+  tenantId        String        @map("tenant_id") @db.Uuid
+  id              String        @default(uuid(7)) @db.Uuid
+  organizationId  String?       @map("organization_id") @db.Uuid
+  firstName       String?       @map("first_name")
+  lastName        String?       @map("last_name")
+  title           String?
+  /// As captured, for display only (untrusted).
+  email           String?
+  /// Identity key (normalizeEmail). Unique per tenant; NULL for contacts without email.
+  normalizedEmail String?       @map("normalized_email")
+  /// Domain part of normalized_email, for matching contacts to organizations.
+  emailDomain     String?       @map("email_domain")
+  linkedinUrl     String?       @map("linkedin_url")
+  phone           String?
+  /// ISO 3166-1 alpha-2, upper case.
+  countryCode     String?       @map("country_code") @db.Char(2)
+  status          ContactStatus @default(ACTIVE)
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  /// An organization cannot be deleted while contacts reference it.
+  organization    Organization?    @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  leadListMembers LeadListMember[]
+  sourceRecords   SourceRecord[]
+  research        Research[]
+  evidence        Evidence[]
+  scores          Score[]
+  verifications   Verification[]
+  campaignLeads   CampaignLead[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, normalizedEmail])
+  @@index([tenantId, organizationId])
+  @@index([tenantId, emailDomain])
+  @@index([tenantId, status, createdAt(sort: Desc)])
+  @@map("contacts")
+}
+
+enum LeadListStatus {
+  ACTIVE
+  ARCHIVED
+
+  @@map("lead_list_status")
+}
+
+model LeadList {
+  tenantId    String         @map("tenant_id") @db.Uuid
+  id          String         @default(uuid(7)) @db.Uuid
+  name        String
+  description String?        @db.Text
+  icpId       String?        @map("icp_id") @db.Uuid
+  status      LeadListStatus @default(ACTIVE)
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  icp       Icp?             @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  members   LeadListMember[]
+  imports   Import[]
+  campaigns Campaign[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, icpId])
+  @@map("lead_lists")
+}
+
+/// Membership link between a lead list and a contact of the same tenant.
+model LeadListMember {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  leadListId String   @map("lead_list_id") @db.Uuid
+  contactId  String   @map("contact_id") @db.Uuid
+  addedAt    DateTime @default(now()) @map("added_at") @db.Timestamptz(3)
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  leadList LeadList @relation(fields: [tenantId, leadListId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  contact  Contact  @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, leadListId, contactId])
+  @@index([tenantId, leadListId, addedAt(sort: Desc)])
+  @@index([tenantId, contactId])
+  @@map("lead_list_members")
+}
+
+// ─── Provenance and imports ───────────────────────────────────────────────────
+
+enum ImportSource {
+  CSV
+  APOLLO
+
+  @@map("import_source")
+}
+
+enum ImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+
+  @@map("import_status")
+}
+
+model Import {
+  tenantId     String       @map("tenant_id") @db.Uuid
+  id           String       @default(uuid(7)) @db.Uuid
+  source       ImportSource
+  status       ImportStatus @default(PENDING)
+  fileName     String?      @map("file_name")
+  /// Lead list that receives the imported contacts.
+  leadListId   String?      @map("lead_list_id") @db.Uuid
+  totalRows    Int          @default(0) @map("total_rows")
+  importedRows Int          @default(0) @map("imported_rows")
+  skippedRows  Int          @default(0) @map("skipped_rows")
+  failedRows   Int          @default(0) @map("failed_rows")
+  startedAt    DateTime?    @map("started_at") @db.Timestamptz(3)
+  completedAt  DateTime?    @map("completed_at") @db.Timestamptz(3)
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  leadList      LeadList?      @relation(fields: [tenantId, leadListId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  sourceRecords SourceRecord[]
+
+  @@id([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt(sort: Desc)])
+  @@index([tenantId, leadListId])
+  @@map("imports")
+}
+
+enum SourceProvider {
+  APOLLO
+  CSV_IMPORT
+  MANUAL
+  WEBSITE
+
+  @@map("source_provider")
+}
+
+/// Raw record received from a provider, an import row or a manual entry (provenance).
+model SourceRecord {
+  tenantId        String         @map("tenant_id") @db.Uuid
+  id              String         @default(uuid(7)) @db.Uuid
+  provider        SourceProvider
+  /// The provider's own identifier, when it has one (e.g. an Apollo person id).
+  externalId      String?        @map("external_id")
+  importId        String?        @map("import_id") @db.Uuid
+  importRowNumber Int?           @map("import_row_number")
+  contactId       String?        @map("contact_id") @db.Uuid
+  organizationId  String?        @map("organization_id") @db.Uuid
+  /// Raw data exactly as received. Untrusted: never executed, escaped when rendered.
+  payload         Json
+  /// SHA-256 (hex) of the canonical payload, to detect changes and duplicates.
+  payloadSha256   String         @map("payload_sha256") @db.Char(64)
+  fetchedAt       DateTime       @default(now()) @map("fetched_at") @db.Timestamptz(3)
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  import       Import?       @relation(fields: [tenantId, importId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  contact      Contact?      @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  organization Organization? @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  evidence     Evidence[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, provider, externalId])
+  @@unique([tenantId, importId, importRowNumber])
+  @@index([tenantId, contactId])
+  @@index([tenantId, organizationId])
+  @@map("source_records")
+}
+
+// ─── Research, evidence, scoring, verification ───────────────────────────────
+
+enum ResearchStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+
+  @@map("research_status")
+}
+
+/// One research run about a contact and/or organization (AI-assisted or manual).
+model Research {
+  tenantId       String         @map("tenant_id") @db.Uuid
+  id             String         @default(uuid(7)) @db.Uuid
+  contactId      String?        @map("contact_id") @db.Uuid
+  organizationId String?        @map("organization_id") @db.Uuid
+  icpId          String?        @map("icp_id") @db.Uuid
+  status         ResearchStatus @default(PENDING)
+  /// Validated output only; raw model output is never stored here.
+  summary        String?        @db.Text
+  findings       Json?
+  model          String?
+  promptVersion  String?        @map("prompt_version")
+  inputTokens    Int?           @map("input_tokens")
+  outputTokens   Int?           @map("output_tokens")
+  /// Machine-readable failure code (never a raw provider message).
+  errorCode      String?        @map("error_code")
+  startedAt      DateTime?      @map("started_at") @db.Timestamptz(3)
+  completedAt    DateTime?      @map("completed_at") @db.Timestamptz(3)
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contact      Contact?      @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  organization Organization? @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  icp          Icp?          @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  evidence     Evidence[]
+  scores       Score[]
+
+  @@id([tenantId, id])
+  @@index([tenantId, contactId, createdAt(sort: Desc)])
+  @@index([tenantId, organizationId, createdAt(sort: Desc)])
+  @@index([tenantId, status])
+  @@index([tenantId, icpId])
+  @@map("research")
+}
+
+enum EvidenceKind {
+  WEBSITE_EXCERPT
+  PROVIDER_FIELD
+  AI_EXTRACTION
+  MANUAL_NOTE
+
+  @@map("evidence_kind")
+}
+
+/// A captured fact supporting research or a score, with where it came from.
+model Evidence {
+  tenantId       String       @map("tenant_id") @db.Uuid
+  id             String       @default(uuid(7)) @db.Uuid
+  kind           EvidenceKind
+  contactId      String?      @map("contact_id") @db.Uuid
+  organizationId String?      @map("organization_id") @db.Uuid
+  researchId     String?      @map("research_id") @db.Uuid
+  sourceRecordId String?      @map("source_record_id") @db.Uuid
+  /// Untrusted URL, for display only.
+  sourceUrl      String?      @map("source_url")
+  /// Untrusted text: never executed or followed as instructions; escaped when rendered.
+  excerpt        String       @db.Text
+  capturedAt     DateTime     @default(now()) @map("captured_at") @db.Timestamptz(3)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contact      Contact?      @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  organization Organization? @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  research     Research?     @relation(fields: [tenantId, researchId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  sourceRecord SourceRecord? @relation(fields: [tenantId, sourceRecordId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@index([tenantId, contactId])
+  @@index([tenantId, organizationId])
+  @@index([tenantId, researchId])
+  @@index([tenantId, sourceRecordId])
+  @@map("evidence")
+}
+
+enum ScoreMethod {
+  RULES
+  AI
+  MANUAL
+
+  @@map("score_method")
+}
+
+/// Fit of one contact or one organization against one ICP, with the reason.
+model Score {
+  tenantId       String      @map("tenant_id") @db.Uuid
+  id             String      @default(uuid(7)) @db.Uuid
+  icpId          String      @map("icp_id") @db.Uuid
+  contactId      String?     @map("contact_id") @db.Uuid
+  organizationId String?     @map("organization_id") @db.Uuid
+  researchId     String?     @map("research_id") @db.Uuid
+  /// 0-100.
+  value          Int
+  /// Human-readable reason for the score.
+  reason         String      @db.Text
+  method         ScoreMethod
+  methodVersion  String?     @map("method_version")
+  scoredAt       DateTime    @default(now()) @map("scored_at") @db.Timestamptz(3)
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  icp          Icp           @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  contact      Contact?      @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  organization Organization? @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  /// Research cannot be deleted while scores derived from it exist.
+  research     Research?     @relation(fields: [tenantId, researchId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@index([tenantId, icpId, value(sort: Desc)])
+  @@index([tenantId, contactId, scoredAt(sort: Desc)])
+  @@index([tenantId, organizationId, scoredAt(sort: Desc)])
+  @@index([tenantId, researchId])
+  @@map("scores")
+}
+
+/// Same values as EmailVerificationStatus in @lead-fennec-ai/integrations.
+enum VerificationStatus {
+  VALID
+  INVALID
+  RISKY
+  UNKNOWN
+
+  @@map("verification_status")
+}
+
+/// Result of verifying one contact's email address with a provider.
+model Verification {
+  tenantId        String             @map("tenant_id") @db.Uuid
+  id              String             @default(uuid(7)) @db.Uuid
+  contactId       String             @map("contact_id") @db.Uuid
+  /// The exact address verified (normalizeEmail).
+  normalizedEmail String             @map("normalized_email")
+  /// Provider key, e.g. "fake".
+  provider        String
+  status          VerificationStatus
+  checkedAt       DateTime           @default(now()) @map("checked_at") @db.Timestamptz(3)
+  expiresAt       DateTime?          @map("expires_at") @db.Timestamptz(3)
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contact Contact @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@index([tenantId, contactId, checkedAt(sort: Desc)])
+  @@index([tenantId, normalizedEmail])
+  @@map("verifications")
+}
+
+// ═══ Outreach (task 03B) ══════════════════════════════════════════════════════
+
+// ─── Mailboxes ────────────────────────────────────────────────────────────────
+
+enum MailboxProvider {
+  GMAIL
+  MICROSOFT_GRAPH
+
+  @@map("mailbox_provider")
+}
+
+enum EmailAccountStatus {
+  /// Created; authorization not completed yet (no credentials).
+  PENDING
+  ACTIVE
+  /// Sending paused by the tenant; credentials kept.
+  PAUSED
+  /// Access removed; the credentials were deleted from the secret store.
+  DISCONNECTED
+  /// Needs re-authorization.
+  ERROR
+
+  @@map("email_account_status")
+}
+
+/// A mailbox a tenant connected for sending and receiving. Credentials live in the secret
+/// store; this row keeps only a reference to them.
+model EmailAccount {
+  tenantId          String             @map("tenant_id") @db.Uuid
+  id                String             @default(uuid(7)) @db.Uuid
+  provider          MailboxProvider
+  /// As entered, for display only.
+  email             String
+  /// Identity key (normalizeEmail). Unique per tenant.
+  normalizedEmail   String             @map("normalized_email")
+  displayName       String?            @map("display_name")
+  status            EmailAccountStatus @default(PENDING)
+  /// The provider's stable id for the mailbox owner, once connected.
+  externalAccountId String?            @map("external_account_id")
+  /// "<store>://<path>" reference to the OAuth credentials in the secret store
+  /// (parseSecretRef). Never a token: a CHECK constraint rejects token-shaped values.
+  secretRef         String?            @map("secret_ref")
+  /// Most messages this mailbox may send per day; enforced by the sender.
+  dailySendLimit    Int                @default(50) @map("daily_send_limit")
+  connectedAt       DateTime?          @map("connected_at") @db.Timestamptz(3)
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant           Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  campaigns        Campaign[]
+  outboundIntents  OutboundIntent[]
+  outboundAttempts OutboundAttempt[]
+  threads          EmailThread[]
+  jobSchedules     JobSchedule[]
+  inboundEvents    InboundEvent[]
+  syncCursors      IntegrationSyncCursor[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, normalizedEmail])
+  @@unique([tenantId, provider, externalAccountId])
+  @@map("email_accounts")
+}
+
+// ─── Content ──────────────────────────────────────────────────────────────────
+
+enum TemplateStatus {
+  ACTIVE
+  ARCHIVED
+
+  @@map("template_status")
+}
+
+/// Reusable email content. Placeholders are filled by the application's renderer and are
+/// never evaluated as code.
+model Template {
+  tenantId  String         @map("tenant_id") @db.Uuid
+  id        String         @default(uuid(7)) @db.Uuid
+  name      String
+  subject   String
+  body      String         @db.Text
+  /// Incremented on every content change; drafts record the version they were built from.
+  version   Int            @default(1)
+  status    TemplateStatus @default(ACTIVE)
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  steps  SequenceStep[]
+  drafts Draft[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, name])
+  @@map("templates")
+}
+
+// ─── Campaigns and sequences ──────────────────────────────────────────────────
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+
+  @@map("campaign_status")
+}
+
+/// An outreach campaign: who is contacted (campaign leads), what is sent (sequences), from
+/// which mailbox, and when (a weekly send window in the campaign's IANA time zone).
+model Campaign {
+  tenantId              String         @map("tenant_id") @db.Uuid
+  id                    String         @default(uuid(7)) @db.Uuid
+  name                  String
+  description           String?        @db.Text
+  status                CampaignStatus @default(DRAFT)
+  icpId                 String?        @map("icp_id") @db.Uuid
+  /// Lead list the campaign's leads were selected from.
+  leadListId            String?        @map("lead_list_id") @db.Uuid
+  /// Sending mailbox.
+  emailAccountId        String?        @map("email_account_id") @db.Uuid
+  /// IANA time zone of the send window (normalizeTimeZone), e.g. "America/New_York".
+  timezone              String         @default("UTC")
+  /// ISO weekdays (1 = Monday … 7 = Sunday) on which messages may be sent.
+  sendWeekdays          Int[]          @default([1, 2, 3, 4, 5]) @map("send_weekdays")
+  /// Daily send window in local minutes after midnight, [start, end). Default 09:00–17:00.
+  sendWindowStartMinute Int            @default(540) @map("send_window_start_minute")
+  sendWindowEndMinute   Int            @default(1020) @map("send_window_end_minute")
+  activatedAt           DateTime?      @map("activated_at") @db.Timestamptz(3)
+  /// Set while paused; cleared on resume.
+  pausedAt              DateTime?      @map("paused_at") @db.Timestamptz(3)
+  completedAt           DateTime?      @map("completed_at") @db.Timestamptz(3)
+  cancelledAt           DateTime?      @map("cancelled_at") @db.Timestamptz(3)
+  createdAt             DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  icp          Icp?           @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  leadList     LeadList?      @relation(fields: [tenantId, leadListId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  /// A mailbox cannot be deleted while campaigns use it.
+  emailAccount EmailAccount?  @relation(fields: [tenantId, emailAccountId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  sequences    Sequence[]
+  leads        CampaignLead[]
+  jobSchedules JobSchedule[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, status])
+  @@index([tenantId, icpId])
+  @@index([tenantId, leadListId])
+  @@index([tenantId, emailAccountId])
+  @@map("campaigns")
+}
+
+enum SequenceStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+
+  @@map("sequence_status")
+}
+
+/// Ordered email steps within a campaign. A campaign may have several sequences (for example
+/// variants); each campaign lead follows exactly one.
+model Sequence {
+  tenantId   String         @map("tenant_id") @db.Uuid
+  id         String         @default(uuid(7)) @db.Uuid
+  campaignId String         @map("campaign_id") @db.Uuid
+  name       String
+  status     SequenceStatus @default(DRAFT)
+  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  campaign Campaign       @relation(fields: [tenantId, campaignId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  steps    SequenceStep[]
+  leads    CampaignLead[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, campaignId, name])
+  // Superkey: campaign_leads reference a sequence of their own campaign.
+  @@unique([tenantId, campaignId, id])
+  @@map("sequences")
+}
+
+/// One email step. It becomes due `delayMinutes` after the previous step was sent (after
+/// enrollment for the first step); the campaign's send window then applies.
+model SequenceStep {
+  tenantId     String   @map("tenant_id") @db.Uuid
+  id           String   @default(uuid(7)) @db.Uuid
+  sequenceId   String   @map("sequence_id") @db.Uuid
+  /// 1-based order within the sequence.
+  position     Int
+  delayMinutes Int      @default(0) @map("delay_minutes")
+  templateId   String?  @map("template_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sequence Sequence  @relation(fields: [tenantId, sequenceId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  /// A template cannot be deleted while steps use it.
+  template Template? @relation(fields: [tenantId, templateId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  drafts   Draft[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, sequenceId, position])
+  // Superkey: drafts reference a step of their lead's sequence.
+  @@unique([tenantId, sequenceId, id])
+  @@index([tenantId, templateId])
+  @@map("sequence_steps")
+}
+
+enum CampaignLeadStatus {
+  /// Enrolled; eligibility not confirmed yet.
+  PENDING
+  ACTIVE
+  COMPLETED
+  STOPPED
+
+  @@map("campaign_lead_status")
+}
+
+enum CampaignLeadStopReason {
+  REPLIED
+  OPTED_OUT
+  HARD_BOUNCED
+  SUPPRESSED
+  INELIGIBLE
+  CAMPAIGN_CANCELLED
+  MANUAL
+
+  @@map("campaign_lead_stop_reason")
+}
+
+/// Enrollment of one contact in one campaign (at most once), following one of the campaign's
+/// sequences.
+model CampaignLead {
+  tenantId            String                  @map("tenant_id") @db.Uuid
+  id                  String                  @default(uuid(7)) @db.Uuid
+  campaignId          String                  @map("campaign_id") @db.Uuid
+  sequenceId          String                  @map("sequence_id") @db.Uuid
+  contactId           String                  @map("contact_id") @db.Uuid
+  status              CampaignLeadStatus      @default(PENDING)
+  stopReason          CampaignLeadStopReason? @map("stop_reason")
+  /// IANA time zone this lead's messages are scheduled in (normalizeTimeZone).
+  timezone            String
+  /// Position of the last step sent (0 = none yet).
+  currentStepPosition Int                     @default(0) @map("current_step_position")
+  /// When the next step is due (UTC); NULL when nothing is due.
+  nextActionAt        DateTime?               @map("next_action_at") @db.Timestamptz(3)
+  enrolledAt          DateTime                @default(now()) @map("enrolled_at") @db.Timestamptz(3)
+  completedAt         DateTime?               @map("completed_at") @db.Timestamptz(3)
+  stoppedAt           DateTime?               @map("stopped_at") @db.Timestamptz(3)
+  updatedAt           DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  campaign Campaign         @relation(fields: [tenantId, campaignId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  /// The sequence must belong to the same campaign. It cannot be deleted while leads follow it.
+  sequence Sequence         @relation(fields: [tenantId, campaignId, sequenceId], references: [tenantId, campaignId, id], onDelete: NoAction, onUpdate: NoAction)
+  /// Deleting a contact deletes its enrollments and everything derived from them.
+  contact  Contact          @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  drafts   Draft[]
+  intents  OutboundIntent[]
+  threads  EmailThread[]
+
+  @@id([tenantId, id])
+  // Unique campaign enrollment.
+  @@unique([tenantId, campaignId, contactId])
+  // Superkey: drafts reference a lead together with its sequence.
+  @@unique([tenantId, id, sequenceId])
+  @@index([tenantId, campaignId, status])
+  @@index([tenantId, campaignId, sequenceId])
+  @@index([tenantId, contactId])
+  @@index([tenantId, status, nextActionAt])
+  @@map("campaign_leads")
+}
+
+// ─── Drafts and approvals ─────────────────────────────────────────────────────
+
+enum DraftStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  /// Replaced by a newer version before a decision.
+  SUPERSEDED
+
+  @@map("draft_status")
+}
+
+enum DraftSource {
+  TEMPLATE
+  AI
+  MANUAL
+
+  @@map("draft_source")
+}
+
+/// One immutable version of the email for one step of one campaign lead. Editing or
+/// regenerating adds the next version; after insert only `status` changes (trigger). AI
+/// output is validated before it is stored and is untrusted when rendered.
+model Draft {
+  tenantId              String      @map("tenant_id") @db.Uuid
+  id                    String      @default(uuid(7)) @db.Uuid
+  campaignLeadId        String      @map("campaign_lead_id") @db.Uuid
+  sequenceId            String      @map("sequence_id") @db.Uuid
+  sequenceStepId        String      @map("sequence_step_id") @db.Uuid
+  /// 1, 2, … per lead and step.
+  version               Int
+  status                DraftStatus
+  source                DraftSource
+  subject               String
+  body                  String      @db.Text
+  /// TEMPLATE versions: the template and its version.
+  templateId            String?     @map("template_id") @db.Uuid
+  templateVersion       Int?        @map("template_version")
+  /// AI versions: the model and prompt version that produced the content.
+  model                 String?
+  promptVersion         String?     @map("prompt_version")
+  /// MANUAL versions: the member who wrote it.
+  createdByMembershipId String?     @map("created_by_membership_id") @db.Uuid
+  createdAt             DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  /// The lead and the step must use the same sequence (both foreign keys include sequence_id).
+  campaignLead CampaignLead     @relation(fields: [tenantId, campaignLeadId, sequenceId], references: [tenantId, id, sequenceId], onDelete: Cascade, onUpdate: NoAction)
+  /// A step cannot be deleted while drafts exist for it.
+  sequenceStep SequenceStep     @relation(fields: [tenantId, sequenceId, sequenceStepId], references: [tenantId, sequenceId, id], onDelete: NoAction, onUpdate: NoAction)
+  template     Template?        @relation(fields: [tenantId, templateId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy    Membership?      @relation(fields: [tenantId, createdByMembershipId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  approval     Approval?
+  intents      OutboundIntent[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, campaignLeadId, sequenceStepId, version])
+  // At most one live version (awaiting approval or approved) per lead and step. A constraint,
+  // not a lookup key: Prisma ignores the WHERE clause in findUnique (D-03B-01).
+  @@unique([tenantId, campaignLeadId, sequenceStepId], name: "liveVersion_partial", map: "drafts_one_live_version_key", where: raw("status = ANY (ARRAY['PENDING_APPROVAL'::draft_status, 'APPROVED'::draft_status])"))
+  // Superkey: an outbound intent references a version of its own lead and step.
+  @@unique([tenantId, id, campaignLeadId, sequenceStepId])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, sequenceStepId])
+  @@index([tenantId, templateId])
+  @@index([tenantId, createdByMembershipId])
+  @@map("drafts")
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+
+  @@map("approval_decision")
+}
+
+/// A member's decision on one draft version: one per version, immutable (trigger).
+model Approval {
+  tenantId              String           @map("tenant_id") @db.Uuid
+  id                    String           @default(uuid(7)) @db.Uuid
+  draftId               String           @map("draft_id") @db.Uuid
+  decision              ApprovalDecision
+  decidedByMembershipId String           @map("decided_by_membership_id") @db.Uuid
+  note                  String?          @db.Text
+  decidedAt             DateTime         @default(now()) @map("decided_at") @db.Timestamptz(3)
+
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  draft     Draft            @relation(fields: [tenantId, draftId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  /// A membership cannot be deleted while its decisions exist (audit).
+  decidedBy Membership       @relation(fields: [tenantId, decidedByMembershipId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  intents   OutboundIntent[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, draftId])
+  // Superkey: an outbound intent references an APPROVED decision on its own draft version.
+  @@unique([tenantId, id, draftId, decision])
+  @@index([tenantId, decidedByMembershipId])
+  @@map("approvals")
+}
+
+// ─── Sending ──────────────────────────────────────────────────────────────────
+
+enum OutboundIntentStatus {
+  SCHEDULED
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
+
+  @@map("outbound_intent_status")
+}
+
+enum OutboundIntentCancelReason {
+  LEAD_STOPPED
+  CAMPAIGN_STOPPED
+  SUPPRESSED
+  INELIGIBLE
+  MANUAL
+
+  @@map("outbound_intent_cancel_reason")
+}
+
+/// The decision to send one draft version to one campaign lead for one sequence step. At
+/// most one per lead and step, so a step is never sent twice. Application code creates it
+/// only after its eligibility, suppression, approval and budget checks.
+model OutboundIntent {
+  tenantId          String                      @map("tenant_id") @db.Uuid
+  id                String                      @default(uuid(7)) @db.Uuid
+  campaignLeadId    String                      @map("campaign_lead_id") @db.Uuid
+  sequenceStepId    String                      @map("sequence_step_id") @db.Uuid
+  /// The exact draft version to send.
+  draftId           String                      @map("draft_id") @db.Uuid
+  /// Set when approval was required: the APPROVED decision on this exact version.
+  approvalId        String?                     @map("approval_id") @db.Uuid
+  /// Always APPROVED when set (CHECK); part of the foreign key to the approval.
+  approvalDecision  ApprovalDecision?           @map("approval_decision")
+  emailAccountId    String                      @map("email_account_id") @db.Uuid
+  /// Recipient at decision time (normalizeEmail).
+  recipientEmail    String                      @map("recipient_email")
+  status            OutboundIntentStatus        @default(SCHEDULED)
+  /// Earliest send time (UTC), planned in `scheduledTimezone`.
+  scheduledAt       DateTime                    @map("scheduled_at") @db.Timestamptz(3)
+  /// IANA time zone the send time was planned in (normalizeTimeZone).
+  scheduledTimezone String                      @map("scheduled_timezone")
+  sentAt            DateTime?                   @map("sent_at") @db.Timestamptz(3)
+  failedAt          DateTime?                   @map("failed_at") @db.Timestamptz(3)
+  /// Machine-readable failure code (never a raw provider message).
+  errorCode         String?                     @map("error_code")
+  cancelledAt       DateTime?                   @map("cancelled_at") @db.Timestamptz(3)
+  cancelReason      OutboundIntentCancelReason? @map("cancel_reason")
+  createdAt         DateTime                    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  campaignLead CampaignLead      @relation(fields: [tenantId, campaignLeadId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  /// The draft version must belong to the same lead and step; it cannot be deleted while used.
+  draft        Draft             @relation(fields: [tenantId, draftId, campaignLeadId, sequenceStepId], references: [tenantId, id, campaignLeadId, sequenceStepId], onDelete: NoAction, onUpdate: NoAction)
+  /// The approval must be a decision on the same draft version with decision = approval_decision.
+  approval     Approval?         @relation(fields: [tenantId, approvalId, draftId, approvalDecision], references: [tenantId, id, draftId, decision], onDelete: NoAction, onUpdate: NoAction)
+  emailAccount EmailAccount      @relation(fields: [tenantId, emailAccountId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  attempts     OutboundAttempt[]
+
+  @@id([tenantId, id])
+  // Unique sequence step intent.
+  @@unique([tenantId, campaignLeadId, sequenceStepId], map: "outbound_intents_lead_step_key")
+  @@unique([tenantId, draftId])
+  @@unique([tenantId, approvalId])
+  @@index([tenantId, status, scheduledAt])
+  @@index([tenantId, emailAccountId, scheduledAt])
+  @@map("outbound_intents")
+}
+
+enum OutboundAttemptStatus {
+  SENDING
+  SENT
+  FAILED
+
+  @@map("outbound_attempt_status")
+}
+
+/// One try to hand an intent's message to the mailbox provider. A new attempt can start only
+/// after the previous one FAILED (partial unique index), so nothing is re-sent while the
+/// outcome of an earlier try is unknown; reconciliation settles such attempts.
+model OutboundAttempt {
+  tenantId          String                @map("tenant_id") @db.Uuid
+  id                String                @default(uuid(7)) @db.Uuid
+  outboundIntentId  String                @map("outbound_intent_id") @db.Uuid
+  attemptNumber     Int                   @map("attempt_number")
+  emailAccountId    String                @map("email_account_id") @db.Uuid
+  status            OutboundAttemptStatus @default(SENDING)
+  /// RFC 5322 Message-ID generated before sending: used to reconcile with the provider and
+  /// to match replies (In-Reply-To / References).
+  internetMessageId String                @map("internet_message_id")
+  /// The provider's message id, once the provider accepted the message.
+  providerMessageId String?               @map("provider_message_id")
+  emailThreadId     String?               @map("email_thread_id") @db.Uuid
+  /// Machine-readable failure code (never a raw provider message).
+  errorCode         String?               @map("error_code")
+  /// For FAILED attempts: whether another attempt may follow.
+  retryable         Boolean?
+  startedAt         DateTime              @default(now()) @map("started_at") @db.Timestamptz(3)
+  finishedAt        DateTime?             @map("finished_at") @db.Timestamptz(3)
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  outboundIntent  OutboundIntent   @relation(fields: [tenantId, outboundIntentId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  emailAccount    EmailAccount     @relation(fields: [tenantId, emailAccountId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  emailThread     EmailThread?     @relation(fields: [tenantId, emailThreadId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  inboundMessages InboundMessage[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, outboundIntentId, attemptNumber], map: "outbound_attempts_intent_attempt_number_key")
+  // At most one attempt per intent that is in flight or succeeded. A constraint, not a
+  // lookup key: Prisma ignores the WHERE clause in findUnique (D-03B-01).
+  @@unique([tenantId, outboundIntentId], name: "openOrSentAttempt_partial", map: "outbound_attempts_one_open_or_sent_key", where: raw("status <> 'FAILED'::outbound_attempt_status"))
+  @@unique([tenantId, emailAccountId, providerMessageId], map: "outbound_attempts_provider_message_key")
+  @@unique([tenantId, internetMessageId])
+  @@index([tenantId, emailAccountId, startedAt])
+  @@index([tenantId, emailThreadId])
+  @@map("outbound_attempts")
+}
+
+// ─── Conversations ────────────────────────────────────────────────────────────
+
+/// A conversation in one mailbox (Gmail thread or Microsoft conversation), tied to the
+/// campaign lead it belongs to when known.
+model EmailThread {
+  tenantId         String    @map("tenant_id") @db.Uuid
+  id               String    @default(uuid(7)) @db.Uuid
+  emailAccountId   String    @map("email_account_id") @db.Uuid
+  /// The provider's thread or conversation id; unique per mailbox.
+  providerThreadId String    @map("provider_thread_id")
+  campaignLeadId   String?   @map("campaign_lead_id") @db.Uuid
+  /// Untrusted, for display only.
+  subject          String?
+  lastMessageAt    DateTime? @map("last_message_at") @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  /// A mailbox cannot be deleted while it has threads.
+  emailAccount     EmailAccount      @relation(fields: [tenantId, emailAccountId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  campaignLead     CampaignLead?     @relation(fields: [tenantId, campaignLeadId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  outboundAttempts OutboundAttempt[]
+  inboundMessages  InboundMessage[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, emailAccountId, providerThreadId])
+  // Superkey: inbound messages reference a thread of their own mailbox.
+  @@unique([tenantId, id, emailAccountId])
+  @@index([tenantId, campaignLeadId])
+  @@map("email_threads")
+}
+
+enum InboundMessageClassification {
+  UNCLASSIFIED
+  REPLY
+  AUTO_REPLY
+  OPT_OUT
+  HARD_BOUNCE
+  SOFT_BOUNCE
+  OTHER
+
+  @@map("inbound_message_classification")
+}
+
+/// A message received in a connected mailbox. Untrusted: never executed or followed as
+/// instructions, validated before use and escaped when rendered. Only a short snippet is kept.
+model InboundMessage {
+  tenantId            String                       @map("tenant_id") @db.Uuid
+  id                  String                       @default(uuid(7)) @db.Uuid
+  emailAccountId      String                       @map("email_account_id") @db.Uuid
+  emailThreadId       String                       @map("email_thread_id") @db.Uuid
+  /// The provider's message id; unique per mailbox, so a redelivered message is stored once.
+  providerMessageId   String                       @map("provider_message_id")
+  internetMessageId   String?                      @map("internet_message_id")
+  /// The Message-ID this message replies to (In-Reply-To header).
+  inReplyTo           String?                      @map("in_reply_to")
+  /// Sender as received, for display only.
+  fromEmail           String                       @map("from_email")
+  /// normalizeEmail(fromEmail); NULL when the sender is not a valid address.
+  fromNormalizedEmail String?                      @map("from_normalized_email")
+  subject             String?
+  snippet             String?                      @db.Text
+  receivedAt          DateTime                     @map("received_at") @db.Timestamptz(3)
+  classification      InboundMessageClassification @default(UNCLASSIFIED)
+  classifiedAt        DateTime?                    @map("classified_at") @db.Timestamptz(3)
+  /// The outbound attempt this message answers or bounces, when matched.
+  outboundAttemptId   String?                      @map("outbound_attempt_id") @db.Uuid
+  createdAt           DateTime                     @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  /// The thread must belong to the same mailbox.
+  emailThread     EmailThread      @relation(fields: [tenantId, emailThreadId, emailAccountId], references: [tenantId, id, emailAccountId], onDelete: Cascade, onUpdate: NoAction)
+  outboundAttempt OutboundAttempt? @relation(fields: [tenantId, outboundAttemptId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, emailAccountId, providerMessageId], map: "inbound_messages_provider_message_key")
+  @@index([tenantId, emailThreadId, receivedAt])
+  @@index([tenantId, classification, receivedAt])
+  @@index([tenantId, fromNormalizedEmail])
+  @@index([tenantId, outboundAttemptId])
+  @@map("inbound_messages")
+}
+
+enum SuppressionReason {
+  OPT_OUT
+  HARD_BOUNCE
+  COMPLAINT
+  MANUAL
+
+  @@map("suppression_reason")
+}
+
+enum SuppressionSource {
+  MANUAL
+  INBOUND_MESSAGE
+  PROVIDER_EVENT
+  IMPORT
+
+  @@map("suppression_source")
+}
+
+/// An email address or a whole domain this tenant must never contact. Deliberately has no
+/// foreign keys, so it survives the deletion of contacts and messages.
+model Suppression {
+  tenantId         String            @map("tenant_id") @db.Uuid
+  id               String            @default(uuid(7)) @db.Uuid
+  /// Exactly one of normalizedEmail (normalizeEmail) and normalizedDomain (normalizeDomain).
+  normalizedEmail  String?           @map("normalized_email")
+  normalizedDomain String?           @map("normalized_domain")
+  reason           SuppressionReason
+  source           SuppressionSource
+  note             String?           @db.Text
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, normalizedEmail])
+  @@unique([tenantId, normalizedDomain])
+  @@map("suppressions")
+}
+
+// ═══ Background jobs and integrations (task 03B) ══════════════════════════════
+
+/// A recurring job for one tenant. A cron expression is evaluated in `timezone` (IANA), so
+/// "09:00 on weekdays" follows daylight-saving changes; nextRunAt is the next occurrence (UTC).
+model JobSchedule {
+  tenantId        String    @map("tenant_id") @db.Uuid
+  id              String    @default(uuid(7)) @db.Uuid
+  name            String
+  /// Job type key, e.g. "campaign.dispatch".
+  jobType         String    @map("job_type")
+  /// Five-field cron expression in local time; exactly one of cron and interval is set.
+  cronExpression  String?   @map("cron_expression")
+  intervalSeconds Int?      @map("interval_seconds")
+  /// IANA time zone for the cron expression (normalizeTimeZone).
+  timezone        String    @default("UTC")
+  enabled         Boolean   @default(true)
+  /// The campaign or mailbox the job works on, if any (at most one).
+  campaignId      String?   @map("campaign_id") @db.Uuid
+  emailAccountId  String?   @map("email_account_id") @db.Uuid
+  nextRunAt       DateTime? @map("next_run_at") @db.Timestamptz(3)
+  lastRunAt       DateTime? @map("last_run_at") @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  campaign     Campaign?     @relation(fields: [tenantId, campaignId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  emailAccount EmailAccount? @relation(fields: [tenantId, emailAccountId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  runs         JobRun[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, name])
+  @@index([tenantId, enabled, nextRunAt])
+  @@index([tenantId, campaignId])
+  @@index([tenantId, emailAccountId])
+  @@map("job_schedules")
+}
+
+enum JobRunTrigger {
+  SCHEDULE
+  MANUAL
+  EVENT
+
+  @@map("job_run_trigger")
+}
+
+enum JobRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+
+  @@map("job_run_status")
+}
+
+/// One execution of a job: from a schedule (at most one run per occurrence), a user or an
+/// event.
+model JobRun {
+  tenantId     String        @map("tenant_id") @db.Uuid
+  id           String        @default(uuid(7)) @db.Uuid
+  scheduleId   String?       @map("schedule_id") @db.Uuid
+  jobType      String        @map("job_type")
+  trigger      JobRunTrigger
+  status       JobRunStatus  @default(QUEUED)
+  /// The occurrence this run is for (UTC).
+  scheduledFor DateTime      @map("scheduled_for") @db.Timestamptz(3)
+  startedAt    DateTime?     @map("started_at") @db.Timestamptz(3)
+  finishedAt   DateTime?     @map("finished_at") @db.Timestamptz(3)
+  errorCode    String?       @map("error_code")
+  /// Counters reported by the job; validated by the application.
+  stats        Json?
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant   Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  schedule JobSchedule? @relation(fields: [tenantId, scheduleId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  tasks    JobTask[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, scheduleId, scheduledFor])
+  @@index([tenantId, status, scheduledFor])
+  @@map("job_runs")
+}
+
+enum JobTaskStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+
+  @@map("job_task_status")
+}
+
+/// A unit of background work, deduplicated by (taskType, idempotencyKey). The queue carries
+/// only the task id; this row is the durable record.
+model JobTask {
+  tenantId       String        @map("tenant_id") @db.Uuid
+  id             String        @default(uuid(7)) @db.Uuid
+  runId          String?       @map("run_id") @db.Uuid
+  /// Task type key, e.g. "outbound.send".
+  taskType       String        @map("task_type")
+  idempotencyKey String        @map("idempotency_key")
+  status         JobTaskStatus @default(PENDING)
+  /// Input validated by the application schema for taskType. Never holds secrets.
+  payload        Json
+  priority       Int           @default(0)
+  /// Not before (UTC).
+  availableAt    DateTime      @default(now()) @map("available_at") @db.Timestamptz(3)
+  attemptCount   Int           @default(0) @map("attempt_count")
+  maxAttempts    Int           @default(5) @map("max_attempts")
+  lastErrorCode  String?       @map("last_error_code")
+  startedAt      DateTime?     @map("started_at") @db.Timestamptz(3)
+  finishedAt     DateTime?     @map("finished_at") @db.Timestamptz(3)
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  run    JobRun? @relation(fields: [tenantId, runId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, taskType, idempotencyKey])
+  @@index([tenantId, status, availableAt])
+  @@index([tenantId, runId])
+  @@map("job_tasks")
+}
+
+/// Exclusive, expiring ownership of one resource by one worker. Each new acquisition
+/// increments fencingToken; writes made under a lease carry the token, so a holder whose
+/// lease expired can be detected and rejected.
+model WorkerLease {
+  tenantId     String   @map("tenant_id") @db.Uuid
+  id           String   @default(uuid(7)) @db.Uuid
+  /// Resource type key, e.g. "email_account.send".
+  resourceType String   @map("resource_type")
+  resourceId   String   @map("resource_id") @db.Uuid
+  /// Worker instance that holds (or last held) the lease.
+  holderId     String   @map("holder_id")
+  fencingToken BigInt   @default(1) @map("fencing_token")
+  acquiredAt   DateTime @default(now()) @map("acquired_at") @db.Timestamptz(3)
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, resourceType, resourceId])
+  @@map("worker_leases")
+}
+
+/// A domain event written in the same transaction as the change it describes (transactional
+/// outbox) and published to the queue afterwards by a relay. Payloads never contain secrets.
+model OutboxEvent {
+  tenantId        String    @map("tenant_id") @db.Uuid
+  id              String    @default(uuid(7)) @db.Uuid
+  /// Aggregate key, e.g. "campaign_lead".
+  aggregateType   String    @map("aggregate_type")
+  aggregateId     String    @map("aggregate_id") @db.Uuid
+  /// Event type key, e.g. "campaign_lead.stopped".
+  eventType       String    @map("event_type")
+  /// Validated by the application schema for eventType.
+  payload         Json
+  occurredAt      DateTime  @default(now()) @map("occurred_at") @db.Timestamptz(3)
+  publishedAt     DateTime? @map("published_at") @db.Timestamptz(3)
+  publishAttempts Int       @default(0) @map("publish_attempts")
+  lastErrorCode   String?   @map("last_error_code")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  // The relay's queue: unpublished events of a tenant, oldest first.
+  @@index([tenantId, occurredAt], map: "outbox_events_unpublished_idx", where: raw("published_at IS NULL"))
+  @@index([tenantId, aggregateType, aggregateId, occurredAt], map: "outbox_events_aggregate_idx")
+  @@map("outbox_events")
+}
+
+enum IntegrationProvider {
+  GMAIL
+  MICROSOFT_GRAPH
+  GOHIGHLEVEL
+  APOLLO
+  STRIPE
+
+  @@map("integration_provider")
+}
+
+enum InboundEventStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  FAILED
+
+  @@map("inbound_event_status")
+}
+
+/// Ledger of provider notifications (webhooks, push messages), recorded after the request was
+/// authenticated and routed to this tenant. (provider, eventKey) is unique per tenant, so a
+/// redelivered notification is recorded and processed once. The payload is untrusted.
+model InboundEvent {
+  tenantId       String              @map("tenant_id") @db.Uuid
+  id             String              @default(uuid(7)) @db.Uuid
+  provider       IntegrationProvider
+  /// The provider's event id, or a key derived from the notification when it has none.
+  eventKey       String              @map("event_key")
+  eventType      String?             @map("event_type")
+  emailAccountId String?             @map("email_account_id") @db.Uuid
+  /// As received. Untrusted: never executed, validated before use.
+  payload        Json
+  payloadSha256  String              @map("payload_sha256") @db.Char(64)
+  status         InboundEventStatus  @default(RECEIVED)
+  attempts       Int                 @default(0)
+  lastErrorCode  String?             @map("last_error_code")
+  receivedAt     DateTime            @default(now()) @map("received_at") @db.Timestamptz(3)
+  processedAt    DateTime?           @map("processed_at") @db.Timestamptz(3)
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  emailAccount  EmailAccount?  @relation(fields: [tenantId, emailAccountId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  /// Billing facts derived from this notification (D-03C-01).
+  paymentEvents PaymentEvent[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, provider, eventKey])
+  @@index([tenantId, status, receivedAt])
+  @@index([tenantId, emailAccountId])
+  @@map("inbound_events")
+}
+
+/// Position of an incremental sync with a provider (e.g. a mailbox history id or delta link):
+/// one per provider, resource and scope.
+model IntegrationSyncCursor {
+  tenantId            String              @map("tenant_id") @db.Uuid
+  id                  String              @default(uuid(7)) @db.Uuid
+  provider            IntegrationProvider
+  /// Resource key, e.g. "gmail.history".
+  resource            String
+  /// What the cursor covers: the email account id for mailbox syncs, otherwise the
+  /// provider-side account id.
+  scopeKey            String              @map("scope_key")
+  emailAccountId      String?             @map("email_account_id") @db.Uuid
+  /// Opaque position returned by the provider. Not a credential.
+  cursor              String?             @db.Text
+  lastSyncedAt        DateTime?           @map("last_synced_at") @db.Timestamptz(3)
+  consecutiveFailures Int                 @default(0) @map("consecutive_failures")
+  lastErrorCode       String?             @map("last_error_code")
+  createdAt           DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  emailAccount EmailAccount? @relation(fields: [tenantId, emailAccountId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, provider, resource, scopeKey], map: "integration_sync_cursors_scope_key")
+  @@index([tenantId, emailAccountId])
+  @@map("integration_sync_cursors")
+}
+
+// ═══ Billing, usage, branding, audit and notifications (task 03C) ════════════
+//
+// One table per concept (docs/decisions.md D-03C-01): a tenant's plan and billing state live
+// only in `subscriptions`; raw provider notifications only in `inbound_events`; validated
+// payment facts only in `payment_events`; consumption only in `usage_ledger_entries`.
+
+// ─── Plan catalog (platform scope) ────────────────────────────────────────────
+
+enum BillingPlanStatus {
+  ACTIVE
+  /// No longer sold; existing subscriptions keep it.
+  ARCHIVED
+
+  @@map("billing_plan_status")
+}
+
+enum BillingInterval {
+  MONTH
+  YEAR
+
+  @@map("billing_interval")
+}
+
+/// A plan the platform sells. Platform scope: one catalog for every tenant. Which plan a tenant
+/// is on is recorded only on its subscription.
+model BillingPlan {
+  id              String            @id @default(uuid(7)) @db.Uuid
+  /// Stable lower-case key, e.g. "growth".
+  key             String            @unique
+  name            String
+  status          BillingPlanStatus @default(ACTIVE)
+  /// ISO 4217 code in upper case. Stripe uses lower case; the billing adapter converts.
+  currency        String            @db.Char(3)
+  /// Price per interval in the currency's minor unit (e.g. cents).
+  amountMinor     BigInt            @map("amount_minor")
+  interval        BillingInterval
+  /// The billing provider's price id, when the plan is sold through one.
+  externalPriceId String?           @unique @map("external_price_id")
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  limits        PlanLimit[]
+  subscriptions Subscription[]
+
+  @@map("billing_plans")
+}
+
+/// Metered usage that plans limit per billing period.
+enum UsageMetric {
+  AI_TOKENS
+  LEAD_ENRICHMENTS
+  EMAIL_VERIFICATIONS
+  EMAILS_SENT
+
+  @@map("usage_metric")
+}
+
+/// How much of one metric a plan includes per billing period. A metric without a row is not
+/// included in the plan.
+model PlanLimit {
+  planId            String      @map("plan_id") @db.Uuid
+  metric            UsageMetric
+  quantityPerPeriod BigInt      @map("quantity_per_period")
+
+  plan BillingPlan @relation(fields: [planId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([planId, metric])
+  @@map("plan_limits")
+}
+
+// ─── Subscriptions and payments ───────────────────────────────────────────────
+
+enum BillingProvider {
+  STRIPE
+  /// Invoiced outside a billing provider (e.g. a dedicated deployment); set by a platform admin.
+  MANUAL
+
+  @@map("billing_provider")
+}
+
+/// Stripe's subscription statuses (docs.stripe.com/api/subscriptions/object, checked
+/// 2026-11-01). MANUAL subscriptions use the same values.
+enum SubscriptionStatus {
+  INCOMPLETE
+  /// Terminal: the first payment never succeeded.
+  INCOMPLETE_EXPIRED
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  /// Terminal.
+  CANCELED
+  UNPAID
+  PAUSED
+
+  @@map("subscription_status")
+}
+
+/// A tenant's subscription to a plan: the single source of truth for the tenant's plan and
+/// billing state (D-03C-01). A Stripe subscription row mirrors the provider's current state,
+/// refetched on every relevant event because events arrive out of order. A tenant has at most
+/// one current subscription; ended ones are kept as history.
+model Subscription {
+  tenantId               String             @map("tenant_id") @db.Uuid
+  id                     String             @default(uuid(7)) @db.Uuid
+  planId                 String             @map("plan_id") @db.Uuid
+  provider               BillingProvider
+  status                 SubscriptionStatus
+  /// The provider's customer and subscription ids (STRIPE only).
+  externalCustomerId     String?            @map("external_customer_id")
+  externalSubscriptionId String?            @map("external_subscription_id")
+  /// The billing period usage is counted in, [start, end). Stripe keeps it per subscription
+  /// item; a plan is one item.
+  currentPeriodStart     DateTime           @map("current_period_start") @db.Timestamptz(3)
+  currentPeriodEnd       DateTime           @map("current_period_end") @db.Timestamptz(3)
+  trialEndsAt            DateTime?          @map("trial_ends_at") @db.Timestamptz(3)
+  cancelAtPeriodEnd      Boolean            @default(false) @map("cancel_at_period_end")
+  /// When cancellation was requested.
+  canceledAt             DateTime?          @map("canceled_at") @db.Timestamptz(3)
+  /// When the subscription ended.
+  endedAt                DateTime?          @map("ended_at") @db.Timestamptz(3)
+  /// Last time this row was overwritten with the provider's current state.
+  lastSyncedAt           DateTime?          @map("last_synced_at") @db.Timestamptz(3)
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  /// A plan cannot be deleted while subscriptions use it (archive it instead).
+  plan          BillingPlan    @relation(fields: [planId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  paymentEvents PaymentEvent[]
+
+  @@id([tenantId, id])
+  // A provider subscription belongs to exactly one tenant: unique across the platform.
+  @@unique([provider, externalSubscriptionId], map: "subscriptions_external_subscription_key")
+  // At most one current (not ended) subscription per tenant. A constraint, not a lookup key:
+  // Prisma ignores the WHERE clause in findUnique (D-03B-01).
+  @@unique([tenantId], name: "currentSubscription_partial", map: "subscriptions_one_current_key", where: raw("status <> ALL (ARRAY['INCOMPLETE_EXPIRED'::subscription_status, 'CANCELED'::subscription_status])"))
+  @@index([tenantId, status])
+  @@index([planId])
+  @@index([provider, externalCustomerId])
+  @@map("subscriptions")
+}
+
+enum PaymentEventKind {
+  PAYMENT_SUCCEEDED
+  PAYMENT_FAILED
+  REFUNDED
+
+  @@map("payment_event_kind")
+}
+
+/// A validated billing fact (a payment succeeded, failed or was refunded), immutable. Stripe
+/// facts are derived from a deduplicated inbound event (the raw, untrusted notification);
+/// MANUAL facts are recorded by a platform admin.
+model PaymentEvent {
+  tenantId         String           @map("tenant_id") @db.Uuid
+  id               String           @default(uuid(7)) @db.Uuid
+  provider         BillingProvider
+  /// The provider's event id (STRIPE only); unique per tenant, so a redelivery is stored once.
+  externalEventId  String?          @map("external_event_id")
+  kind             PaymentEventKind
+  subscriptionId   String?          @map("subscription_id") @db.Uuid
+  /// The notification this fact was derived from (STRIPE only).
+  inboundEventId   String?          @map("inbound_event_id") @db.Uuid
+  /// The provider object the fact is about, e.g. an invoice or charge id.
+  externalObjectId String?          @map("external_object_id")
+  /// In the currency's minor unit.
+  amountMinor      BigInt           @map("amount_minor")
+  /// ISO 4217 code, upper case.
+  currency         String           @db.Char(3)
+  /// Machine-readable reason for PAYMENT_FAILED (never a raw provider message).
+  failureCode      String?          @map("failure_code")
+  /// When it happened at the provider.
+  occurredAt       DateTime         @map("occurred_at") @db.Timestamptz(3)
+  recordedAt       DateTime         @default(now()) @map("recorded_at") @db.Timestamptz(3)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  /// Financial records keep their subscription and their source notification.
+  subscription Subscription? @relation(fields: [tenantId, subscriptionId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  inboundEvent InboundEvent? @relation(fields: [tenantId, inboundEventId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, provider, externalEventId], map: "payment_events_provider_event_key")
+  @@unique([tenantId, inboundEventId])
+  @@index([tenantId, subscriptionId, occurredAt])
+  @@index([tenantId, occurredAt])
+  @@map("payment_events")
+}
+
+// ─── Limits and usage ─────────────────────────────────────────────────────────
+
+/// Replaces one plan limit for one tenant (set by a platform admin, audited). The effective
+/// limit is this override when present, otherwise the plan's limit.
+model TenantLimitOverride {
+  tenantId          String      @map("tenant_id") @db.Uuid
+  id                String      @default(uuid(7)) @db.Uuid
+  metric            UsageMetric
+  quantityPerPeriod BigInt      @map("quantity_per_period")
+  reason            String
+  createdAt         DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, metric])
+  @@map("tenant_limit_overrides")
+}
+
+enum UsageReservationStatus {
+  /// Counts against the limit until it is settled or expires.
+  HELD
+  /// Settled with a ledger entry for the quantity actually used.
+  COMMITTED
+  /// Settled without usage.
+  RELEASED
+  /// Settled by the sweeper after expires_at passed.
+  EXPIRED
+
+  @@map("usage_reservation_status")
+}
+
+/// Budget held before paid work starts (an AI call, an enrichment, a send): application code
+/// reserves, does the work, then commits the actual quantity or releases the hold.
+model UsageReservation {
+  tenantId          String                 @map("tenant_id") @db.Uuid
+  id                String                 @default(uuid(7)) @db.Uuid
+  metric            UsageMetric
+  /// Maximum quantity the work may use.
+  quantity          BigInt
+  /// Start of the billing period the usage counts in (the subscription's current period).
+  periodStart       DateTime               @map("period_start") @db.Timestamptz(3)
+  status            UsageReservationStatus @default(HELD)
+  /// Retries with the same key get the same reservation.
+  idempotencyKey    String                 @map("idempotency_key")
+  /// What the budget is for, e.g. "research.run".
+  purpose           String
+  /// A HELD reservation stops counting after this instant.
+  expiresAt         DateTime               @map("expires_at") @db.Timestamptz(3)
+  /// The quantity actually used (COMMITTED only).
+  committedQuantity BigInt?                @map("committed_quantity")
+  settledAt         DateTime?              @map("settled_at") @db.Timestamptz(3)
+  createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  ledgerEntries UsageLedgerEntry[]
+
+  @@id([tenantId, id])
+  @@unique([tenantId, idempotencyKey])
+  // Superkey: a ledger entry references a reservation with the same metric and period.
+  @@unique([tenantId, id, metric, periodStart])
+  @@index([tenantId, metric, periodStart, status])
+  @@map("usage_reservations")
+}
+
+enum UsageLedgerEntryKind {
+  /// Consumption (positive).
+  USAGE
+  /// A correction by a platform admin (signed, with a note).
+  ADJUSTMENT
+
+  @@map("usage_ledger_entry_kind")
+}
+
+/// Append-only record of consumption: the only source for "how much was used". Totals are
+/// sums over this table, never stored counters.
+model UsageLedgerEntry {
+  tenantId       String               @map("tenant_id") @db.Uuid
+  id             String               @default(uuid(7)) @db.Uuid
+  metric         UsageMetric
+  periodStart    DateTime             @map("period_start") @db.Timestamptz(3)
+  kind           UsageLedgerEntryKind
+  quantity       BigInt
+  /// The reservation this usage settles, when there was one.
+  reservationId  String?              @map("reservation_id") @db.Uuid
+  /// Unique per tenant: a retried write records the usage once.
+  idempotencyKey String               @map("idempotency_key")
+  note           String?
+  occurredAt     DateTime             @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  /// Same metric and period as the reservation; a reservation with usage cannot be deleted.
+  reservation UsageReservation? @relation(fields: [tenantId, reservationId, metric, periodStart], references: [tenantId, id, metric, periodStart], onDelete: NoAction, onUpdate: NoAction, map: "usage_ledger_entries_reservation_fkey")
+
+  @@id([tenantId, id])
+  @@unique([tenantId, idempotencyKey])
+  @@unique([tenantId, reservationId])
+  @@index([tenantId, metric, periodStart])
+  @@map("usage_ledger_entries")
+}
+
+// ─── Branding ─────────────────────────────────────────────────────────────────
+
+/// How a tenant's workspace and emails present the tenant (white label). tenants.name stays
+/// the account name; this is presentation only. Rendered escaped.
+model TenantBranding {
+  tenantId     String   @id @map("tenant_id") @db.Uuid
+  displayName  String?  @map("display_name")
+  /// https URL of the logo, for display only.
+  logoUrl      String?  @map("logo_url")
+  /// "#RRGGBB", upper case.
+  primaryColor String?  @map("primary_color")
+  accentColor  String?  @map("accent_color")
+  /// Plain text appended to emails sent from the workspace.
+  emailFooter  String?  @map("email_footer") @db.Text
+  /// normalizeEmail form.
+  supportEmail String?  @map("support_email")
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("tenant_branding")
+}
+
+// ─── Audit and notifications ──────────────────────────────────────────────────
+
+enum AuditActorType {
+  /// A tenant member acting in their tenant.
+  MEMBER
+  /// A platform admin, always with a stated reason.
+  PLATFORM_ADMIN
+  /// A worker or provider callback, named by actor_name.
+  SYSTEM
+
+  @@map("audit_actor_type")
+}
+
+/// Who did what in a tenant, including every platform-admin access. Immutable (trigger) and
+/// without foreign keys besides the tenant, so it outlives the members and rows it names.
+/// Metadata never holds secrets or message content.
+model AuditRecord {
+  tenantId          String         @map("tenant_id") @db.Uuid
+  id                String         @default(uuid(7)) @db.Uuid
+  actorType         AuditActorType @map("actor_type")
+  actorUserId       String?        @map("actor_user_id") @db.Uuid
+  actorMembershipId String?        @map("actor_membership_id") @db.Uuid
+  /// SYSTEM actors, e.g. "billing_sync".
+  actorName         String?        @map("actor_name")
+  /// Dotted key, e.g. "approval.decided".
+  action            String
+  /// Snake-case row type and id, e.g. "approval" and its id.
+  targetType        String?        @map("target_type")
+  targetId          String?        @map("target_id") @db.Uuid
+  reason            String?
+  requestId         String?        @map("request_id")
+  /// Validated by the application schema for the action.
+  metadata          Json?
+  occurredAt        DateTime       @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@index([tenantId, targetType, targetId, id])
+  @@index([tenantId, actorUserId, id])
+  @@map("audit_records")
+}
+
+/// Platform-level actions that are not inside one tenant: platform-console access, denied
+/// platform-admin access, catalog changes, tenant lifecycle. Immutable and without foreign
+/// keys, so it outlives deleted tenants and users.
+model PlatformAuditRecord {
+  id              String         @id @default(uuid(7)) @db.Uuid
+  actorType       AuditActorType @map("actor_type")
+  actorUserId     String?        @map("actor_user_id") @db.Uuid
+  actorName       String?        @map("actor_name")
+  action          String
+  /// The tenant concerned, if any (kept after the tenant is deleted).
+  subjectTenantId String?        @map("subject_tenant_id") @db.Uuid
+  targetType      String?        @map("target_type")
+  targetId        String?        @map("target_id") @db.Uuid
+  reason          String?
+  requestId       String?        @map("request_id")
+  metadata        Json?
+  occurredAt      DateTime       @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  @@index([subjectTenantId, id])
+  @@index([actorUserId, id])
+  @@map("platform_audit_records")
+}
+
+/// An in-app message to one member. Plain text, escaped when rendered; link_path is a path
+/// inside the app, never an external URL.
+model Notification {
+  tenantId              String    @map("tenant_id") @db.Uuid
+  id                    String    @default(uuid(7)) @db.Uuid
+  recipientMembershipId String    @map("recipient_membership_id") @db.Uuid
+  /// Dotted key, e.g. "draft.awaiting_approval".
+  type                  String
+  title                 String
+  body                  String?   @db.Text
+  linkPath              String?   @map("link_path")
+  /// Unique per recipient: the same event notifies a member once.
+  dedupeKey             String?   @map("dedupe_key")
+  readAt                DateTime? @map("read_at") @db.Timestamptz(3)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  recipient Membership @relation(fields: [tenantId, recipientMembershipId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, recipientMembershipId, dedupeKey])
+  @@index([tenantId, recipientMembershipId, id])
+  @@index([tenantId, recipientMembershipId], map: "notifications_unread_idx", where: raw("read_at IS NULL"))
+  @@map("notifications")
+}

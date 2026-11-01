@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/migrated-schema.d.ts",
+      "default": "./dist/testing/migrated-schema.js"
     }
   },
   "scripts": {

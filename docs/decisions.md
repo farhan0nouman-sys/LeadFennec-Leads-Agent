@@ -1124,6 +1124,416 @@ than 63 characters and was named explicitly (`usage_ledger_entries_reservation_f
 
 ---
 
+## 04A: Authentication (2026-11-01)
+
+**Basis.** The task asks to "review the auth decision". Neither the plan nor any earlier entry
+here contains one, so this section makes and records it (D-04A-01). If the plan prescribes
+something else, reconcile (O-22). Security guidance comes from the OWASP cheat sheets, and
+library facts from the npm registry and the libraries' own documentation (Sources below).
+
+### D-04A-01: First-party sessions, with maintained libraries for the security primitives
+
+| Option | Verdict |
+|---|---|
+| Hosted identity provider (a managed login service) | Not chosen: it would be a major new external service, which `CLAUDE.md` says needs agreement first. Kept as an option (O-22). |
+| An auth framework that owns its own user and session tables | Not chosen: it would duplicate `users` and add a second session store (D-03C-01: one table per concept), and tie API authorization to that framework. |
+| JWTs kept in browser storage | Rejected: any XSS can read them, and revoking them needs a server-side list anyway. |
+| **Opaque session tokens in an HttpOnly cookie, sessions in PostgreSQL** | **Chosen.** Sessions are revocable, timeouts are enforced on the server, and it uses the existing stack. |
+
+Maintained libraries cover the security-critical primitives:
+
+| Need | Library |
+|---|---|
+| Password hashing | `@node-rs/argon2` 2.2.2 (Argon2id) |
+| Per-IP rate limits | `@nestjs/throttler` 6.7.1 |
+| Cookie parsing and serialization | `cookie` 2.0.1 |
+| Random tokens, SHA-256, HMAC, constant-time comparison | Node's `node:crypto` |
+
+Sessions are platform-scoped: a signed-in user then enters a tenant through `memberScope`
+(D-03C-04), unchanged.
+
+### D-04A-02: Data model (platform scope)
+
+| Table | Holds |
+|---|---|
+| `users.email_verified_at` | When the address was proven (verification link or password reset) |
+| `user_credentials` | One Argon2id hash per user |
+| `user_sessions` | SHA-256 of the session token; created, last seen, idle and absolute expiry; end time and reason |
+| `auth_tokens` | SHA-256 of emailed one-time tokens: purpose, the address they were sent to, expiry, use time |
+| `auth_throttles` | Attempt counters per scope and per SHA-256 of a normalized address |
+
+- **Cascades:** deleting a user deletes their credentials, sessions and tokens.
+- **Uniqueness:** at most one unused token per user and purpose (`auth_tokens_one_open_key`,
+  partial). Token hashes are unique.
+- **Hand-written CHECKs** (`20261101000700_user_authentication_checks`):
+  - the Argon2id PHC format;
+  - SHA-256 hex shapes;
+  - session timing (idle end ≤ absolute end), and end time ⇔ end reason;
+  - a token is used only between creation and expiry;
+  - normalized addresses.
+- **Structure test updates:**
+  - 10 platform tables;
+  - `user_credentials.password_hash` and `password_changed_at` allowed past the
+    credential-name scan;
+  - the duplicate-name guard now also lists `sessions`, `user_tokens`,
+    `email_verification_tokens`, `password_reset_tokens`, `login_attempts` and
+    `credentials`.
+- **Scoped client:** the new models are platform models, so the tenant-scoped client cannot
+  reach them.
+
+### D-04A-03: Passwords
+
+- **Hash:** Argon2id with m=19456 KiB, t=2, p=1, OWASP's minimum configuration.
+- **Library:** `@node-rs/argon2` 2.2.2 (napi-rs; published 2026-10-06). It ships prebuilt
+  binaries as per-platform optional dependencies and has no install script. `argon2` 0.45.1
+  was not chosen: it needs an install script (`node-gyp-build`), which our pnpm build policy
+  would have to allow (D-02A-08).
+- **Policy (OWASP, without MFA):**
+  - 15 to 128 Unicode code points, counted after NFKC normalization;
+  - all characters allowed, including spaces and emoji;
+  - no composition rules.
+
+  Passwords are NFKC-normalized before hashing and before verifying.
+- **Rehash** on sign-in when a stored hash uses weaker settings.
+- **Unknown accounts:** the password is verified against a dummy hash, so the work is the same
+  whether or not the account exists.
+- **Not done yet:** blocking common and breached passwords, which OWASP recommends. It needs a
+  provider or a list (O-21).
+
+### D-04A-04: Tokens
+
+- **Generation:** 32 bytes from the CSPRNG, base64url (43 characters, 256 bits).
+- **Storage:** only SHA-256 (hex). That is enough for high-entropy random tokens; it is what
+  OWASP's session cheat sheet suggests, and it makes lookups possible by an indexed hash.
+- **Emailed tokens:**
+  - single use (atomically marked used);
+  - verification expires after 24 hours, reset and finish-setup after 30 minutes;
+  - a new token revokes the previous unused one for the same purpose;
+  - each is bound to the address it was sent to, so it fails if the account's address has
+    changed.
+- **Links** carry the token in the URL fragment: `<WEB_APP_URL>/verify-email#token=…`.
+  Fragments never reach servers, access logs or `Referer` headers. The base URL comes from
+  configuration, never from the request's `Host` header (OWASP: host header injection).
+
+### D-04A-05: Sessions and the cookie
+
+- **Cookie:** `__Host-lf_session`, `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, no `Domain`,
+  no lifetime (OWASP: `__Host-` prefix, non-persistent).
+  - `Lax` rather than `Strict`, so a user arriving from an emailed link is still signed in.
+    Mutations are protected separately (D-04A-06).
+- **Timeouts:**
+  - idle 30 minutes, absolute 8 hours (OWASP: 15–30 minutes idle for low-risk applications,
+    4–8 hours absolute);
+  - enforced on the server;
+  - activity is written back at most once a minute.
+- **A new session at every sign-in;** a session cookie from the same browser is ended
+  (`REPLACED`), which prevents session fixation.
+- **How sessions end:** logout (server-side), password reset (all of the user's sessions), a
+  disabled user, or expiry. The end time and reason are kept.
+- **The web app must serve the API on its own origin** (a proxy route) so the cookie is
+  first-party. That wiring comes with the account screens.
+
+### D-04A-06: CSRF protection
+
+- **Synchronizer token** on authenticated mutations, OWASP's primary defense for stateful
+  applications:
+  - the `x-csrf-token` header must equal `HMAC-SHA256(session token, "lead-fennec-ai:csrf:v1")`;
+  - compared in constant time;
+  - only the server can compute it, because the session cookie is HttpOnly;
+  - it is stable for the session, so several tabs work, and changes with each sign-in;
+  - nothing is stored.
+- **Fetch Metadata and Origin checks on every `POST`,** including sign-in and registration
+  (login CSRF): requests with `Sec-Fetch-Site` other than `same-origin`/`none`, or an
+  `Origin` other than `WEB_APP_URL`, are refused. OWASP lists both as defenses.
+- **`SameSite=Lax`** is defense in depth.
+- **Libraries considered:**
+  - `csrf-csrf` implements the signed double-submit cookie, which OWASP recommends for
+    stateless applications;
+  - `csrf-sync` implements the synchronizer token on top of `express-session`, which this API
+    doesn't use.
+
+  The session-bound token is therefore derived with `node:crypto`.
+
+### D-04A-07: No account enumeration
+
+- **Identical answers:** register, resend-verification and password-reset requests always
+  answer `202 { status: "accepted" }`.
+- **No timing signal:** their account-dependent work (lookup, hashing, tokens, email) runs
+  after the response (`AuthTasks`), so neither the content nor the timing depends on the
+  account.
+- **Sign-in:**
+  - wrong password, unknown address and disabled user give the same `401`, each after one full
+    Argon2id verification;
+  - `403 email_not_verified` only with the correct password.
+- **Limits:** locks and email limits apply to unknown addresses exactly as to known ones (the
+  key is the address's hash).
+- **Validation:** errors describe fields, never values.
+- **Durability:** background tasks are in-process and lost if the API stops at that moment;
+  the user can simply retry. Moving them to the queue is O-20. Passwords never go to a durable
+  queue.
+
+### D-04A-08: Account pre-hijacking
+
+**Risk:** someone registers another person's address with their own password. If the owner
+later confirms the address, the first registrant knows the password.
+
+**Defense:** when an address with an unverified account is registered again:
+- its outstanding confirmation links are revoked;
+- the inbox owner gets a "finish setup" link (a password-reset token) to choose the password;
+- using that link sets the password, verifies the address and ends every session.
+
+**Residual risk:** the owner can still confirm a stranger's first registration with its
+original link before anyone registers again. Every account email says to ignore it if you
+didn't ask for it. Expiring unverified accounts is O-21.
+
+### D-04A-09: Repeated attempts
+
+| Limit | Rule | Where |
+|---|---|---|
+| Sign-in failures per address | 5 in 15 minutes, then locked for 15 minutes (`429` with `Retry-After`, even with the right password). A successful sign-in or a password reset clears it. | `auth_throttles` (scope `LOGIN`) |
+| Account emails per address | 3 verification or "already registered" emails, and 3 reset emails, per hour. Requests still answer `202`. | `auth_throttles` |
+| Requests per client IP | 20 per minute to each auth `POST` route | `@nestjs/throttler`, in memory |
+
+- **Concurrent attempts:** counters use optimistic updates (read, compare-and-set, retry), so
+  each attempt is counted once.
+- **Per-IP limits are per API instance.** Behind a proxy, Express must be told to trust it, or
+  every user shares the proxy's IP. Both are O-20.
+- **Not done:** CAPTCHA and MFA (O-21).
+
+### D-04A-10: Secrets never reach logs or clients
+
+- **Redaction:** new log paths `x-csrf-token` (header), `newPassword`, `passwordHash`,
+  `csrfToken` and `sessionToken`, on top of the existing cookie, `set-cookie`, `password`
+  and `token`.
+- **Tested:** the API suite collects every password, link token, session token and CSRF token
+  it sees, and fails if any appears in a captured log line.
+- **Bodies that aren't JSON:** Nest would answer with the parser's message, which can quote
+  the body. A global `RequestErrorFilter` answers `400 validation_failed` with a fixed
+  message instead.
+- **Mail:** bodies are never logged; logs name the template only. The fake keeps messages in
+  memory.
+- **Tokens never in bodies:** the session token is only in `Set-Cookie`, and link tokens only
+  in emails.
+
+### D-04A-11: Transactional mail adapter
+
+- **New interface:** `TransactionalMailProvider` (`send({ to, subject, textBody, template })`)
+  in `@lead-fennec-ai/integrations`, with `FakeTransactionalMailProvider`, which records and
+  never sends.
+- **Development and test** use the fake.
+- **Staging and production** ask for the live adapter, which doesn't exist yet, so the API
+  refuses to start there instead of silently dropping account email (O-19).
+
+### D-04A-12: Contract and tests
+
+- **Contract:** `packages/shared/src/contracts/auth.ts` (zod, web-safe): routes, request and
+  response schemas, error codes, cookie and header names, password policy.
+  `docs/api/auth.md` describes the flows.
+- **Tests:**
+  - `apps/api/src/auth/auth.integration.test.ts` (25): every flow over HTTP on real PostgreSQL,
+    with a controllable clock and the fake mail. Every response is parsed against the
+    contract.
+  - `auth-units.test.ts` (12): tokens, Argon2id, cookie attributes, `WEB_APP_URL` rules.
+  - `packages/database/src/auth-schema.integration.test.ts`: CHECKs, cascades and the store's
+    throttle and token rules.
+  - Contract tests in `packages/shared`.
+- **Shared test harness:** it is now built and published as `@lead-fennec-ai/database/testing`
+  so the API's tests can use it. The main entry point never imports it. This supersedes
+  "excluded from the build" in D-03B-12.
+
+### D-04A-13: Not in 04A
+
+- **The account screens:** built next, on this contract, together with serving the API on
+  the web origin.
+- **Tenant creation and invitations:** registering creates a user only, with no tenant or
+  membership.
+- MFA, email change, account deletion, a session list, and a development inbox (O-19, O-21).
+
+### Sources (checked 2026-11-01)
+
+- **OWASP cheat sheets:**
+  - Password Storage: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+  - Authentication: https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html
+  - Forgot Password: https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html
+  - Session Management: https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html
+  - CSRF Prevention: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
+- **npm registry metadata:**
+  - `@node-rs/argon2` 2.2.2 (no install script, per-platform optional binaries);
+  - `argon2` 0.45.1 (install script `node-gyp-build`);
+  - `@nestjs/throttler` 6.7.1 (published 2026-09-24; peer range includes NestJS 12);
+  - `cookie` 2.0.1 (published 2026-06-30);
+  - `csrf-csrf` 4.1.0 and `csrf-sync` 4.2.1 (considered, not used).
+- **The `cookie` README:** `parseCookie` and `stringifySetCookie`
+  (https://github.com/jshttp/cookie).
+- **Verified locally, not from documentation:**
+  - `@node-rs/argon2`'s types and defaults;
+  - `@nestjs/throttler`'s `Retry-After` header (no suffix for the `default` throttler);
+  - Nest's mapping of body-parser errors to `BadRequestException`, which reaches global
+    filters only.
+
+---
+
+## 04B: Workspaces, invitations, role-based authorization, worker context (2026-11-01)
+
+**Basis.** The plan is still missing. This builds on 03C's tenant scopes and 04A's sessions.
+"Workspace" is the product name for a tenant.
+
+### D-04B-01: Workspace creation
+
+- **Who:** any signed-in user with an `ACTIVE`, verified account (`POST /workspaces`).
+- **One transaction:**
+  - syncs the permission catalog;
+  - creates the tenant, its settings and the two system roles with their grants;
+  - makes the creator an `ACTIVE` Client Admin;
+  - writes `workspace.created` to the new workspace's audit records.
+- **Slugs** are unique across the platform. Without one, the slug is derived from the name with
+  6 random hex characters (`acme-sales-3f9a1c`), so names don't collide and slugs don't reveal
+  which names exist. A requested slug that is taken: `409 slug_taken`.
+- **Not limited yet:** how many workspaces one user may create (O-23).
+
+### D-04B-02: One permission catalog
+
+- **The source:** `PERMISSION_CATALOG` and `SYSTEM_ROLES` in `@lead-fennec-ai/shared`
+  (`authorization.ts`), pure data the web app can also use. New: `members.read`.
+- **The `permissions` table** is synced from it (insert-only, idempotent) when a workspace is
+  created.
+- **Fixtures** use the same catalog and roles.
+- **Resolves O-11:** the catalog is created at workspace creation, from code, not by a data
+  migration.
+- **Not decided:** custom roles per workspace (O-23).
+
+### D-04B-03: Invitations
+
+- **One table, one source of truth:** `invitations` (tenant-owned) holds pending invitations.
+  A membership exists only once an invitation is accepted, so the `INVITED` membership status
+  was removed (it would have been a second record of the same thing):
+  - `20261101000800_retire_invited_memberships` first turns existing `INVITED` memberships into
+    `SUSPENDED` (neither grants access);
+  - the generated migration then rebuilds the enum. Its `"public".` schema qualifiers were
+    removed by hand, so it also applies inside per-test schemas.
+  - Tested by migrating a schema with an `INVITED` row.
+- **Bound to the workspace and the identity:**
+  - the row's `tenant_id` and the invited `normalized_email` (`normalizeEmail`);
+  - the binding, the role, the token and the expiry can't change after insert (trigger
+    `invitations_binding_immutable`, 23000);
+  - acceptance requires the signed-in user's own address to match, and the workspace id the
+    user confirmed to be the invitation's.
+- **Expiry and single use:**
+  - 7 days;
+  - accepted or revoked at most once (CHECK: never both; accepted ⇔ membership id; accepted
+    before it expires);
+  - an update guarded by "still open" makes concurrent acceptances fail cleanly;
+  - one open invitation per address and workspace (partial unique). Inviting again revokes
+    the earlier one.
+- **Token:** 256 bits, the link fragment, SHA-256 at rest (as in D-04A-04). It is unique across
+  the platform because the link is resolved before the workspace is known.
+- **What the invitee learns:**
+  - only the invited, signed-in address can preview the invitation;
+  - unknown, used, revoked and expired invitations look the same;
+  - a user with another address learns nothing about the workspace.
+- **Accepting** creates the membership with the invited role, or reactivates a `SUSPENDED` one,
+  and writes `invitation.accepted` (actor: the new member).
+- **Limits:**
+  - inviting an active member gives `409 already_member`;
+  - at most 100 invitation emails per workspace and day (`auth_throttles` scope
+    `INVITATION_EMAIL`, keyed by the workspace id's hash).
+
+### D-04B-04: Role-based authorization and record ids
+
+| Layer | Check |
+|---|---|
+| Session | The acting user always comes from the session (04A). No route accepts a user id. |
+| `WorkspaceGuard` | `:workspaceId` must be a workspace where that user has an `ACTIVE` membership and that is `ACTIVE` (`memberScope`). Otherwise `404 not_found`, the same for every reason. |
+| `PermissionGuard` (`@RequirePermissions`) | The member's role grants the route's permissions, else `403 forbidden`. |
+| Repositories (`members`, `invitations`) | Check the same permissions again (`requirePermission` / `requireReadPermission`), so a route without the decorator still can't bypass them. |
+| Record ids | Membership, role and invitation ids are looked up with the workspace's `tenant_id`, so another workspace's id is `404`. |
+
+- **Last admin:** a workspace always keeps at least one active Client Admin
+  (`409 last_admin`). Role changes take a per-workspace advisory lock, so two admins can't
+  demote each other at the same moment.
+- **Platform admins** can read the team only through their audited, read-only scope; they
+  can't change it. Workers can't use the team repositories.
+- **Not implemented:** suspending or removing a member. Memberships with approvals can't be
+  deleted (O-12), and suspension is O-23.
+
+### D-04B-05: Worker authorization context
+
+- **The message:** a queue message carries only `{ v: 1, taskId }` (`jobEnvelopeSchema`, strict).
+  Any other field, such as a tenant id, makes it `malformed`.
+- **`claimJob(prisma, worker, message)`:**
+  1. loads the `job_tasks` row by id (`job_tasks.id` is now also unique on its own) and takes
+     the tenant from the row;
+  2. checks the task type is one the worker handles (`defineWorker({ name, taskTypes })`);
+  3. checks the workspace is `ACTIVE`;
+  4. claims the task: `PENDING`, due and with attempts left, by updating exactly the version
+     it read.
+- **What it returns:** the task, and a tenant scope for the task's workspace acting as the
+  worker (system actor). Record ids in the payload are looked up through that scope, so an id
+  from another workspace is not found.
+- **Rejections:** `malformed`, `unknown_task`, `wrong_worker`, `workspace_inactive`,
+  `not_claimable`.
+- **Settling:** `complete()` marks the task `SUCCEEDED`. `fail({ errorCode, retryAt? })` retries
+  while attempts remain, otherwise marks it `FAILED`.
+- **`enqueueJob(scope, …)`** creates the task (idempotent by key) and returns the envelope.
+  It is not allowed from a read-only platform-admin scope.
+- **`systemScope` stays** for schedulers that iterate `tenants` (D-03B-02); jobs use `claimJob`.
+- **Not done:** wiring BullMQ in the worker app (O-20).
+
+### D-04B-06: Platform-admin operations stay explicit and audited
+
+- **Routes:** only under `/platform/*`. The admin is the session's user, re-checked on every
+  request (`is_platform_admin`, `ACTIVE`).
+- **Reason:** required, 10–500 characters: the `x-access-reason` header on `GET`, the body on
+  `POST`.
+- **What gets recorded:**
+
+  | Action | Recorded |
+  |---|---|
+  | Listing workspaces | `platform_admin.console_opened` |
+  | Opening one workspace (read-only) | `platform_admin.access_opened` in that workspace |
+  | Suspending or reactivating | `tenant.status_changed` with before and after, the reason and the request id, in `platform_audit_records`, which outlive the workspace |
+  | Every refusal | `platform_admin.access_denied` |
+
+- **No implicit access:** a platform admin gets `404` on member routes like anyone else.
+
+### D-04B-07: One error envelope for every route
+
+- **Contract:** `apiErrorResponseSchema` (`@lead-fennec-ai/shared`) combines the auth codes with
+  `not_found`, `forbidden`, `already_member`, `last_admin`, `slug_taken` and three invitation
+  codes.
+- **Mapping:** `ApiExceptionFilter` (`apps/api/src/http/api-errors.ts`) turns the database
+  layer's errors into it:
+
+  | Error | Answer |
+  |---|---|
+  | `PermissionDeniedError`, `ActorNotAllowedError` | `403` |
+  | `RecordNotFoundError`, `TenantAccessDeniedError` | `404` |
+  | `LastAdminError`, `AlreadyMemberError`, `SlugTakenError` | `409` |
+  | `InvitationError` | by reason |
+  | `ZodError` | `400` |
+
+  Anything else stays a generic `500`.
+
+### D-04B-08: Tests and two findings
+
+- **Tests:**
+  - `packages/database/src/workspaces.integration.test.ts` (19): creation, roles and
+    permissions, record ids from another workspace, invitations (identity, workspace, expiry,
+    single use, replacement, revocation, reactivation, suspended workspace, SQL rules),
+    platform status changes, the worker context, and the `INVITED` migration;
+  - `apps/api/src/workspaces/workspaces.integration.test.ts` (11): every route over HTTP with
+    two workspaces and all three roles;
+  - the catalog tests now count 44 tenant tables and 61 relations.
+- **Finding 1, PGlite and parallel test files:** two database-backed test files in one package
+  collided on PGlite's single session (`relation "tenants" does not exist`). The API package
+  now runs its test files one at a time, like the database package. Locally, packages run with
+  `--concurrency=1`.
+- **Finding 2, Prisma and `pg` 9:** Prisma's `adapter-pg` 7.10.1 issues concurrent queries on
+  one transaction connection (nested selects). `pg` 8.23 warns that `pg` 9 will reject this.
+  Recorded in O-14.
+
+---
+
 ## Open choices (need a decision from the user)
 
 | ID | Choice | Current state | Options |
@@ -1138,11 +1548,16 @@ than 63 characters and was named explicitly (`usage_ledger_entries_reservation_f
 | O-08 | Migrations and database fixtures | **Resolved in 03A:** Prisma schema, two migrations and the fixture loader exist (D-03A-08, D-03A-09). | — |
 | O-09 | CI has never run on GitHub | **Resolved 2026-11-01** (local time; 2026-10-31 19:45 UTC): the first run (41235720269, commit `7fc44f2`) passed every step. The job logs need a GitHub sign-in, so per-suite counts weren't seen. | — |
 | O-10 | Data model derived without the architecture spec | 03A, 03B and 03C derived ownership, delete rules, planned queries and the one-table-per-concept list from their prompts and `CLAUDE.md` (D-03A-02 to D-03A-07, D-03B-02 to D-03B-09, D-03C-01 to D-03C-09). 01B is blocked. | Reconcile with 01B once the plan exists. Changes become new migrations. |
-| O-11 | Permission catalog and default roles in production | Only the fixtures create permissions and the `client_admin` / `client_member` roles. 03B added outreach permissions to the fixture catalog. | Decide in the RBAC task: a data migration, or seeding at tenant creation. |
+| O-11 | Permission catalog and default roles in production | **Resolved in 04B:** the catalog and the system roles are code in `@lead-fennec-ai/shared`, synced to `permissions` at workspace creation (D-04B-02). | — |
 | O-12 | Actor / audit columns | **Partly addressed in 03C:** `audit_records` name actors by user and membership id without foreign keys, so they outlive members (D-03C-05). Still open: 03B's drafts and approvals reference the deciding membership with NO ACTION, so a member (and their user) cannot be deleted while their decisions exist (D-03B-04). | Decide whether user erasure anonymizes members or keeps them. |
 | O-13 | Opt-outs, bounces and suppression | **Modeled in 03B:** `suppressions`, inbound message classification, campaign-lead stop reasons (D-03B-02, D-03B-10). Open: the rules that turn a reply, opt-out or bounce into a stop or a suppression (application logic), and whether a platform-wide list is needed. | Decide in the outreach and compliance tasks. |
-| O-14 | Prisma 8, and the `partialIndexes` preview | npm `latest` for `prisma` is an RC (`8.0.0-rc.29`); 7.10.1 is pinned. Since 03B the schema uses the `partialIndexes` preview feature (D-03B-01). | Upgrade deliberately once Prisma 8 is stable; re-check partial indexes (drift test and canary) on every Prisma upgrade. |
+| O-14 | Prisma 8, and the `partialIndexes` preview | npm `latest` for `prisma` is an RC (`8.0.0-rc.29`); 7.10.1 is pinned. Since 03B the schema uses the `partialIndexes` preview feature (D-03B-01). | Upgrade deliberately once Prisma 8 is stable; re-check partial indexes (drift test and canary) on every Prisma upgrade. Since 04B, `adapter-pg` 7.10.1 triggers `pg` 8.23's deprecation warning about concurrent queries on one connection (D-04B-08); check before upgrading to `pg` 9. |
 | O-15 | Secret store for production credentials | Only references are stored (`email_accounts.secret_ref`, D-03B-06). Development and tests use `fake://`. No store is chosen. | Choose a store (e.g. a cloud secret manager or Vault) with the mailbox-connection task, behind a provider interface with a fake. |
 | O-16 | Routing provider notifications to tenants | `inbound_events` is tenant-scoped, so the receiver must resolve the tenant before storing (D-03B-02). How to map a webhook or push message to a tenant (per-connection routes or tokens, or a lookup by mailbox) and how long events, outbox rows, audit records and notifications are kept are open. Since 03C a Stripe event can be routed by its subscription id (`subscriptions_external_subscription_key`). | Design with the webhook and mailbox-sync tasks, after checking each provider's official docs. |
 | O-17 | Billing integration | 03C models subscriptions, payment facts, limits and usage provider-neutrally (D-03C-01, D-03C-03); billing uses the fake provider. Open: the Stripe adapter (SDK and API version to pin, thin or snapshot events, webhook endpoint), whether usage is reported to Stripe (e.g. billing meters) or billed from our ledger, whether a billing status suspends a tenant, which statuses are entitled (now TRIALING, ACTIVE, PAST_DUE), invoices and tax, and how real plans are created (only fixture plans exist). | Decide in the billing task, after re-checking Stripe's docs. |
 | O-18 | Platform-admin access policy | 03C: explicit entry point, stated reason, audit record before access, read-only generic client, refusals recorded (D-03C-05). Open: time-limited access grants, tenant consent or notifying the tenant's admins, which audited admin write operations exist beyond limit overrides, and audit retention. | Decide with the admin console and support tooling. |
+| O-19 | Transactional mail provider and a local inbox | Account email goes through `TransactionalMailProvider`; only the fake exists, so staging and production refuse to start (D-04A-11). In development the emails stay in memory; there is no inbox to click links by hand. | Choose a provider (after checking its official docs) with a live adapter, and a development inbox (e.g. a local SMTP catcher), which would be a new local service. |
+| O-20 | Auth work across instances and restarts | Account emails run in-process after the response, and are lost if the API stops at that moment (D-04A-07). Per-IP limits are kept in memory per instance, and the API does not trust any proxy, so behind a proxy all users would share one IP (D-04A-09). | Move account email to BullMQ (Redis, already in the stack); use a Redis store for the throttler; set Express `trust proxy` to the deployed proxy. |
+| O-21 | Further account security | Not in 04A: MFA (it would allow the 8-character minimum), blocking common and breached passwords, CAPTCHA after failures, a session list with "sign out everywhere", email change, account deletion, expiring unverified accounts, and retention for `user_sessions`, `auth_tokens` and `auth_throttles` rows (D-04A-03, D-04A-08, D-04A-13). | Decide per feature; a breached-password service is an external provider (official docs first). |
+| O-22 | The auth decision against the plan | The plan was unavailable; 04A chose first-party sessions with Argon2id, HttpOnly cookies and synchronizer CSRF tokens (D-04A-01). | Confirm, or reconcile with the plan, e.g. if it prescribes a hosted identity provider. |
+| O-23 | Team management beyond 04B | Not built: suspending or removing members, custom roles per workspace, limits on workspaces per user, ownership transfer, and invitations to platform staff (D-04B-01 to D-04B-04). | Decide with the team-management screens and the billing limits. |

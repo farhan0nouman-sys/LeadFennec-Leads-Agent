@@ -3,8 +3,10 @@
 Multi-tenant lead-generation and outreach application: Next.js web app, NestJS API and a
 background worker in a pnpm/Turborepo monorepo, with PostgreSQL and Redis.
 
-> **Status:** early scaffold. Infrastructure, configuration, health checks, logging and the
-> test setup exist; product features do not yet. Build progress: `docs/build-progress.md`.
+> **Status:** early. Infrastructure, configuration, health checks, logging, the test setup,
+> the data model, the account API (registration, email verification, sign-in, sessions,
+> password reset) and the workspace API (workspaces, invitations, roles, platform-admin
+> operations) exist. There are no product screens yet. Build progress: `docs/build-progress.md`.
 > Decisions and pinned versions: `docs/decisions.md`. Rules for contributors and coding
 > agents: `CLAUDE.md`.
 
@@ -41,13 +43,14 @@ are covered in **[docs/local-development.md](docs/local-development.md)**.
 
 ```
 apps/web            Next.js 16 (App Router)
-apps/api            NestJS 12 API
+apps/api            NestJS 12 API: health, auth (docs/api/auth.md), workspaces and teams
+                    (docs/api/workspaces.md)
 apps/worker         Background worker (job processors not added yet)
 packages/shared     Env validation, health checks, logging, redaction, test network guard
 packages/database   Prisma schema, migrations and client; tenant-aware access (entry points,
                     scoped client, repositories); pagination; fixture tenants and factories;
                     PostgreSQL/Redis readiness probes; test-database guards
-packages/integrations  Provider interfaces and fake providers
+packages/integrations  Provider interfaces and fake providers (including transactional mail)
 packages/ai-agents, compliance, email-engine, ui   Placeholders (nothing exported yet)
 infra/postgres/initdb  Creates the isolated test database on first PostgreSQL start
 ```
@@ -70,13 +73,21 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
 
 - **Unit tests:** `src/**/*.test.ts` next to the code, run with Vitest 5.
 - **API integration tests:** `apps/api/src/**/*.integration.test.ts` boot the real NestJS app on
-  a loopback port and call it over HTTP. Readiness checks are replaced with fakes, so no
-  services are needed.
+  a loopback port and call it over HTTP.
+  - The health tests replace the readiness checks with fakes, so they need no services.
+  - The auth and workspace tests (`apps/api/src/auth/auth.integration.test.ts`,
+    `apps/api/src/workspaces/workspaces.integration.test.ts`) need `TEST_DATABASE_URL` and are
+    reported as skipped without it. They share a harness (`apps/api/src/testing`) and run one
+    file at a time. They use their own migrated schema, the fake mail
+    provider and a controllable clock, and run every account flow over HTTP. They check each
+    response against the shared contract and fail if any password or token appears in a log
+    line.
 - **Database integration tests:** `packages/database/src/*.integration.test.ts` run against
   real PostgreSQL and Redis **only** when `TEST_DATABASE_URL` and `TEST_REDIS_URL` are set.
   Otherwise those suites are reported as _skipped_. CI always sets them.
-  - There are five suites: core data; outreach and jobs; billing, usage, audit and
-    notifications; catalog structure; and tenant access. Each creates its own schema in the
+  - There are seven suites: core data; outreach and jobs; billing, usage, audit and
+    notifications; authentication; workspaces, invitations and the worker context; catalog
+    structure; and tenant access. Each creates its own schema in the
     `_test` database, applies every migration and drops the schema afterwards.
   - Together they check:
     - no drift between the migrations and `schema.prisma`;
@@ -139,6 +150,16 @@ The schema is `packages/database/prisma/schema.prisma` (Prisma 7). Migrations li
 - `20261101000500_billing_integrity_checks` is hand-written: CHECK constraints, append-only
   triggers for payment facts, the usage ledger and audit records, and `tenant_id`
   immutability triggers for the new tables.
+- `20261101000600_user_authentication` was generated from the schema: password hashes,
+  sessions, emailed one-time tokens and attempt counters, plus `users.email_verified_at`.
+- `20261101000700_user_authentication_checks` is hand-written: the Argon2id hash format,
+  SHA-256 token shapes, and session and token timing.
+- `20261101000800_retire_invited_memberships` (hand-written data step) turns `INVITED`
+  memberships into `SUSPENDED` before the status is removed.
+- `20261101000900_workspaces_and_invitations` was generated (then its `"public".`
+  qualifiers removed): `invitations`, the enum changes, and a unique index on `job_tasks.id`.
+- `20261101001000_invitation_integrity_checks` is hand-written: invitation CHECKs and the
+  trigger that keeps an invitation's binding immutable.
 
 **Apply migrations:** `pnpm db:migrate` runs `prisma migrate deploy` against `DATABASE_URL`
 (read from the environment, or from the root `.env`). It only applies pending migrations and
@@ -230,6 +251,42 @@ test, for example `new FakeLeadDataProvider([...people])`,
 `new FakeEmailVerificationProvider({ 'a@example.test': 'valid' })` or
 `new FakeAiProvider([scriptedOutput])`, and assert on what they recorded (`sent`, `requests`,
 `usage`).
+
+## Accounts and sessions
+
+The API implements registration, email verification, sign-in, logout, sessions and password
+reset. The contract (routes, schemas, error codes) is `packages/shared/src/contracts/auth.ts`,
+described in **[docs/api/auth.md](docs/api/auth.md)**. Decisions and sources:
+`docs/decisions.md` D-04A-*.
+
+- **Passwords:** Argon2id (OWASP minimum settings), 15–128 characters, any characters.
+- **Sessions:** a random token in a `__Host-` cookie (HttpOnly, Secure, SameSite=Lax), stored
+  only as SHA-256. They end after 30 idle minutes or 8 hours, on logout, and when the
+  password is reset.
+- **CSRF:** authenticated mutations need the session's `x-csrf-token`. Every `POST` from
+  another origin is refused.
+- **No account enumeration:** register, resend and reset requests always answer `202`, and
+  sign-in failures are indistinguishable.
+- **Limits:** a sign-in lock per address after 5 failures, email limits per address, and a
+  per-IP limit.
+- **Email:** goes through `TransactionalMailProvider`. Development and test use the fake,
+  which never sends. Staging and production don't start until a live adapter exists (O-19).
+
+## Workspaces and teams
+
+A signed-in, verified user creates a workspace and becomes its **Client Admin**. Admins invite
+people by email with a role. The invitation is bound to that workspace and that address,
+expires after 7 days and works once. Team members (**Client Team Member**) can see the team but
+not change it. **Platform admins** act only through explicit `/platform/*` routes, each with a
+stated reason and audit records. Contract: **[docs/api/workspaces.md](docs/api/workspaces.md)**;
+decisions: `docs/decisions.md` D-04B-*.
+
+- The permission catalog and the system roles are code: `packages/shared/src/authorization.ts`.
+- Every `:workspaceId` is checked against the session user's active membership (otherwise
+  `404`). Every record id is looked up inside that workspace.
+- **Background jobs** carry only `{ v: 1, taskId }`. Workers call
+  `claimJob(prisma, defineWorker({ name, taskTypes }), message)`, which takes the workspace
+  from the task row, never from the message.
 
 ## Tenant-aware data access
 

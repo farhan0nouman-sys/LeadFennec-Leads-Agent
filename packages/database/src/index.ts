@@ -1,4 +1,5 @@
 // Public entry point of @lead-fennec-ai/database. Server-only: opens network connections.
+export * from './auth/store.js';
 export * from './client.js';
 export * from './fixtures/factories.js';
 export * from './fixtures/fixture-data.js';

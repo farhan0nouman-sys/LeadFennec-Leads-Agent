@@ -9,11 +9,15 @@ const db = new MigratedSchema('tstruct');
 
 /** Tables without tenant_id (D-03A-02, D-03C-02). */
 const PLATFORM_TABLES = [
+  'auth_throttles',
+  'auth_tokens',
   'billing_plans',
   'permissions',
   'plan_limits',
   'platform_audit_records',
   'tenants',
+  'user_credentials',
+  'user_sessions',
   'users',
 ];
 /** The only references from tenant rows to platform rows other than tenants. */
@@ -49,6 +53,13 @@ const DUPLICATE_CONCEPT_NAMES = [
   'white_label_settings',
   'user_notifications',
   'notification_events',
+  // Authentication (D-04A-02).
+  'sessions',
+  'user_tokens',
+  'email_verification_tokens',
+  'password_reset_tokens',
+  'login_attempts',
+  'credentials',
 ];
 
 interface ForeignKey {
@@ -160,7 +171,7 @@ describe.runIf(testDatabaseUrl !== undefined)(
       expect(tables.filter((t) => !t.hasTenantId).map((t) => t.name)).toEqual(
         PLATFORM_TABLES,
       );
-      expect(tenantTables()).toHaveLength(43);
+      expect(tenantTables()).toHaveLength(44);
     });
 
     it('makes tenant_id required, the first key column, cascading and immutable', async () => {
@@ -274,9 +285,13 @@ describe.runIf(testDatabaseUrl !== undefined)(
           ORDER BY 1`,
         [db.name],
       );
-      // secret_ref holds only a reference into the secret store (CHECK is_secret_ref).
+      // secret_ref holds only a reference into the secret store (CHECK is_secret_ref), and
+      // password_hash only an Argon2id hash (CHECK on the PHC format, D-04A-03);
+      // password_changed_at is a timestamp.
       expect(rows.rows.map((r) => r.col)).toEqual([
         'email_accounts.secret_ref',
+        'user_credentials.password_changed_at',
+        'user_credentials.password_hash',
       ]);
     });
   },

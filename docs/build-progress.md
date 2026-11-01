@@ -4,6 +4,305 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## GIT-04: Commit 04A–04B (2026-11-01)
+
+**Status: Done (local commit only).** The request was `git commit` (sent together with the
+04C prompt).
+
+| Step | Actual result |
+|---|---|
+| Branch and author | `feat/04a-auth` (from `a1ba33e`); author `LeadFennec-Leads-Agent` with the GitHub `noreply` address |
+| Content | One commit for 04A and 04B: they share the schema, the docs and the API modules. |
+| Checks before committing | The 04B regression (see the 04B entry); format check exit 0; a scan of the staged files for credentials and the personal email found nothing |
+| Commit | The commit that contains this entry (`git log`) |
+
+- **Not pushed:** CI hasn't run on 03A–04B.
+
+---
+
+## 04B: Workspaces, invitations, role-based authorization, worker context (2026-11-01)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL:** not run on a real server, in Docker or in CI. Local runs used PGlite.
+- **Concurrency:** the concurrency tests can't run on PGlite (one session).
+- **Interrupted:** the work stopped partway through (the user's usage limit) and was resumed.
+  Nothing was lost; the database layer was done, the API part was added afterwards.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `authorization.ts`: `PERMISSION_CATALOG` (adds `members.read`), `SYSTEM_ROLES`. `contracts/workspaces.ts`: routes, schemas, `apiErrorResponseSchema` with the workspace error codes. |
+| Schema and migrations | `invitations` (tenant-owned); `INVITED` removed from `membership_status` (default `ACTIVE`); `auth_throttle_scope` gains `INVITATION_EMAIL`; `job_tasks.id` unique. `20261101000800_retire_invited_memberships` (data step), `20261101000900_workspaces_and_invitations` (generated, `"public".` removed), `20261101001000_invitation_integrity_checks` (CHECKs, binding trigger, `tenant_id` trigger). |
+| Database package | `tenancy/workspaces.ts` (`createWorkspace`, `listUserWorkspaces`, `syncPermissionCatalog`), `members.ts`, `invitations.ts` (repository; `previewInvitation`, `acceptInvitation`), `authorization.ts`, `worker-context.ts` (`defineWorker`, `enqueueJob`, `claimJob`); `TenantScope` gains `members` and `invitations`; `platformConsole.setTenantStatus`; the test harness can migrate in steps |
+| Fixtures | The shared catalog; Beta's shared member is now `SUSPENDED` (was `INVITED`); two invitations per tenant (one accepted, one open) |
+| API | `http/api-errors.ts` (`ApiHttpException`, `ZodPipe`, `ApiExceptionFilter` mapping database errors; replaces `auth/auth-errors.ts`); `workspaces/`: `WorkspaceGuard`, `PermissionGuard`, `@RequirePermissions`, the workspace, invitation and platform controllers, the invitation email, slugs. Policy: invitation validity (7 days) and email budget (100 per workspace and day). Test harness `src/testing/api-harness.ts` (excluded from the build); `vitest.config.mjs` runs files one at a time. |
+| Tests | New: database `workspaces.integration.test.ts` (19), API `workspaces.integration.test.ts` (11). Updated: 44 tenant tables, 61 relations, "a suspended member". |
+| Docs | `docs/api/workspaces.md`; `docs/decisions.md` D-04B-01 to 08, O-11 resolved, O-14 updated, O-23 new; README (status, layout, tests, migrations, "Workspaces and teams"); `CLAUDE.md` (workspace routes, permissions, jobs, platform admins). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6), restarted fresh before each run and stopped
+at the end.
+
+| Command / check | Actual result |
+|---|---|
+| `prisma migrate diff … --script` | Generated: `invitations` with 6 indexes (2 partial) and 4 foreign keys, the enum rebuild, the `job_tasks.id` unique index. Edited only to remove `"public".` qualifiers; the data step went into its own earlier migration. |
+| `prisma migrate deploy` on an empty database; `migrate status`; drift | 11 migrations; "Database schema is up to date!"; `migrate diff --exit-code` exit 0 |
+| `INVITED` data migration | Tested: a schema migrated through 0700 with an `INVITED` membership ends `SUSPENDED` after the rest |
+| Fixture CLI load and `--reset` | Exit 0; memberships 2 and invitations 2 per tenant |
+| Catalog after all migrations | 54 tables, 112 foreign keys, 152 CHECK constraints, 198 indexes, 51 triggers |
+
+**Final regression.** The generated client was deleted first; Turborepo ran without its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0; no peer issues; no packages added |
+| `pnpm format:check` | **First run: exit 1** (`apps/api/tsconfig.build.json`); formatted, exit 0 |
+| `pnpm typecheck --force` | Exit 0; 14/14, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14, 0 cached. Earlier, 7 lint findings were fixed (a deprecated alias in 6 places, 1 optional chain). |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 9/9: shared **134**, integrations **13**, database **46 passed, 301 skipped**, worker **4**, api **18 passed, 36 skipped** |
+| `turbo run test --force --concurrency=1`, with `TEST_DATABASE_URL` (PGlite) | Exit 0; 9/9, 0 cached: shared **134**, integrations **13**, database **345 passed, 2 skipped**, worker **4**, api **54** |
+| `pnpm build --force` / `pnpm test:e2e` | 11/11, 0 cached / **1 passed** |
+| Reference repos / credential scan | 0 changes in each of the 9 / no matches |
+
+**Earlier run (logged honestly):** with packages running in parallel and two database-backed API
+files in parallel, every API workspace test failed on PGlite (`relation "tenants" does not
+exist`; PGlite shares one session). Fixed by running the API's files one at a time; locally,
+packages also run one at a time.
+
+### What the 04B tests prove (on PGlite)
+
+- **Workspace creation:** a verified user becomes Client Admin with the catalog's grants; the
+  system roles are created; an audit record; a taken slug `409`; unverified users refused.
+- **Roles:**
+  - members read the team but can't invite or change roles (`403` from the guard and from the
+    repository);
+  - admins promote and demote;
+  - the last admin is kept (`409`);
+  - role changes are audited with their before and after.
+- **Isolation:**
+  - another workspace (or an invalid id) is `404`;
+  - another workspace's membership, role or invitation id is `404`, by route and by repository.
+- **Invitations:**
+  - the token is never in a response;
+  - only the invited, signed-in address may preview or accept, and others learn nothing;
+  - the confirmed workspace must match;
+  - single use, 7-day expiry, replacement by a new invitation, and revocation;
+  - an active member can't be invited;
+  - a suspended member is reactivated with the new role;
+  - a suspended workspace's invitations are unusable;
+  - binding changes are rejected by the trigger, and the state rules by CHECKs.
+- **Platform admins:**
+  - refused to everyone else, with the refusals recorded;
+  - a reason is required;
+  - no access to member routes;
+  - console, access and status changes are recorded with reason and request id;
+  - suspending locks members out, reactivating lets them back.
+- **Worker context:**
+  - the tenant comes from the task row;
+  - envelopes naming a tenant are refused, as are unknown tasks, wrong workers and inactive
+    workspaces;
+  - a task is claimed once;
+  - a payload id from another workspace is not found in the scope;
+  - retry, then fail;
+  - no enqueueing from a platform-admin scope.
+- **Audit:** no secret seen by the tests appears in audit records or logs.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL (O-06, not pushed); the concurrency tests (PGlite).
+- `pg` 8.23 warns that Prisma's `adapter-pg` sends concurrent queries on one transaction
+  connection, which `pg` 9 will reject. Upstream behaviour; tracked in O-14.
+- The worker app does not process jobs yet (O-20).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker (O-06).
+3. Open: O-19 (mail provider), O-20 (queue and instances), O-21 (account security), O-22 (auth
+   decision), O-23 (member suspension, custom roles, workspace limits).
+
+### Next prompt
+
+**04C** (already requested): the account and team screens.
+
+---
+
+## 04A: Authentication API: registration, verification, sessions, password reset (2026-11-01)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL:** not run on a real server, in Docker or in CI. Local runs used PGlite
+  (PostgreSQL 18.6 in WebAssembly).
+- **Browsers:** no real browser exercised the cookie, `SameSite` or the Fetch Metadata headers.
+  The tests send those headers themselves.
+- **Email:** no real email was sent; the fake mail provider records messages.
+- **Not committed:** branch `feat/04a-auth` (created from `feat/03a-data-model` at `a1ba33e`).
+
+**Scope.** I read the task as backend, contract and tests only: the account screens are the
+next prompt ("before building the account screens"). The reference plan is still missing,
+and no earlier auth decision existed, so 04A made and recorded one (D-04A-01, O-22).
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Contract (new) | `packages/shared/src/contracts/auth.ts`: routes, zod request and response schemas, error codes, cookie and header names, password policy; tests (4). `docs/api/auth.md`. |
+| Schema | `schema.prisma`: `users.email_verified_at`; platform tables `user_credentials`, `user_sessions`, `auth_tokens`, `auth_throttles`; 3 enums |
+| Migrations | `20261101000600_user_authentication` (generated). `20261101000700_user_authentication_checks` (hand-written): `is_sha256_hex` and CHECKs for the Argon2id format, token shapes and timing. |
+| Database package | `src/auth/store.ts` (auth data access, optimistic attempt counters); new models added to the platform list of the scoped client; the test harness is built and exported as `@lead-fennec-ai/database/testing`; new `auth-schema.integration.test.ts` (10); structure test updated (10 platform tables, credential allowlist, more duplicate names) |
+| Integrations | `TransactionalMailProvider` and `FakeTransactionalMailProvider`; `ProviderSet.mail`; `LiveProvidersUnavailableError`; tests (13) |
+| API | `src/auth/`: controller, service, guards (`OriginGuard`, `SessionGuard`, `CsrfGuard`), Argon2id hasher, token crypto, session cookie, errors and filter, background tasks, mail templates, policy. `database/` and `mail/` modules. Global `RequestErrorFilter`. `WEB_APP_URL` in `env.ts`. `main.ts` prints a clear message when no live mail provider exists. |
+| Dependencies | `@node-rs/argon2` 2.2.2, `@nestjs/throttler` 6.7.1, `cookie` 2.0.1 (catalog); `@lead-fennec-ai/integrations` added to the API |
+| Config | `.env.example`, `turbo.json` (`WEB_APP_URL`); log redaction for `x-csrf-token`, `newPassword`, `passwordHash`, `csrfToken`, `sessionToken` |
+| Docs | `docs/decisions.md` D-04A-01 to 13, O-19 to O-22. `README.md`: status, layout, "Accounts and sessions", tests, migrations. `CLAUDE.md`: credentials rule and an Authentication section. `docs/local-development.md`: `WEB_APP_URL`, account email in development, the startup error. This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329, run from the scratch
+folder. It was restarted fresh before each run and stopped at the end (port released).
+
+| Command / check | Actual result |
+|---|---|
+| Official guidance (WebFetch) | OWASP Password Storage, Authentication, Forgot Password, Session Management and CSRF Prevention cheat sheets; the `cookie` README |
+| npm registry | Versions, publish dates, peer ranges and install scripts of the chosen and rejected libraries (D-04A-01, D-04A-03, D-04A-06). All chosen versions are older than the 1-day release-age rule; `pnpm add` passed the supply-chain check. |
+| `prisma migrate diff … --script` | Generated migration: 4 tables, 3 types, 1 column, 5 indexes (one partial), 3 foreign keys (CASCADE) |
+| `prisma migrate deploy` on an empty database; `migrate status`; deploy again | 8 migrations applied; "Database schema is up to date!"; "No pending migrations to apply." |
+| Drift (`migrate diff --exit-code`) | Exit 0 |
+| Fixture CLI: load, then `--reset` | Exit 0; the fixtures are unaffected by the new tables |
+| Catalog after all migrations | 53 tables, 108 foreign keys, 147 CHECK constraints, 190 indexes, 49 triggers |
+| Smoke test: built API (`dist/main.js`, development, PGlite) | `/health/live` 200; register 202, twice; sign-in of the unverified account **403** `email_not_verified` (after letting the background registration finish; a first try 0.1 s after registering got 401 because the account did not exist yet); sign-in with `Origin: https://evil.test` 403; `/auth/session` without a cookie 401; no auth-task failure; the password in no log line (30 lines) |
+| Built API with `APP_ENV=staging` | Exit 1: `[api] No live provider adapters exist yet. Account email needs a live mail provider…` (after Nest's own stack trace). Without `WEB_APP_URL` in production: `[api] Invalid environment configuration: WEB_APP_URL: is required outside development and test`. |
+
+**Final regression.** The generated client was deleted first; Turborepo ran without its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0; no peer issues |
+| `pnpm format:check` | **First run: exit 1** (15 new files). After `prettier --write` on them: exit 0. **Again exit 1** after a late change (`registry.ts`); formatted, exit 0. |
+| `pnpm typecheck --force` | Exit 0; 14/14, 0 cached |
+| `pnpm exec turbo run lint --force`, then root ESLint | Exit 0; 14/14, 0 cached; root ESLint exit 0. Earlier, 6 lint findings in new code were fixed. |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 9/9, 0 cached: shared **134**, integrations **13**, database **46 passed, 280 skipped**, worker **4**, api **18 passed, 25 skipped** (the auth suite skipped) |
+| `pnpm test --force`, with `TEST_DATABASE_URL` (PGlite) | Exit 0; 9/9, 0 cached: shared **134**, integrations **13**, database **324 passed, 2 skipped** (Redis; concurrency on PGlite), worker **4**, api **43** (auth flows 25, auth units 12, health 6) |
+| `pnpm build --force` | Exit 0; 11/11, 0 cached; `dist/testing` present in the database package |
+| `pnpm test:e2e` | Exit 0; Playwright **1 passed** |
+| After the late `main.ts` / `registry.ts` change | `turbo run typecheck lint` for integrations and api: 8/8, 0 cached. Their tests with `TEST_DATABASE_URL`: integrations 13, api 43. Build of both: 5/5. Format check exit 0. |
+| `git status --porcelain` in the 9 `reference-repos/*` | 0 changed files in each |
+| Credential scan (Stripe keys, webhook secrets, private keys, cloud and GitHub tokens, personal email) | No matches. The tests' passwords are fake test values. |
+
+### What the 04A tests prove (on PGlite)
+
+- **Registration:**
+  - `202` with a one-time link (token in the URL fragment);
+  - only an Argon2id hash (m=19456, t=2, p=1) and the token's SHA-256 are stored;
+  - identical answers for a new, an unverified and a verified address;
+  - "already registered" mail without a token;
+  - the pre-hijacking defense: the first registrant's link stops working and the owner sets
+    the password;
+  - validation never echoes input, and a malformed body gets the contract's envelope.
+- **Verification:** works once; unknown, used and expired (24 h) links are rejected; resend
+  issues a new link.
+- **Sign-in:**
+  - wrong password, unknown address and disabled user give identical `401`s;
+  - unverified address `403` only with the right password;
+  - cookie `__Host-lf_session` is HttpOnly, Secure, SameSite=Lax, Path=/, with no Domain and no
+    lifetime;
+  - the token appears neither in the body nor in the database;
+  - a new session id at every sign-in, and the old session is ended.
+- **Sessions:**
+  - expire after 30 idle minutes;
+  - activity extends them up to exactly 8 hours;
+  - expired, forged, ended and disabled-user sessions get `401`, with the cookie cleared.
+- **CSRF and origin:**
+  - logout needs the session's own CSRF token; another session's token is refused;
+  - every `POST`, sign-in and registration included, is refused from another origin, a
+    cross-site or same-site fetch, or `Origin: null`;
+  - non-browser clients are accepted.
+- **Password reset:**
+  - same answer for unknown and known addresses, and mail only to owners;
+  - a weak password doesn't use up the link;
+  - the link works once and expires after 30 minutes;
+  - success ends every session, invalidates the old password and sends a notice.
+- **Repeated attempts:**
+  - after 5 failures an address is locked for 15 minutes (`429`, `Retry-After`, even with the
+    right password), for existing and unknown addresses alike;
+  - the lock lifts afterwards;
+  - at most 3 reset emails per hour;
+  - per-IP limit (`429` on the 4th request at a limit of 3), with session reads not limited.
+- **Logs:** no password, link token, session token or CSRF token from any test appeared in any
+  log line.
+- **Database:**
+  - CHECKs reject plain, bcrypt and Argon2i hashes, non-SHA-256 token values, inconsistent
+    session times, tokens used after expiry and unhashed throttle keys;
+  - one unused token per purpose;
+  - deleting a user cascades;
+  - attempt windows and locks behave as specified;
+  - 8 concurrent attempts are each counted once;
+  - a token for a changed address fails;
+  - a reset is atomic.
+- **Contract:** every API response is parsed with the shared schemas.
+
+### Defects found and fixed during 04A
+
+1. **Bodies that aren't JSON** bypassed the auth error filter. Nest answered with the parser's
+   message, which can quote the body. Fixed with a global `RequestErrorFilter` (fixed message,
+   contract envelope).
+2. **`ECONNRESET` on PGlite** with two connections per Prisma pool in the API suite. Each test
+   client now uses one connection.
+3. **Raw SQL in the throttle store** would have depended on `search_path` in schema-scoped
+   tests. Replaced with optimistic updates through Prisma before the first run.
+4. **Six lint findings:** optional chains; Argon2id selection via an ambient const enum
+   (`isolatedModules`), now the library default plus a PHC-prefix check; string spread, now
+   `Array.from`.
+5. **The structure test's credential scan** matched `user_credentials.password_changed_at`
+   (a timestamp). Added to the explicit allowlist.
+6. **Staging startup** failed with only a Nest stack trace. Now a named
+   `LiveProvidersUnavailableError` and a one-line message, with `abortOnError: false` so
+   `main.ts` handles startup errors.
+
+### Incomplete live checks (not passed)
+
+- **Real PostgreSQL 18.6 never ran 03A–04A:** no Docker (O-06), and CI hasn't run (not
+  pushed).
+- **Real browsers:** cookie prefixes, `SameSite` and Fetch Metadata are only simulated with
+  headers.
+- **Same-origin serving:** serving the API on the web origin (a proxy route) is not built yet;
+  it comes with the screens.
+- **Redis integration test** and the **real-PostgreSQL concurrency test** (03C): skipped.
+
+### Live checks (external services)
+
+None. Nothing was sent, charged or published. Network use: OWASP and GitHub pages (6), npm
+registry metadata, and installing three packages through `pnpm add` (lockfile updated).
+
+### Blockers
+
+1. **The reference plan is missing** (O-01). The auth decision should be checked against it
+   (O-22).
+2. **No Docker** (O-06), and native PostgreSQL holds 5432 (O-05).
+3. **Uncommitted:** 04A is on `feat/04a-auth`, uncommitted, on top of the unpushed
+   `feat/03a-data-model`. CI hasn't run.
+4. **Open for later tasks:**
+   - mail provider and a development inbox (O-19); until then staging and production refuse
+     to start;
+   - background work, per-IP limits across instances, proxy trust (O-20);
+   - MFA, breached passwords, CAPTCHA, session list, email change, deletion, retention (O-21).
+
+### Manual check
+
+- **Once a browser flow exists (next prompt):** sign up, confirm, sign in, reload, sign out
+  and reset in a real browser. Check in the developer tools that `__Host-lf_session` is
+  HttpOnly, Secure and SameSite=Lax, and that no token appears in the console or the address
+  bar.
+- **With Docker, or once pushed:** `pnpm test` with `TEST_DATABASE_URL` on real PostgreSQL;
+  expect api **43 passed** and database **326 passed, 0 skipped** (with `TEST_REDIS_URL`).
+
+### Next prompt
+
+**04B** (as it turned out: workspaces, invitations and authorization; the screens are 04C).
+
+---
+
 ## GIT-03: Commit 03A–03C (2026-11-01)
 
 **Status: Done (local commit only).** The request was `git commit`.

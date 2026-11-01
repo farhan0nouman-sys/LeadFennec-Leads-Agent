@@ -161,7 +161,7 @@ describe.runIf(testDatabaseUrl !== undefined)(
         fk.columns.map((c) => `"${c}" IS NOT NULL`).join(' AND ');
 
       it('fixtures hold rows of every tenant table in both tenants', async () => {
-        expect(tenantTables).toHaveLength(43);
+        expect(tenantTables).toHaveLength(44);
         const empty: string[] = [];
         for (const table of tenantTables) {
           for (const [key, ids] of [
@@ -181,8 +181,8 @@ describe.runIf(testDatabaseUrl !== undefined)(
       });
 
       it('fixtures use every relation in both tenants (authorized: same tenant)', async () => {
-        // Every foreign key between two tenant tables (54 before 03C, 4 added by 03C).
-        expect(relations).toHaveLength(58);
+        // Every foreign key between two tenant tables (54 before 03C, 4 added by 03C, 3 by 04B).
+        expect(relations).toHaveLength(61);
         const unused: string[] = [];
         for (const fk of relations) {
           for (const [key, ids] of [
@@ -417,7 +417,7 @@ describe.runIf(testDatabaseUrl !== undefined)(
           }),
         ],
         [
-          'an invited (not active) member',
+          'a suspended member',
           () => ({
             tenantId: beta.tenant,
             userId: FIXTURE_USERS.sharedMember.id,

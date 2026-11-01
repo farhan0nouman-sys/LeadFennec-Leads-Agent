@@ -102,6 +102,27 @@ export interface UsageRecord {
   readonly idempotencyKey: string;
 }
 
+/**
+ * Platform email to users (verification, password reset, security notices), as opposed to a
+ * tenant's outreach mailboxes. The live provider is not chosen yet (docs/decisions.md O-19).
+ */
+export interface TransactionalMailProvider {
+  send(message: TransactionalEmail): Promise<TransactionalSendReceipt>;
+}
+
+export interface TransactionalEmail {
+  readonly to: string;
+  readonly subject: string;
+  /** Plain text. May contain a one-time link; never log it. */
+  readonly textBody: string;
+  /** Template key, e.g. "auth.verify_email". Safe to log. */
+  readonly template: string;
+}
+
+export interface TransactionalSendReceipt {
+  readonly messageId: string;
+}
+
 export interface ProviderSet {
   readonly ai: AiProvider;
   readonly leadData: LeadDataProvider;
@@ -110,4 +131,5 @@ export interface ProviderSet {
   readonly microsoftGraph: MailboxProvider;
   readonly crm: CrmProvider;
   readonly billing: BillingProvider;
+  readonly mail: TransactionalMailProvider;
 }

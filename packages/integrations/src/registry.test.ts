@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { FakeMailboxProvider } from './fakes.js';
-import { LiveProvidersForbiddenError, createProviders } from './registry.js';
+import {
+  LiveProvidersForbiddenError,
+  LiveProvidersUnavailableError,
+  createProviders,
+} from './registry.js';
 
 describe('createProviders', () => {
   it('returns fakes in fake mode', () => {
@@ -23,7 +27,7 @@ describe('createProviders', () => {
       /No live provider adapters/,
     );
     expect(() => createProviders('production', 'live')).toThrow(
-      /No live provider adapters/,
+      LiveProvidersUnavailableError,
     );
   });
 });

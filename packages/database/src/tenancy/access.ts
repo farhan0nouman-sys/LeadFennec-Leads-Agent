@@ -25,7 +25,13 @@ import {
   writeAuditRecord,
   type AuditRepository,
 } from './audit.js';
+import { RecordNotFoundError } from './authorization.js';
 import { createBillingRepository, type BillingRepository } from './billing.js';
+import {
+  createInvitationRepository,
+  type InvitationRepository,
+} from './invitations.js';
+import { createMemberRepository, type MemberRepository } from './members.js';
 import {
   createNotificationRepository,
   type NotificationRepository,
@@ -40,6 +46,8 @@ export interface TenantScope {
   readonly db: TenantDb;
   readonly audit: AuditRepository;
   readonly billing: BillingRepository;
+  readonly invitations: InvitationRepository;
+  readonly members: MemberRepository;
   readonly notifications: NotificationRepository;
   readonly usage: UsageRepository;
 }
@@ -64,6 +72,8 @@ function buildScope(
     }),
     audit: createAuditRepository(prisma, tenantId, actor),
     billing: createBillingRepository(prisma, tenantId, actor),
+    invitations: createInvitationRepository(prisma, tenantId, actor, now),
+    members: createMemberRepository(prisma, tenantId, actor),
     notifications: createNotificationRepository(prisma, tenantId, actor, now),
     usage: createUsageRepository(prisma, tenantId, actor, now),
   };
@@ -201,7 +211,24 @@ export interface PlatformConsole {
   readonly actor: PlatformAdminActor;
   /** Every tenant, newest first. */
   listTenants(page: PageRequest): Promise<Page<Tenant>>;
+  /**
+   * Suspends or reactivates a workspace (members of a suspended workspace are refused).
+   * Explicit and audited: one platform audit record per change, with its own reason.
+   */
+  setTenantStatus(input: {
+    tenantId: string;
+    status: 'ACTIVE' | 'SUSPENDED';
+    reason: string;
+  }): Promise<Tenant>;
 }
+
+const tenantStatusInputSchema = z
+  .object({
+    tenantId: uuidSchema,
+    status: z.enum(['ACTIVE', 'SUSPENDED']),
+    reason: accessReasonSchema,
+  })
+  .strict();
 
 /**
  * The cross-tenant view for platform admins. Opening it writes
@@ -232,5 +259,37 @@ export async function platformConsole(
           take: keyset.take,
         }),
       ),
+    async setTenantStatus(input) {
+      const { tenantId, status, reason } = tenantStatusInputSchema.parse(input);
+      return prisma.$transaction(async (tx) => {
+        const before = await tx.tenant.findUnique({
+          where: { id: tenantId },
+          select: { status: true },
+        });
+        if (before === null) {
+          throw new RecordNotFoundError('workspace');
+        }
+        const tenant = await tx.tenant.update({
+          where: { id: tenantId },
+          data: { status },
+        });
+        await tx.platformAuditRecord.create({
+          data: {
+            actorType: 'PLATFORM_ADMIN',
+            actorUserId: actor.userId,
+            action: 'tenant.status_changed',
+            subjectTenantId: tenantId,
+            targetType: 'tenant',
+            targetId: tenantId,
+            reason,
+            metadata: { from: before.status, to: status },
+            ...(actor.requestId === undefined
+              ? {}
+              : { requestId: actor.requestId }),
+          },
+        });
+        return tenant;
+      });
+    },
   };
 }

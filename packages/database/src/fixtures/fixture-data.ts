@@ -10,7 +10,10 @@ import {
   normalizeEmail,
   normalizeTimeZone,
   parseSecretRef,
+  PERMISSION_CATALOG,
+  SYSTEM_ROLES,
 } from '@lead-fennec-ai/shared';
+import { createHash } from 'node:crypto';
 import type { Prisma, UsageMetric } from '../generated/prisma/client.js';
 import { payloadSha256 } from '../payload-hash.js';
 
@@ -22,53 +25,11 @@ function fixtureId(group: 'a' | 'b' | 'c', n: number): string {
   return `00000000-0000-4000-8000-${group}${n.toString(16).padStart(11, '0')}`;
 }
 
-export const FIXTURE_PERMISSIONS = [
-  {
-    key: 'members.manage',
-    description: 'Invite, suspend and change roles of members',
-  },
-  { key: 'settings.manage', description: 'Change tenant settings' },
-  { key: 'icps.read', description: 'View ideal customer profiles' },
-  { key: 'icps.write', description: 'Create and edit ideal customer profiles' },
-  { key: 'contacts.read', description: 'View organizations and contacts' },
-  {
-    key: 'contacts.write',
-    description: 'Create and edit organizations and contacts',
-  },
-  { key: 'lead_lists.read', description: 'View lead lists' },
-  { key: 'lead_lists.write', description: 'Create and edit lead lists' },
-  { key: 'imports.create', description: 'Import contacts' },
-  { key: 'research.run', description: 'Run research' },
-  { key: 'scores.read', description: 'View scores' },
-  { key: 'verifications.run', description: 'Verify email addresses' },
-  { key: 'campaigns.read', description: 'View campaigns and their leads' },
-  {
-    key: 'campaigns.write',
-    description: 'Create and edit campaigns, sequences and drafts',
-  },
-  { key: 'drafts.approve', description: 'Approve or reject outbound drafts' },
-  { key: 'email_accounts.manage', description: 'Connect and manage mailboxes' },
-  { key: 'suppressions.manage', description: 'Manage the suppression list' },
-  {
-    key: 'billing.read',
-    description: 'View the subscription, usage and payments',
-  },
-  { key: 'branding.manage', description: 'Change the workspace branding' },
-  { key: 'audit.read', description: 'View the audit records' },
-] as const satisfies readonly Prisma.PermissionCreateManyInput[];
+/** The permission catalog (from @lead-fennec-ai/shared; the fixtures add nothing to it). */
+export const FIXTURE_PERMISSIONS: readonly Prisma.PermissionCreateManyInput[] =
+  PERMISSION_CATALOG;
 
-const MEMBER_PERMISSIONS = [
-  'icps.read',
-  'contacts.read',
-  'contacts.write',
-  'lead_lists.read',
-  'lead_lists.write',
-  'imports.create',
-  'research.run',
-  'scores.read',
-  'campaigns.read',
-  'campaigns.write',
-] as const;
+const MEMBER_PERMISSIONS = SYSTEM_ROLES.client_member.permissions;
 
 function user(
   n: number,
@@ -202,6 +163,7 @@ export interface FixtureTenant extends FixtureOutreach, FixtureBilling {
   readonly roles: Prisma.RoleCreateManyInput[];
   readonly rolePermissions: Prisma.RolePermissionCreateManyInput[];
   readonly memberships: Prisma.MembershipCreateManyInput[];
+  readonly invitations: Prisma.InvitationCreateManyInput[];
   readonly icps: Prisma.IcpCreateManyInput[];
   readonly organizations: Prisma.OrganizationCreateManyInput[];
   readonly contacts: Prisma.ContactCreateManyInput[];
@@ -289,6 +251,8 @@ export function fixtureIds(key: FixtureKey) {
     auditAdminAccess: fixtureId(g, 392),
     notificationApproval: fixtureId(g, 400),
     notificationPayment: fixtureId(g, 401),
+    invitationAccepted: fixtureId(g, 410),
+    invitationOpen: fixtureId(g, 411),
   };
 }
 
@@ -313,6 +277,13 @@ function inboundEvent(
   },
 ): Prisma.InboundEventCreateManyInput {
   return { ...data, payloadSha256: payloadSha256(data.payload) };
+}
+
+/** SHA-256 (hex) of a fake invitation token, as the API stores real ones. */
+function fakeTokenHash(label: string): string {
+  return createHash('sha256')
+    .update(`fixture-invitation-${label}`)
+    .digest('hex');
 }
 
 function secondsAfter(date: Date, seconds: number): Date {
@@ -1169,7 +1140,36 @@ function buildTenant(key: FixtureKey): FixtureTenant {
         id: ids.membershipShared,
         userId: FIXTURE_USERS.sharedMember.id,
         roleId: ids.roleMember,
-        status: alpha ? 'ACTIVE' : 'INVITED',
+        // Beta's shared member was suspended (no access); see also the fixture invitations.
+        status: alpha ? 'ACTIVE' : 'SUSPENDED',
+      },
+    ],
+    // The shared member joined through an invitation; another address is still invited.
+    // Token hashes of fake tokens that were never sent.
+    invitations: [
+      {
+        tenantId,
+        id: ids.invitationAccepted,
+        email: FIXTURE_USERS.sharedMember.email,
+        normalizedEmail: FIXTURE_USERS.sharedMember.normalizedEmail,
+        roleId: ids.roleMember,
+        invitedByMembershipId: ids.membershipAdmin,
+        tokenHash: fakeTokenHash(`${key}-accepted`),
+        createdAt: new Date('2026-09-30T09:00:00Z'),
+        expiresAt: new Date('2026-10-07T09:00:00Z'),
+        acceptedAt: new Date('2026-10-01T10:00:00Z'),
+        acceptedMembershipId: ids.membershipShared,
+      },
+      {
+        tenantId,
+        id: ids.invitationOpen,
+        email: 'Invitee@Fixtures.TEST',
+        normalizedEmail: normalizeEmail('Invitee@Fixtures.TEST').email,
+        roleId: ids.roleMember,
+        invitedByMembershipId: ids.membershipAdmin,
+        tokenHash: fakeTokenHash(`${key}-open`),
+        createdAt: new Date('2026-10-30T09:00:00Z'),
+        expiresAt: new Date('2026-11-06T09:00:00Z'),
       },
     ],
     icps: [

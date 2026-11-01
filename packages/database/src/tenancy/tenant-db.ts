@@ -16,6 +16,10 @@ export const PLATFORM_MODELS = [
   'BillingPlan',
   'PlanLimit',
   'PlatformAuditRecord',
+  'UserCredential',
+  'UserSession',
+  'AuthToken',
+  'AuthThrottle',
 ] as const satisfies readonly Prisma.ModelName[];
 
 export type PlatformModelName = (typeof PLATFORM_MODELS)[number];

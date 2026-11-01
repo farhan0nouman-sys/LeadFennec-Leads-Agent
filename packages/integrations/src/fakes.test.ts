@@ -6,6 +6,7 @@ import {
   FakeEmailVerificationProvider,
   FakeLeadDataProvider,
   FakeMailboxProvider,
+  FakeTransactionalMailProvider,
   createFakeProviders,
 } from './fakes.js';
 import type { LeadRecord, OutboundEmail } from './providers.js';
@@ -126,6 +127,18 @@ describe('other fakes', () => {
     expect(billing.usage).toHaveLength(1);
   });
 
+  it('transactional mail records messages instead of sending them', async () => {
+    const mail = new FakeTransactionalMailProvider();
+    const receipt = await mail.send({
+      to: 'user@example.test',
+      subject: 'Verify your email',
+      textBody: 'Open the link.',
+      template: 'auth.verify_email',
+    });
+    expect(receipt.messageId).toBe('fake-mail-1');
+    expect(mail.sent.map((m) => m.template)).toEqual(['auth.verify_email']);
+  });
+
   it('createFakeProviders returns a fresh fake for every provider', () => {
     const providers = createFakeProviders();
     expect(Object.keys(providers).sort()).toEqual([
@@ -135,6 +148,7 @@ describe('other fakes', () => {
       'emailVerification',
       'gmail',
       'leadData',
+      'mail',
       'microsoftGraph',
     ]);
     expect(createFakeProviders().gmail).not.toBe(providers.gmail);

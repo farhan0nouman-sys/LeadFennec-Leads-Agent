@@ -114,6 +114,7 @@ schemas are in `apps/api/src/env.ts`, `apps/worker/src/env.ts` and `apps/web/env
 | `HEALTH_CHECK_TIMEOUT_MS` | api, worker | `2000` | Integer 100–30000 |
 | `LOG_LEVEL` | api, worker | `info` | `fatal` \| `error` \| `warn` \| `info` \| `debug` \| `trace` \| `silent` |
 | `API_BASE_URL` | web | none (required) | `http://` or `https://` URL. Server-side only. |
+| `WEB_APP_URL` | api | `http://localhost:3000` in development and test; required elsewhere | Origin of the web app, no path. `https://` outside development and test. Emailed account links point here, and the API refuses state-changing requests from any other origin. |
 
 Turborepo runs in strict environment mode: the `dev` task only passes the variables listed in
 `turbo.json` (`passThroughEnv`). When an app gains a variable, add it there too.
@@ -147,6 +148,7 @@ Testing, fake providers and the network guard are documented in [README.md](../R
 | `[api] Port already in use` (also `[worker]`) | Stop the other process or change `API_PORT` / `WORKER_HEALTH_PORT`. |
 | Readiness log: `password authentication failed for user ...` | Something else answers on the `DATABASE_URL` port, often a native PostgreSQL on 5432. See [Ports](#ports). |
 | `[fixtures] Fixture tenants are for development and test databases only` | `pnpm db:fixtures` refuses `APP_ENV=staging` or `production`. |
+| `[api] LiveProvidersForbiddenError` or `No live provider adapters exist yet` | Outside development and test the API needs a real mail provider for account email, and none exists yet (`docs/decisions.md` O-19). |
 
 ## Database schema and fixtures
 
@@ -158,6 +160,11 @@ pnpm db:fixtures    # loads the two fixture tenants (idempotent); --reset reload
 ```
 
 Both read `DATABASE_URL` from the environment or from the root `.env`; the environment wins.
+
+**Account email in development.** Sign-up, verification and password-reset emails go to the
+fake mail provider, which keeps them in memory and never sends or logs them (links contain
+one-time tokens). A local inbox for trying the flows by hand is open (`docs/decisions.md`
+O-19); until then, use the API tests (`apps/api/src/auth/auth.integration.test.ts`).
 After `pnpm db:migrate`, `pnpm --filter @lead-fennec-ai/database exec prisma migrate status`
 should report "Database schema is up to date!". Adding migrations and the fixture contents
 are described in [README.md](../README.md#migrations).

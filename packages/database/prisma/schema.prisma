@@ -1,15 +1,17 @@
 // Lead Fennec AI data model: core entities (task 03A), outreach and background jobs (task 03B),
-// billing, usage, branding, audit and notifications (task 03C).
+// billing, usage, branding, audit and notifications (task 03C), authentication (task 04A),
+// workspaces and invitations (task 04B).
 //
 // Tenant ownership, deletion rules and the queries behind each index are recorded in
-// docs/decisions.md (D-03A-*, D-03B-*, D-03C-*). Rules Prisma cannot express (CHECK constraints,
+// docs/decisions.md (D-03A-*, D-03B-*, D-03C-*, D-04A-*, D-04B-*). Rules Prisma cannot express (CHECK constraints,
 // tenant_id immutability and append-only triggers) are in the hand-written
 // prisma/migrations/*_integrity_checks migrations.
 //
 // Conventions
 // - Platform scope (no tenant_id): tenants, users (one login identity across tenants),
 //   permissions (a catalog defined by application code), the billing plan catalog
-//   (billing_plans, plan_limits) and platform_audit_records.
+//   (billing_plans, plan_limits), platform_audit_records, and the authentication tables
+//   (user_credentials, user_sessions, auth_tokens, auth_throttles).
 // - Every other table is tenant-owned: tenant_id NOT NULL, composite primary key
 //   (tenant_id, id), and every reference to another tenant-owned row is a composite
 //   foreign key (tenant_id, x_id) → (tenant_id, id). A row can therefore never point at a
@@ -116,6 +118,8 @@ model Tenant {
   auditRecords       AuditRecord[]
   notifications      Notification[]
 
+  invitations Invitation[]
+
   @@map("tenants")
 }
 
@@ -137,12 +141,127 @@ model User {
   /// Platform Admin: operates the platform; not a tenant role.
   isPlatformAdmin Boolean    @default(false) @map("is_platform_admin")
   status          UserStatus @default(ACTIVE)
+  /// When the user proved control of `email` (verification link or password reset).
+  emailVerifiedAt DateTime?  @map("email_verified_at") @db.Timestamptz(3)
   createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   memberships Membership[]
+  credential  UserCredential?
+  sessions    UserSession[]
+  authTokens  AuthToken[]
 
   @@map("users")
+}
+
+// ─── Authentication (task 04A, platform scope) ─────────────────────────────────
+// Only hashes are stored: Argon2id for passwords, SHA-256 for random tokens. The token
+// values exist only in the session cookie and in emailed links (docs/decisions.md D-04A-*).
+
+/// The user's password as an Argon2id hash (PHC string), never the password.
+model UserCredential {
+  userId            String   @id @map("user_id") @db.Uuid
+  /// "$argon2id$v=19$m=…,t=…,p=…$<salt>$<hash>".
+  passwordHash      String   @map("password_hash")
+  passwordChangedAt DateTime @map("password_changed_at") @db.Timestamptz(3)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("user_credentials")
+}
+
+enum SessionEndReason {
+  LOGOUT
+  /// Idle or absolute timeout.
+  EXPIRED
+  /// A new login from the same browser replaced it.
+  REPLACED
+  /// All sessions end when the password is reset.
+  PASSWORD_RESET
+  /// The user was disabled.
+  USER_DISABLED
+
+  @@map("session_end_reason")
+}
+
+/// A signed-in browser session. The cookie holds a random 256-bit token; only its SHA-256 is
+/// stored. Timeouts are enforced here, on the server.
+model UserSession {
+  id                String            @id @default(uuid(7)) @db.Uuid
+  userId            String            @map("user_id") @db.Uuid
+  /// SHA-256 (hex) of the session token.
+  tokenHash         String            @unique @map("token_hash") @db.Char(64)
+  createdAt         DateTime          @map("created_at") @db.Timestamptz(3)
+  lastSeenAt        DateTime          @map("last_seen_at") @db.Timestamptz(3)
+  /// Ends after this instant without activity; extended on use, never past the absolute end.
+  idleExpiresAt     DateTime          @map("idle_expires_at") @db.Timestamptz(3)
+  absoluteExpiresAt DateTime          @map("absolute_expires_at") @db.Timestamptz(3)
+  endedAt           DateTime?         @map("ended_at") @db.Timestamptz(3)
+  endReason         SessionEndReason? @map("end_reason")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId, endedAt])
+  @@map("user_sessions")
+}
+
+enum AuthTokenPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+
+  @@map("auth_token_purpose")
+}
+
+/// A single-use token sent by email. Only its SHA-256 is stored. Issuing a new one deletes the
+/// user's unused token for the same purpose.
+model AuthToken {
+  id        String           @id @default(uuid(7)) @db.Uuid
+  userId    String           @map("user_id") @db.Uuid
+  purpose   AuthTokenPurpose
+  /// SHA-256 (hex) of the token.
+  tokenHash String           @unique @map("token_hash") @db.Char(64)
+  /// The address it was sent to (normalizeEmail); it must still be the user's when used.
+  email     String
+  createdAt DateTime         @map("created_at") @db.Timestamptz(3)
+  expiresAt DateTime         @map("expires_at") @db.Timestamptz(3)
+  usedAt    DateTime?        @map("used_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  // At most one unused token per user and purpose. A constraint, not a lookup key: Prisma
+  // ignores the WHERE clause in findUnique (D-03B-01).
+  @@unique([userId, purpose], name: "openToken_partial", map: "auth_tokens_one_open_key", where: raw("used_at IS NULL"))
+  @@index([userId, purpose])
+  @@map("auth_tokens")
+}
+
+enum AuthThrottleScope {
+  /// Failed sign-ins per email address.
+  LOGIN
+  /// Verification and "already registered" emails per address.
+  VERIFICATION_EMAIL
+  /// Password reset emails per address.
+  PASSWORD_RESET_EMAIL
+  /// Invitation emails per workspace (key: SHA-256 of "tenant:<id>").
+  INVITATION_EMAIL
+
+  @@map("auth_throttle_scope")
+}
+
+/// Attempt counters per email address, keyed by the SHA-256 of the normalized address, so the
+/// same limits apply whether or not an account exists.
+model AuthThrottle {
+  scope           AuthThrottleScope
+  keyHash         String            @map("key_hash") @db.Char(64)
+  attempts        Int
+  windowStartedAt DateTime          @map("window_started_at") @db.Timestamptz(3)
+  lockedUntil     DateTime?         @map("locked_until") @db.Timestamptz(3)
+  updatedAt       DateTime          @map("updated_at") @db.Timestamptz(3)
+
+  @@id([scope, keyHash])
+  @@map("auth_throttles")
 }
 
 /// Catalog of permission keys (e.g. "contacts.read"), defined by application code.
@@ -186,6 +305,7 @@ model Role {
   tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   permissions RolePermission[]
   memberships Membership[]
+  invitations Invitation[]
 
   @@id([tenantId, id])
   @@unique([tenantId, key])
@@ -206,8 +326,8 @@ model RolePermission {
   @@map("role_permissions")
 }
 
+/// Pending invitations are `invitations` rows; a membership exists only once one is accepted.
 enum MembershipStatus {
-  INVITED
   ACTIVE
   SUSPENDED
 
@@ -220,24 +340,66 @@ model Membership {
   id        String           @default(uuid(7)) @db.Uuid
   userId    String           @map("user_id") @db.Uuid
   roleId    String           @map("role_id") @db.Uuid
-  status    MembershipStatus @default(INVITED)
+  status    MembershipStatus @default(ACTIVE)
   createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tenant              Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user                User           @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   /// A role cannot be deleted while memberships use it.
-  role          Role           @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  role                Role           @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
   /// Draft versions this member wrote, and approval decisions this member made (audit).
-  draftsWritten Draft[]
-  approvals     Approval[]
-  notifications Notification[]
+  draftsWritten       Draft[]
+  approvals           Approval[]
+  notifications       Notification[]
+  /// Invitations this member sent, and the invitations that created or reactivated it.
+  invitationsSent     Invitation[]   @relation("InvitationInviter")
+  invitationsAccepted Invitation[]   @relation("InvitationAcceptedMembership")
 
   @@id([tenantId, id])
   @@unique([tenantId, userId])
   @@index([userId])
   @@index([tenantId, roleId])
   @@map("memberships")
+}
+
+/// An invitation to join a workspace with a role (task 04B). Bound to the workspace (its
+/// tenant) and to one email address; single use; expires. Only the SHA-256 of the token is
+/// stored. Accepting it creates (or reactivates) the membership.
+model Invitation {
+  tenantId              String    @map("tenant_id") @db.Uuid
+  id                    String    @default(uuid(7)) @db.Uuid
+  /// As entered by the inviter, for display only.
+  email                 String
+  /// Identity key (normalizeEmail): only a user with this address can accept.
+  normalizedEmail       String    @map("normalized_email")
+  roleId                String    @map("role_id") @db.Uuid
+  invitedByMembershipId String    @map("invited_by_membership_id") @db.Uuid
+  /// SHA-256 (hex) of the token in the emailed link; unique across the platform, because the
+  /// link is resolved before the workspace is known.
+  tokenHash             String    @unique @map("token_hash") @db.Char(64)
+  expiresAt             DateTime  @map("expires_at") @db.Timestamptz(3)
+  acceptedAt            DateTime? @map("accepted_at") @db.Timestamptz(3)
+  acceptedMembershipId  String?   @map("accepted_membership_id") @db.Uuid
+  revokedAt             DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt             DateTime  @map("created_at") @db.Timestamptz(3)
+
+  tenant             Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  /// A role cannot be deleted while invitations name it.
+  role               Role        @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  /// The inviter's pending invitations go with the inviter's membership.
+  invitedBy          Membership  @relation("InvitationInviter", fields: [tenantId, invitedByMembershipId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  acceptedMembership Membership? @relation("InvitationAcceptedMembership", fields: [tenantId, acceptedMembershipId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  // At most one open (neither accepted nor revoked) invitation per address and workspace. A
+  // constraint, not a lookup key: Prisma ignores the WHERE clause in findUnique (D-03B-01).
+  @@unique([tenantId, normalizedEmail], name: "openInvitation_partial", map: "invitations_one_open_key", where: raw("((accepted_at IS NULL) AND (revoked_at IS NULL))"))
+  @@index([tenantId, roleId])
+  @@index([tenantId, invitedByMembershipId])
+  @@index([tenantId, acceptedMembershipId])
+  @@index([tenantId, id(sort: Desc)], map: "invitations_open_idx", where: raw("((accepted_at IS NULL) AND (revoked_at IS NULL))"))
+  @@map("invitations")
 }
 
 // ─── Targeting ────────────────────────────────────────────────────────────────
@@ -1363,7 +1525,9 @@ enum JobTaskStatus {
 /// only the task id; this row is the durable record.
 model JobTask {
   tenantId       String        @map("tenant_id") @db.Uuid
-  id             String        @default(uuid(7)) @db.Uuid
+  /// Unique on its own too: a queue message carries only this id, and the worker derives the
+  /// tenant from the row (D-04B-05).
+  id             String        @unique @default(uuid(7)) @db.Uuid
   runId          String?       @map("run_id") @db.Uuid
   /// Task type key, e.g. "outbound.send".
   taskType       String        @map("task_type")

@@ -132,7 +132,9 @@ if needed; next prompt ID.
     instant, never a fixed offset.
   - Set the timestamps of one row from one clock.
 - **Credentials:** never store tokens, passwords or API keys in the database. Store a secret
-  reference (`parseSecretRef`, `<store>://<path>`); development uses `fake://`.
+  reference (`parseSecretRef`, `<store>://<path>`); development uses `fake://`. Users'
+  own passwords are stored only as Argon2id hashes (`user_credentials`), and session and
+  emailed tokens only as SHA-256 (`docs/decisions.md` D-04A-*).
 - **Sending:**
   - Every outbound email goes through `outbound_intents`, one per campaign lead and sequence
     step.
@@ -145,6 +147,36 @@ if needed; next prompt ID.
   output is validated before it's written to `research`, `scores` or `drafts`.
 - **Don't run** `prisma migrate dev`, `prisma migrate reset` (they can reset data) or
   `prisma dev` (it downloads unpinned code at runtime).
+
+## Authentication
+
+- **Contract:** `packages/shared/src/contracts/auth.ts` is the auth API contract
+  (`docs/api/auth.md`). Change it first, then the API and its tests.
+- **Tokens:**
+  - Never log, return or put in a URL path or query string: passwords, session tokens,
+    emailed tokens or CSRF tokens.
+  - The session token lives only in the `__Host-lf_session` cookie.
+  - Emailed links carry their token in the URL fragment.
+- **No account enumeration:** responses about an account (register, resend, reset, sign-in)
+  must not reveal whether it exists, through their content or their timing.
+- **CSRF:** every new cookie-authenticated mutation uses `OriginGuard`, `SessionGuard` and
+  `CsrfGuard` (`apps/api/src/auth/auth-guards.ts`).
+- **Workspace routes:**
+  - put the workspace id in the path as `:workspaceId`;
+  - use `WorkspaceGuard` (active membership, else `404`) and `PermissionGuard` with
+    `@RequirePermissions` (`apps/api/src/workspaces/workspace-guards.ts`);
+  - go through the scope's repositories, which check permissions again;
+  - never take a user id or a tenant id from the request.
+- **Permissions:** new keys go into `PERMISSION_CATALOG` / `SYSTEM_ROLES`
+  (`packages/shared/src/authorization.ts`), the only catalog.
+- **Jobs:**
+  - a queue message is only `{ v: 1, taskId }` (`enqueueJob`);
+  - workers call `claimJob` with their `defineWorker` definition and use the returned scope;
+  - never trust a tenant id carried in a job.
+- **Platform admins:** add operations only as explicit `/platform/*` routes with a required
+  reason. Each one writes audit records in the same transaction as its change.
+- **Account email:** goes through `TransactionalMailProvider`; tests read links from the
+  fake's `sent` list.
 
 ## Testing and logging
 

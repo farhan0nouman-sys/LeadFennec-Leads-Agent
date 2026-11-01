@@ -1,3 +1,4 @@
+import { LiveProvidersUnavailableError } from '@lead-fennec-ai/integrations';
 import { describeStartupError } from '@lead-fennec-ai/shared';
 import { createLogger } from '@lead-fennec-ai/shared/logger';
 import { NestFactory } from '@nestjs/core';
@@ -10,6 +11,8 @@ async function bootstrap(): Promise<void> {
   const logger = createLogger({ app: 'api', level: env.LOG_LEVEL });
   const app = await NestFactory.create(AppModule.forRoot(env, logger), {
     bufferLogs: true,
+    // Startup errors reach the catch below instead of exiting inside Nest.
+    abortOnError: false,
   });
   app.useLogger(app.get(Logger));
   app.enableShutdownHooks();
@@ -19,7 +22,10 @@ async function bootstrap(): Promise<void> {
 try {
   await bootstrap();
 } catch (error) {
-  const message = describeStartupError('api', error);
+  const message =
+    error instanceof LiveProvidersUnavailableError
+      ? `[api] ${error.message} Account email needs a live mail provider outside development and test (docs/decisions.md O-19).`
+      : describeStartupError('api', error);
   if (message === undefined) {
     throw error;
   }

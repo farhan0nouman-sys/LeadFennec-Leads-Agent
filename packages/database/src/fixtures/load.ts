@@ -10,6 +10,7 @@ import {
 export interface FixtureTenantSummary {
   readonly slug: string;
   readonly memberships: number;
+  readonly invitations: number;
   readonly organizations: number;
   readonly contacts: number;
   readonly leadListMembers: number;
@@ -83,6 +84,7 @@ export async function loadFixtureTenants(
           ...opts,
         });
         await tx.membership.createMany({ data: f.memberships, ...opts });
+        await tx.invitation.createMany({ data: f.invitations, ...opts });
         await tx.icp.createMany({ data: f.icps, ...opts });
         await tx.organization.createMany({ data: f.organizations, ...opts });
         await tx.contact.createMany({ data: f.contacts, ...opts });
@@ -186,6 +188,7 @@ export async function summarizeFixtureTenants(
     summaries.push({
       slug: f.tenant.slug,
       memberships: await prisma.membership.count({ where }),
+      invitations: await prisma.invitation.count({ where }),
       organizations: await prisma.organization.count({ where }),
       contacts: await prisma.contact.count({ where }),
       leadListMembers: await prisma.leadListMember.count({ where }),

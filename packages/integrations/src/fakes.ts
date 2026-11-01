@@ -16,6 +16,9 @@ import type {
   PeopleSearchQuery,
   ProviderSet,
   SendReceipt,
+  TransactionalEmail,
+  TransactionalMailProvider,
+  TransactionalSendReceipt,
   UsageRecord,
 } from './providers.js';
 
@@ -147,6 +150,21 @@ export class FakeBillingProvider implements BillingProvider {
   }
 }
 
+/**
+ * Records transactional email instead of sending it. Tests read one-time links from
+ * `sent`; nothing logs the message bodies.
+ */
+export class FakeTransactionalMailProvider implements TransactionalMailProvider {
+  readonly sent: TransactionalEmail[] = [];
+
+  send(message: TransactionalEmail): Promise<TransactionalSendReceipt> {
+    this.sent.push(message);
+    return Promise.resolve({
+      messageId: `fake-mail-${String(this.sent.length)}`,
+    });
+  }
+}
+
 export interface FakeProviderSet extends ProviderSet {
   readonly ai: FakeAiProvider;
   readonly leadData: FakeLeadDataProvider;
@@ -155,6 +173,7 @@ export interface FakeProviderSet extends ProviderSet {
   readonly microsoftGraph: FakeMailboxProvider;
   readonly crm: FakeCrmProvider;
   readonly billing: FakeBillingProvider;
+  readonly mail: FakeTransactionalMailProvider;
 }
 
 export function createFakeProviders(): FakeProviderSet {
@@ -166,5 +185,6 @@ export function createFakeProviders(): FakeProviderSet {
     microsoftGraph: new FakeMailboxProvider('microsoft-graph'),
     crm: new FakeCrmProvider(),
     billing: new FakeBillingProvider(),
+    mail: new FakeTransactionalMailProvider(),
   };
 }

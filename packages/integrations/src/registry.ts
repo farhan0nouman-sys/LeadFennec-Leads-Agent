@@ -8,6 +8,11 @@ export class LiveProvidersForbiddenError extends Error {
   override readonly name = 'LiveProvidersForbiddenError';
 }
 
+/** Live providers were requested, but no live adapter exists yet (staging, production). */
+export class LiveProvidersUnavailableError extends Error {
+  override readonly name = 'LiveProvidersUnavailableError';
+}
+
 /**
  * The only way to obtain providers. Tests and development can only ever get fakes: asking
  * for live providers there throws before any adapter is constructed.
@@ -24,5 +29,7 @@ export function createProviders(
       `Live providers are disabled when APP_ENV=${appEnv}; use fake providers.`,
     );
   }
-  throw new Error('No live provider adapters exist yet.');
+  throw new LiveProvidersUnavailableError(
+    'No live provider adapters exist yet.',
+  );
 }

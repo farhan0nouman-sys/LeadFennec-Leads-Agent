@@ -4,6 +4,402 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## GIT-07: Commit 05A–05C (2026-11-02)
+
+**Status: Done (local commit only).** The request was `git commit`.
+
+| Step | Actual result |
+|---|---|
+| Branch and author | `feat/05a-app-shell` (on top of `3e0b418`); author `LeadFennec-Leads-Agent` with the GitHub `noreply` address |
+| Content | One commit for 05A (app shell, navigation, route shells), 05B (endpoint list, OpenAPI, typed client, workspace-scoped cache, shared components) and 05C (dashboard aggregates, recent activity, integration health), with the GIT-06 log entry |
+| Checks before committing | The 05C regression (see the 05C entry), which covers 05A and 05B; format check exit 0; a scan of the staged files for credentials and the personal email found nothing |
+| Commit | The commit that contains this entry (`git log`) |
+
+- **Not pushed:** CI hasn't run on 05A–05C. The workflow runs on pushes to `main`, pull
+  requests and manual dispatch.
+
+---
+
+## 05C: Dashboard aggregates, recent activity, integration health (2026-11-02)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL:** the API, database and browser suites ran on PGlite only. Nothing has
+  been pushed since GIT-06, so CI has not run.
+- **Plan:** the metrics, their definitions and the refresh intervals could not be checked
+  against the missing plan (O-01, O-27).
+- **Accessibility:** axe only, no screen reader (O-25).
+- **Not committed:** still on branch `feat/05a-app-shell`, together with the uncommitted 05A,
+  05B and GIT-06 work.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `contracts/dashboard.ts` (new): routes, response schemas, `DASHBOARD_METRICS` (available and unavailable metrics), `ACTIVITY_LABELS` / `activityLabel`, `HEALTH_PROVIDERS`, `integrationHealthState`. `contracts/endpoints.ts`: 4 endpoints (tag `dashboard`), 4 cache resources; invite, revoke and role change also invalidate `activity`. `navigation.ts`: `activity` in the Audit log section, the overview's description. `contracts/dashboard.test.ts` (new, 7 tests); endpoint count 24 → 28. |
+| Database | `tenancy/dashboard.ts` (new): `scope.dashboard` with `leadSummary`, `campaignSummary`, `activity` (via `audit.list`), `integrationHealth`; each checks its section's permission. `tenancy/access.ts`, `tenancy/index.ts`. `dashboard.integration.test.ts` (new, 6 tests). |
+| API | `workspaces/dashboard.controller.ts` (new, 4 GET routes), registered in `workspaces.module.ts`. `workspaces/dashboard.integration.test.ts` (new, 5 tests). `http/route-guards.test.ts`: the 4 routes reviewed. |
+| Web: data | `lib/polling.ts` (new): bounded polling rules and the two policies. `lib/query.tsx`: `useApiQuery(…, { poll })`, `PollingState`, page visibility. `lib/format.ts` (new): counts and relative times. Tests: `lib/polling.test.ts` (5), `lib/format.test.ts` (2). |
+| Web: screens | `components/dashboard/` (new): `DashboardPanel` / `PanelFooter`, `LeadMetrics`, `CampaignMetrics`, `RecentActivity`, `IntegrationHealth`. `app/workspaces/[workspaceId]/page.tsx`: the overview is the dashboard (panels by permission, one error boundary each; "Your pages" kept; permissions in a collapsed list). `components/data/status-label.tsx`: integration states. |
+| Web: browser tests | `e2e/dashboard.spec.ts` (new, 5 scenarios). `e2e/support/db.ts`: `seedDashboard` (fake contacts, companies, campaigns, a broken mailbox). |
+| Root | `docs/api/openapi.json` regenerated (28 operations). |
+| Docs | `docs/decisions.md` D-05C-01 to 06 and O-27; `docs/api/dashboard.md` (new); `docs/security/authorization-review.md` (28 routes, the repository); `docs/local-development.md`; README (status, tests, screens); `CLAUDE.md` (dashboard rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end; ports 54329, 3100 and 3101 are free.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | First run: **failed**, 3 new files unformatted. Formatted with Prettier; then exit 0 (and again after the last spec change). |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached (run again after the lint fixes: same) |
+| `turbo run lint --force` + root ESLint | First two runs: **failed**, 1 finding each (see below). Then exit 0; 14/14 tasks, 0 cached; root ESLint OK. |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 10/10 tasks, 0 cached: shared **168**, integrations **13**, database **46 passed, 309 skipped**, web **24**, worker **4**, api **31 passed, 43 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 10/10 tasks, 0 cached: shared **168**, integrations **13**, database **353 passed, 2 skipped**, web **24**, worker **4**, api **74** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 13 migrations (none new); up to date; exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | First full run: **31 passed, 2 failed** (see below). After the fix: **35 passed** (11 accounts and teams, 7 app shell, 3 data client, 5 dashboard, 8 components, 1 smoke), axe included: no violations. |
+| `pnpm test:e2e` without it | **9 passed** (smoke and the 8 component scenarios), **26 skipped** |
+| Screens, by eye | The dashboard at 1280 px, with two panels failing, and at 390 px (throwaway screenshot spec, deleted) |
+| Reference repos / credential and personal-email scan of the 05C files | 0 changes in each of the 9 / no credentials; the only match is the public GitHub repository name already in `CLAUDE.md` and `docs/decisions.md` |
+
+**Earlier failures in this task (logged honestly):**
+1. **Database test data:** the first run of the new database suite had 2 of 6 failing on
+   integrity rules. A member's audit record needs its membership id, and a secret reference
+   can't contain "@". The repository now names actors by the recorded membership id (only
+   this workspace's memberships), which is stricter than by user id. The test now also checks
+   that another workspace's membership is never named.
+2. **Lint:** a mapped type where a `Record` is preferred (shared), and a comment between two
+   `case` labels (`no-fallthrough`, database). Both fixed.
+3. **Visual check:**
+   - failed counts showed loading placeholders: they now show "–", read as "Not loaded";
+   - a failed panel offered both Try again and Refresh: the footer button is now hidden
+     while the retry message is shown;
+   - metrics took one full-width column on phones: they now use 2 columns.
+4. **Full browser run, 2 failures caused by this task:** the new spec signed in 7 times from
+   127.0.0.1. The API's per-address sign-in limit ("Too many attempts") then refused the
+   spec's last sign-in and the next spec's (`data-client`). The new spec passed on its own.
+   It now signs each account in once and reuses the saved session.
+
+### What 05C proves (local)
+
+- **Real data, one workspace:**
+  - The counts come from the database and include only the workspace's own rows (another
+    workspace with more rows changes nothing).
+  - Archived contacts and contacts without email are counted as defined.
+  - The counts of one summary are read in one snapshot.
+- **Same rules as the pages:**
+  - Each aggregate needs its section's permission, in the route (route test, contract test)
+    and in the repository.
+  - A Client Team Member gets leads and campaigns but `403` for activity and integration
+    health, and the dashboard doesn't show those panels.
+  - Outside the workspace: `404`; signed out: `401`; workers are refused.
+- **Activity:**
+  - Newest first, at most 25, with counts for 24 hours, 7 and 30 days.
+  - Only members of this workspace are named. Platform admins appear as Lead Fennec support,
+    with their reason.
+  - No record ids or metadata are returned.
+- **Integration health:** derived from mailboxes, syncs and failed notifications of the
+  workspace (healthy, connecting, needs attention, not connected). No provider is contacted.
+- **Unavailable metrics:** verified emails, scored leads, emails sent, reply rate and meetings
+  booked say "Not available yet", never a number. A test ties every available metric to a
+  field of its summary.
+- **Bounded polling (Playwright's clock in the browser):**
+  - A change made elsewhere appears after a minute without a reload.
+  - A hidden page makes no requests in 20 minutes, and refreshes at once when it is visible
+    again.
+  - Three failed refreshes pause polling, with a polite announcement; nothing is requested in
+    the next 30 minutes.
+  - Retrying recovers. The 30-minute limit and the back-off are unit-tested.
+- **Error recovery:** one failing panel leaves the others working, shows a generic message,
+  and recovers with Try again.
+- **Layout and accessibility:** at 390 px the panels stack without sideways scrolling, and axe
+  finds no WCAG 2.2 A/AA violations on desktop or narrow screens.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL and CI.
+- A screen-reader pass (O-25): the live region for stopped updates and the description lists
+  were checked with axe and the accessibility tree only.
+- The `pg` 8.23 deprecation warning from Prisma's `adapter-pg` still appears in runs (O-14).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker (O-06).
+3. Open: O-19 to O-27.
+
+### Manual check
+
+Optional:
+- With `pnpm dev`, open a workspace's overview as an admin and as a team member, and compare
+  the panels.
+- Leave the page open, invite someone from another tab, and check that Recent activity shows
+  it within a minute.
+- Switch to another tab for a few minutes and back: the panel refreshes at once.
+
+### Next prompt
+
+Not known: the plan is missing (O-01).
+
+---
+
+## 05B: Shared UI components, typed API client, workspace-scoped cache (2026-11-02)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL:** the API, database and browser suites ran on PGlite only. Nothing has
+  been pushed since GIT-06, so CI has not run.
+- **Plan:** the components and their behaviour could not be checked against the missing plan
+  (O-01).
+- **Accessibility:** axe only, no screen reader (O-25).
+- **OpenAPI:** checked by structural tests only, not by an external validator (O-26).
+- **Not committed:** still on branch `feat/05a-app-shell`, together with the uncommitted 05A
+  and GIT-06 work.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `contracts/endpoints.ts` (new): the list of all 24 endpoints (`API`, `ALL_ENDPOINTS`) with access, permission, the contract's own schemas, status, error codes, cache resource and invalidations; `buildEndpointRequest`; health response schemas. `contracts/openapi.ts` (new): the OpenAPI 3.1.2 generator. Exported from `index.ts`. |
+| API | `http/api-contract.test.ts` (new): routes against the list. `testing/registered-routes.ts` (new): route discovery shared with `route-guards.test.ts`, which now uses it. `http/api-errors.ts`: `ZodPipe.schema` made public. |
+| Web: data | `lib/api.ts` rewritten as the typed client (`callApi`, `sendRequest`, `endpointRequest`; `apiRequest` and `apiCommand` removed). `lib/query-cache.ts`, `lib/query.tsx` (new): the cache, `ApiCacheProvider` (root layout), `useApiQuery`, `useApiMutation`. `lib/list-params.ts`, `lib/use-list-params.ts`, `lib/use-form-submit.ts`, `lib/demos.ts` (new). `lib/server/api.ts` and `access.ts` call endpoints of the list. `lib/session.tsx` and all auth, invitation and workspace screens migrated to the client. |
+| Web: components | `components/data/` (new): `DataTable`, `CursorPagination`, `ListFilters` / `SearchField` / `FilterSelect`, `StatusLabel` / `Status`. `components/feedback/` (new): `ConfirmDialog` / `ConfirmButton`, `EmptyState`, `RetryState`, `ErrorBoundary` (`catchError`), `RouteError`. `components/ui/`: `dialog.tsx`, `skeleton.tsx`, `textarea.tsx` (new); `table.tsx` gains a focusable scroll region. `components/form-field.tsx`: `SelectField`, `TextareaField`, `FormError`, `SubmitButton`. `app/globals.css`: `--warning` and `--info` tokens. |
+| Web: pages | `app/error.tsx`, `app/global-error.tsx`, `app/workspaces/[workspaceId]/error.tsx`, `app/admin/error.tsx` (new). Team page (`team-panel.tsx`) and admin console (`components/platform-console.tsx`) rebuilt on the shared components. Revoking, suspending and changing one's own role now ask for confirmation. |
+| Web: fixtures | `app/dev/ui/` (new): the component demo, development and test only. `fixtures/demo-leads.ts`, `fixtures/fixture-source.ts` (new). `eslint.config.mjs`: import restrictions in both directions. |
+| Web: tests | Vitest project added (`vitest.config.mjs`, `vitest.server-only.mjs`; `test` script; dev dependencies `vitest`, `vite` from the catalog). `lib/query-cache.test.ts`, `lib/list-params.test.ts`, `lib/api.test.ts`. Browser: `e2e/ui-components.spec.ts`, `e2e/data-client.spec.ts` (new); `e2e/accounts-and-teams.spec.ts` confirms the new dialogs; `e2e/support/db.ts` gains `expireSessions`. |
+| Root | `scripts/openapi.mjs` and `pnpm openapi`. `docs/api/openapi.json` (generated). |
+| Docs | `docs/decisions.md` D-05B-01 to 06 and O-26; `docs/security/authorization-review.md`; `docs/api/auth.md`, `docs/api/workspaces.md`; `docs/local-development.md`; README; `CLAUDE.md` (endpoint list, screens, fixtures, tests). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end; ports 54329, 3100 and 3101 are free.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` / `pnpm format:check` | Exit 0 / no peer issues / exit 0. Before that, 23 new or changed files were formatted with Prettier. |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14 tasks, 0 cached. Earlier in the task: 9 findings fixed (see below). |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 10/10 tasks, 0 cached: shared **161**, integrations **13**, database **46 passed, 303 skipped**, web **17** (new), worker **4**, api **31 passed, 38 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 10/10 tasks, 0 cached: shared **161**, integrations **13**, database **347 passed, 2 skipped**, web **17**, worker **4**, api **69** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 13 migrations (none new); up to date; exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached; web routes include `ƒ /dev/ui` (rendered per request) |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **30 passed**: 11 accounts and teams, 7 app shell, 3 data client, 8 components, 1 smoke. Includes axe checks on the demo page, both dialogs, the form dialog, the empty state and the team page's confirmation: no violations. |
+| `pnpm test:e2e` without it | **9 passed** (smoke and the 8 component scenarios), **21 skipped** |
+| Lint rules for fixtures | Two throwaway files (a production import of a fixture; `callApi` and `lib/query` imported in `app/dev`) gave 3 `no-restricted-imports` errors; both files deleted |
+| Screens, by eye | The demo at 1280 px (table, confirmation, form dialog, retry and boundary states) and at 390 px; the team page at 1280 px, its confirmation, and at 390 px. Throwaway screenshot specs, deleted. |
+| Reference repos / credential and personal-email scan of the 121 changed files (05A and 05B) | 0 changes in each of the 9 / only deliberate fake passwords in tests |
+
+**Earlier failures in this task (logged honestly):**
+1. **First full browser run:** 29 passed, 1 failed. "Clear filters" remounted the search box
+   before the address had changed, so the box showed the old text. `SearchField` now follows
+   outside changes to its value instead of relying on a remount. A Back-navigation check added
+   with the fix was then removed: Playwright's and the router's history entries made it land
+   on `about:blank`, which isn't behaviour of this app.
+2. **Lint (9 findings, all fixed):**
+   - Two conflicting rules on value stringification (`no-unnecessary-type-assertion` against
+     `no-base-to-string`), in the web and shared packages.
+   - A void-typed `await` in `useApiMutation`. `EndpointResponse` collapsed to `undefined`
+     inside generic code; it is now written so it stays deferred.
+   - An optional chain, two unused mock parameters, a non-null assertion style, and an
+     unnecessary type argument.
+3. **Visual check:**
+   - The confirmation dialog inherited right alignment from the table cell it opens from.
+   - Next wrapped alone on narrow screens.
+   - The demo said "Loading…" next to a failed load.
+   All three are fixed.
+4. **A doc-edit heredoc failed in bash; nothing was written.** The script was rewritten as a
+   file.
+5. **Screenshot path:** a screenshot spec's MSYS-style path (`/c/Users/…`) made Node write to
+   `D:\c\Users\…`. The 5 files were moved into the scratchpad and the stray folder (only those
+   files) was removed.
+
+### What 05B proves (local)
+
+- **One contract:**
+  - The 24 registered routes are exactly the endpoint list's, with the guards their access
+    needs, the same permission, the same success status, and the same schema objects in their
+    validation pipes.
+  - `docs/api/openapi.json` is regenerated from that list and checked for being current,
+    complete, consistent and resolvable.
+  - The `/api` proxy forwards every listed endpoint except the health probes.
+- **Typed client:**
+  - Invalid input is refused before anything is sent.
+  - The CSRF token is sent on authenticated mutations, and such a mutation is never sent
+    without one.
+  - Every response is validated, and error envelopes, off-contract answers and network
+    failures each become a typed error.
+- **Cache scoped by workspace:**
+  - Keys carry the user and the workspace.
+  - Invalidation touches only the named resources of the named workspace and user.
+  - Answers that arrive after sign-out are discarded; answers loaded during a change are
+    reloaded.
+  - In the browser: a mutation reloads its list without a page reload; another workspace's
+    screen makes no request for, and shows none of, the first workspace's data; an ended
+    session sends the user to sign in and nothing of the workspace stays on screen.
+- **Components:**
+  - The table pages by cursor, and the page size, search and status filter are kept in the
+    address. Invalid address values fall back to defaults.
+  - Empty, retry and error-boundary states work; the boundary shows no thrown message.
+  - Confirmations focus Cancel first, close on Escape and return focus, and can require a
+    typed word. The form shows field, server-side and form-level errors.
+- **Fixtures apart:**
+  - The demo exists only in development and test.
+  - ESLint stops production code from importing fixtures, and demo code from calling the API
+    or using its cache.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL and CI.
+- A screen-reader pass (O-25).
+- An external OpenAPI validator (O-26).
+- The `pg` 8.23 deprecation warning from Prisma's `adapter-pg` still appears in runs (O-14).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker (O-06).
+3. Open: O-19 to O-26.
+
+### Manual check
+
+Optional:
+- Open http://localhost:3000/dev/ui (`pnpm dev`) and try the table, filters, dialogs and
+  states with the keyboard only.
+- On the Team page, check that revoking an invitation asks first and that the list updates
+  without a reload.
+
+### Next prompt
+
+Not known: the plan is missing (O-01).
+
+---
+
+## 05A: App shell, navigation, breadcrumbs, route shells (2026-11-02)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL:** the API, database and browser suites ran on PGlite only (nothing pushed
+  since GIT-06; CI has not run).
+- **Plan:** the page list could not be checked against the missing plan (O-01, O-25).
+- **Accessibility:** automated (axe) only; no screen-reader test (O-25).
+- **Not committed:** on branch `feat/05a-app-shell` (from `3e0b418`). The uncommitted GIT-06
+  log entry is carried along.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `navigation.ts` (new): `WORKSPACE_SECTIONS` (17), `ADMIN_SECTIONS` (4), groups, `workspaceNavigation`, `canOpenSection`, paths, breadcrumbs. `contracts/auth.ts`: `user.platformAdmin` in the session response. |
+| Database | `auth/store.ts`: sessions and sign-in candidates carry `isPlatformAdmin` |
+| API | `AuthService`: `platformAdmin` in session responses. Tests: the session flag (workspaces and auth suites), the section rule in `http/route-guards.test.ts` |
+| Web: shell | `components/shell/` (new): `AppShell`, `WorkspaceShell` (selector, grouped navigation by permission, context), `AdminShell`, `HomeShell`, `MobileNav` (native modal dialog), `UserMenu`, `NavList`, `Breadcrumbs`, icons. `components/ui/`: `breadcrumb.tsx`, `typography.tsx` (new). Skip link in the root layout; every page's `<main id="main">`; base typography and reduced-motion CSS. Removed: `components/app-header.tsx`. |
+| Web: server checks | `lib/server/` (new): `api.ts` (API calls with the session cookie only), `access.ts` (`getSession`, `getWorkspace`, `getWorkspaces`, `requireUser`, `requireWorkspaceSection`, `requirePlatformAdmin`), `config.ts`. `lib/shell-user.ts`. `lib/links.ts` split; the hook moved to `lib/link-token.ts`. |
+| Web: pages | Server-rendered: `/workspaces`, `/workspaces/[id]` (layout and overview), `/workspaces/[id]/team` (content moved to `team-panel.tsx`), `/workspaces/[id]/[section]` (15 route shells), `/workspaces/[id]` not-found (`404`), `/admin` (console moved from `/platform`), `/admin/[section]` (3 route shells); `/platform` redirects. `components/section-states.tsx` (route shell, access denied). |
+| Dependencies | `lucide-react` 1.66.0; dev: `@axe-core/playwright` 4.14.0 |
+| Browser tests | `e2e/app-shell.spec.ts` (7 scenarios, new), `e2e/support/accounts.ts` (new); `accounts-and-teams.spec.ts` adjusted (`/admin`, "Page not found", combobox selector, a timing fix) |
+| Docs | `docs/decisions.md` D-05A-01 to 04, O-25; `docs/security/authorization-review.md`; `docs/api/auth.md`; `docs/local-development.md`; README (status, layout, browser tests, "Screens"); `CLAUDE.md` (pages, server components, browser tests). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329, restarted fresh before
+each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first; Turborepo ran without its
+cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` / `pnpm format:check` | Exit 0 / no peer issues / exit 0 (first run) |
+| `pnpm typecheck --force` | Exit 0; 14/14, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14, 0 cached. Earlier in the task: 3 findings fixed (2 optional chains, 1 arrow returning `expect`). |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 9/9, 0 cached: shared **143**, integrations **13**, database **46 passed, 303 skipped**, worker **4**, api **27 passed, 38 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 9/9, 0 cached: shared **143**, integrations **13**, database **347 passed, 2 skipped**, worker **4**, api **65** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 13 migrations (none new); up to date; exit 0 |
+| `pnpm build --force` | Exit 0; 11/11, 0 cached; web routes include `ƒ /workspaces/[workspaceId]/[section]`, `ƒ /admin`, `ƒ /admin/[section]` |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **19 passed** (11 + 7 scenarios + smoke), including the axe checks: no violations |
+| `pnpm test:e2e` without it | **1 passed, 18 skipped** |
+| Screens, by eye | Overview, a route shell and access denied at 1280 px; the drawer at 390 px (temporary spec, deleted) |
+| Reference repos / credential and personal-email scan of the 67 changed files | 0 changes in each of the 9 / no matches |
+
+**Earlier failures in this task (logged honestly):**
+1. First browser run: 2 failures.
+   - The 04C test "registers…" signed in before the asynchronous registration had created the
+     account (`invalid_credentials`). It had passed in 04C by timing. The test now waits for
+     the account.
+   - The narrow-screen scenario's `getByLabel('Workspace')` also matched the navigation list
+     labelled by the "Workspace" group heading. Both specs now use the combobox role.
+2. Type errors in the new spec (the `as const` registry's literal union lacks `primaryAction`
+   on some entries): the loop is typed as `WorkspaceSection`.
+
+### What 05A proves (local)
+
+- **Permission-aware navigation:** an admin sees all 17 sections in 5 groups; a Client Team
+  Member sees 10, without Approvals, Integrations, Mailboxes, Do-not-contact list, Billing,
+  Audit log and Workspace settings.
+- **Server enforcement:**
+  - each hidden section is refused by the web server when opened directly, in the raw HTML;
+  - signed-out requests get a `307` to sign-in (and back);
+  - unknown pages and foreign workspaces get a `404`;
+  - the admin area is refused to non-admins;
+  - the API refuses a member's role change (`403`).
+- **API enforcement tied to navigation:** the route test fails if a workspace API route isn't
+  in a section, or if a GET route doesn't need its section's permission.
+- **Unavailable features:** all 15 workspace and 3 admin route shells say "Not available
+  yet" and disable their action.
+- **Accessibility:**
+  - the skip link reaches `#main`;
+  - the dialog keeps focus, closes on Escape and returns focus;
+  - `aria-current` on the current page;
+  - axe finds no WCAG 2.0, 2.1 or 2.2 A/AA violations on five screens.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL and CI.
+- A screen-reader pass (O-25).
+- The `pg` 8.23 deprecation warning from Prisma's `adapter-pg` still appears in runs (O-14).
+
+### Blockers
+
+1. The reference plan is missing (O-01): the page list is derived (O-25).
+2. No Docker (O-06).
+3. Open: O-19 to O-25.
+
+### Manual check
+
+Optional: with a screen reader (NVDA or VoiceOver), sign in, open the workspace navigation
+(wide and narrow screens), and check that the "Soon" marker and the breadcrumbs are read
+clearly.
+
+### Next prompt
+
+Not known: the plan is missing (O-01).
+
+---
+
+## GIT-06: Push `feat/04a-auth` (2026-11-01)
+
+**Status: Done.** The request was `git push`.
+
+| Step | Actual result |
+|---|---|
+| Pushed | `feat/04a-auth` → `origin/feat/04a-auth` (new remote branch, tracking set), head `3e0b418`. It carries 03A–03C (`a1ba33e`), 04A–04B (`9ef306e`) and 04C (`3e0b418`). |
+| Remote | `github.com/farhan0nouman-sys/LeadFennec-Leads-Agent` (**public**); `main` unchanged at `7fc44f2` |
+
+- **CI has not run:** the workflow runs on pushes to `main`, on pull requests and on manual
+  dispatch, not on pushes to other branches. A pull request into `main` (or a manual run)
+  would give the first real-PostgreSQL results for 03A–04C. That is the user's decision.
+- This entry is not in the pushed commit; it is a local change to the log.
+
+---
+
 ## GIT-05: Commit 04C (2026-11-01)
 
 **Status: Done (local commit only).** The request was `git commit`.

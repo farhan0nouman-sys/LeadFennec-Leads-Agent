@@ -84,6 +84,7 @@ describe('auth contract', () => {
           email: 'a@example.test',
           displayName: null,
           emailVerified: true,
+          platformAdmin: false,
         },
         session: {
           idleExpiresAt: '2026-11-01T10:30:00.000Z',

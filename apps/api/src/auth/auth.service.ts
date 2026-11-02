@@ -56,6 +56,7 @@ export interface SessionContext {
     readonly id: string;
     readonly email: string;
     readonly displayName: string | null;
+    readonly isPlatformAdmin: boolean;
   };
   readonly idleExpiresAt: Date;
   readonly absoluteExpiresAt: Date;
@@ -364,7 +365,12 @@ export class AuthService {
       session: {
         sessionId: id,
         sessionToken,
-        user: { id: user.id, email: user.email, displayName: user.displayName },
+        user: {
+          id: user.id,
+          email: user.email,
+          displayName: user.displayName,
+          isPlatformAdmin: user.isPlatformAdmin,
+        },
         idleExpiresAt,
         absoluteExpiresAt,
       },
@@ -415,6 +421,7 @@ export class AuthService {
         id: session.user.id,
         email: session.user.email,
         displayName: session.user.displayName,
+        isPlatformAdmin: session.user.isPlatformAdmin,
       },
       idleExpiresAt,
       absoluteExpiresAt: session.absoluteExpiresAt,
@@ -432,7 +439,13 @@ export class AuthService {
 
   sessionResponse(session: SessionContext): SessionResponse {
     return {
-      user: { ...session.user, emailVerified: true },
+      user: {
+        id: session.user.id,
+        email: session.user.email,
+        displayName: session.user.displayName,
+        emailVerified: true,
+        platformAdmin: session.user.isPlatformAdmin,
+      },
       session: {
         idleExpiresAt: session.idleExpiresAt.toISOString(),
         absoluteExpiresAt: session.absoluteExpiresAt.toISOString(),

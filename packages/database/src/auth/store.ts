@@ -16,6 +16,7 @@ export interface LoginCandidate {
   readonly displayName: string | null;
   readonly status: UserStatus;
   readonly emailVerifiedAt: Date | null;
+  readonly isPlatformAdmin: boolean;
   /** Null when the user has no password (e.g. created by an import or an admin). */
   readonly passwordHash: string | null;
 }
@@ -33,6 +34,7 @@ export interface ActiveSession {
     readonly displayName: string | null;
     readonly status: UserStatus;
     readonly emailVerifiedAt: Date | null;
+    readonly isPlatformAdmin: boolean;
   };
 }
 
@@ -56,6 +58,7 @@ const USER_SELECT = {
   displayName: true,
   status: true,
   emailVerifiedAt: true,
+  isPlatformAdmin: true,
 } as const;
 
 function secondsUntil(until: Date, now: Date): number {

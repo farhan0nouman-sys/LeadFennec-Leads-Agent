@@ -5,6 +5,10 @@ Task 04A. The machine-readable contract is `packages/shared/src/contracts/auth.t
 codes. The API validates against it, its tests parse every response with it, and the web app
 will use the same schemas. Decisions and sources: `docs/decisions.md` D-04A-*.
 
+Every route is also in the endpoint list (`packages/shared/src/contracts/endpoints.ts`) and in
+the generated OpenAPI 3.1.2 document [openapi.json](openapi.json) (task 05B); the web app calls
+the API only through that list.
+
 ## Conventions
 
 - **JSON in, JSON out.** Every auth response has `Cache-Control: no-store`.
@@ -60,7 +64,7 @@ will use the same schemas. Decisions and sources: `docs/decisions.md` D-04A-*.
 
 ```json
 {
-  "user": { "id": "…", "email": "…", "displayName": null, "emailVerified": true },
+  "user": { "id": "…", "email": "…", "displayName": null, "emailVerified": true, "platformAdmin": false },
   "session": { "idleExpiresAt": "2026-11-02T09:30:00.000Z", "absoluteExpiresAt": "2026-11-02T17:00:00.000Z" },
   "csrfToken": "…43 base64url characters…"
 }

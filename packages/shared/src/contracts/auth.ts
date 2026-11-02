@@ -133,6 +133,11 @@ export const sessionResponseSchema = z
         email: z.string(),
         displayName: z.string().nullable(),
         emailVerified: z.literal(true),
+        /**
+         * Platform admin (task 05A): shows the Admin area. Navigation only; every /platform
+         * route checks it again.
+         */
+        platformAdmin: z.boolean(),
       })
       .strict(),
     session: z

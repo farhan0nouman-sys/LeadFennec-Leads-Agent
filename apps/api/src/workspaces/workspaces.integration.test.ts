@@ -4,6 +4,7 @@ import {
 } from '@lead-fennec-ai/database/testing';
 import {
   ACCESS_REASON_HEADER,
+  AUTH_ROUTES,
   invitationPageSchema,
   invitationPreviewSchema,
   invitationSchema,
@@ -11,6 +12,7 @@ import {
   platformWorkspaceDetailSchema,
   platformWorkspacePageSchema,
   roleListResponseSchema,
+  sessionResponseSchema,
   userWorkspaceSchema,
   WORKSPACE_ROUTES as R,
   workspaceListResponseSchema,
@@ -481,6 +483,13 @@ describe.runIf(testDatabaseUrl !== undefined)(
       it('need a reason, grant nothing on member routes, and are audited', async () => {
         const operator = await platformAdmin();
         const { workspaceId, member } = await team('supported');
+        // The session says who is a platform admin (navigation, task 05A).
+        const flagOf = async (session: typeof operator) =>
+          sessionResponseSchema.parse(
+            (await call(api, AUTH_ROUTES.session, { session })).json,
+          ).user.platformAdmin;
+        expect(await flagOf(operator)).toBe(true);
+        expect(await flagOf(member)).toBe(false);
         expectError(
           await call(api, R.platformWorkspaces, { session: operator }),
           400,

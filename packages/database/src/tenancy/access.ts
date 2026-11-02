@@ -28,6 +28,10 @@ import {
 import { RecordNotFoundError } from './authorization.js';
 import { createBillingRepository, type BillingRepository } from './billing.js';
 import {
+  createDashboardRepository,
+  type DashboardRepository,
+} from './dashboard.js';
+import {
   createInvitationRepository,
   type InvitationRepository,
 } from './invitations.js';
@@ -46,6 +50,7 @@ export interface TenantScope {
   readonly db: TenantDb;
   readonly audit: AuditRepository;
   readonly billing: BillingRepository;
+  readonly dashboard: DashboardRepository;
   readonly invitations: InvitationRepository;
   readonly members: MemberRepository;
   readonly notifications: NotificationRepository;
@@ -72,6 +77,7 @@ function buildScope(
     }),
     audit: createAuditRepository(prisma, tenantId, actor),
     billing: createBillingRepository(prisma, tenantId, actor),
+    dashboard: createDashboardRepository(prisma, tenantId, actor, now),
     invitations: createInvitationRepository(prisma, tenantId, actor, now),
     members: createMemberRepository(prisma, tenantId, actor),
     notifications: createNotificationRepository(prisma, tenantId, actor, now),

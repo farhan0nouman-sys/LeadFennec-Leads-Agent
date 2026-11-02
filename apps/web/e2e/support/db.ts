@@ -149,6 +149,81 @@ export class E2eDatabase {
     return token;
   }
 
+  /**
+   * Rows for the dashboard (task 05C), as later features will create them: 2 companies, 3
+   * active contacts (2 with email) and 1 archived, a running and a draft campaign with 2 leads,
+   * and a Gmail mailbox that needs reconnecting. Addresses use example.com (fake data).
+   */
+  async seedDashboard(workspaceId: string, run: string): Promise<void> {
+    const q = (sql: string, values: unknown[]) =>
+      this.client.query(sql, [workspaceId, ...values]);
+    for (const name of ['Example Corp', 'Sample Ltd']) {
+      await q(
+        `INSERT INTO organizations (tenant_id, id, name, updated_at)
+         VALUES ($1, $2, $3, now())`,
+        [randomUUID(), name],
+      );
+    }
+    const contact = async (
+      email: string | null,
+      status: 'ACTIVE' | 'ARCHIVED' = 'ACTIVE',
+    ) => {
+      const id = randomUUID();
+      await q(
+        `INSERT INTO contacts (tenant_id, id, first_name, email, normalized_email, email_domain,
+                               status, updated_at)
+         VALUES ($1, $2, 'Fixture', $3, $3, $4, $5::contact_status, now())`,
+        [id, email, email === null ? null : 'example.com', status],
+      );
+      return id;
+    };
+    const first = await contact(`lead1.${run}@example.com`);
+    const second = await contact(`lead2.${run}@example.com`);
+    await contact(null);
+    await contact(`archived.${run}@example.com`, 'ARCHIVED');
+    const campaignId = randomUUID();
+    await q(
+      `INSERT INTO campaigns (tenant_id, id, name, status, activated_at, updated_at)
+       VALUES ($1, $2, 'Autumn outreach', 'ACTIVE', now(), now())`,
+      [campaignId],
+    );
+    await q(
+      `INSERT INTO campaigns (tenant_id, id, name, updated_at)
+       VALUES ($1, $2, 'Winter draft', now())`,
+      [randomUUID()],
+    );
+    const sequenceId = randomUUID();
+    await q(
+      `INSERT INTO sequences (tenant_id, id, campaign_id, name, updated_at)
+       VALUES ($1, $2, $3, 'Main', now())`,
+      [sequenceId, campaignId],
+    );
+    for (const contactId of [first, second]) {
+      await q(
+        `INSERT INTO campaign_leads (tenant_id, id, campaign_id, sequence_id, contact_id,
+                                     status, timezone, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 'ACTIVE', 'UTC', now())`,
+        [randomUUID(), campaignId, sequenceId, contactId],
+      );
+    }
+    await q(
+      `INSERT INTO email_accounts (tenant_id, id, provider, email, normalized_email, status,
+                                   updated_at)
+       VALUES ($1, $2, 'GMAIL', $3, $3, 'ERROR', now())`,
+      [randomUUID(), `sender.${run}@example.com`],
+    );
+  }
+
+  /** Lets the user's open sessions reach their idle timeout now (the next request gets 401). */
+  async expireSessions(email: string): Promise<void> {
+    const userId = await this.userId(email);
+    await this.client.query(
+      `UPDATE user_sessions SET idle_expires_at = now() - interval '1 second'
+        WHERE user_id = $1 AND ended_at IS NULL`,
+      [userId],
+    );
+  }
+
   /** Actions of the platform audit records about one user (security events). */
   async securityActions(email: string): Promise<string[]> {
     const userId = await this.userId(email);

@@ -5,6 +5,7 @@ packages:
 # Single source of pinned versions. Packages reference these with "catalog:".
 # Versions, sources and compatibility notes: docs/decisions.md (D-02A-*, D-02B-*, D-02C-*).
 catalog:
+  '@axe-core/playwright': 4.14.0
   '@eslint/js': 10.0.1
   '@nestjs/cli': 12.0.11
   '@nestjs/common': 12.3.2
@@ -29,6 +30,7 @@ catalog:
   eslint-config-prettier: 10.1.8
   globals: 17.13.0
   ioredis: 6.0.0
+  lucide-react: 1.66.0
   nestjs-pino: 5.3.1
   next: 16.4.3
   pg: 8.23.1

@@ -1,15 +1,11 @@
 'use client';
 
-import {
-  AUTH_ROUTES,
-  acceptedResponseSchema,
-  emailRequestSchema,
-} from '@lead-fennec-ai/shared';
+import { API, emailRequestSchema } from '@lead-fennec-ai/shared';
 import { useState, type SubmitEvent } from 'react';
 import { FormField } from '@/components/form-field';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { apiRequest, errorMessage } from '@/lib/api';
+import { callApi, errorMessage } from '@/lib/api';
 import { validate, type FieldErrors } from '@/lib/forms';
 
 /** Requests a new confirmation link; the answer is the same for any address. */
@@ -31,10 +27,7 @@ export function ResendVerification() {
     setErrors({});
     setPending(true);
     try {
-      await apiRequest(AUTH_ROUTES.resendVerification, acceptedResponseSchema, {
-        method: 'POST',
-        body: checked.value,
-      });
+      await callApi(API.auth.resendVerification, { body: checked.value });
       setMessage({
         ok: true,
         text: 'If that address has an unconfirmed account, we sent a new link.',

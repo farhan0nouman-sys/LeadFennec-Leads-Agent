@@ -121,13 +121,30 @@ schemas are in `apps/api/src/env.ts`, `apps/worker/src/env.ts` and `apps/web/env
 Turborepo runs in strict environment mode: the `dev` task only passes the variables listed in
 `turbo.json` (`passThroughEnv`). When an app gains a variable, add it there too.
 
+### OpenAPI document
+
+`docs/api/openapi.json` is generated from `packages/shared/src/contracts/endpoints.ts`. After
+changing a route or a contract schema, run `pnpm openapi`; the shared package's tests fail
+while the file is out of date (`pnpm openapi --check` only compares).
+
+### Component demo
+
+With `APP_ENV` `development` or `test`, http://localhost:3000/dev/ui shows the shared tables,
+filters, forms, dialogs and states on invented data. It calls no API and needs no sign-in. In
+`staging` and `production` it answers 404.
+
 ### Browser tests
 
 `pnpm test:e2e` builds the web app and the API, then runs Playwright (Chromium).
 
-- The smoke test always runs.
-- The account and team scenarios (`apps/web/e2e/accounts-and-teams.spec.ts`) start the built
-  API on port 3101 and the web app on 3100, and need `E2E_DATABASE_URL`: a PostgreSQL URL
+- The smoke test and the component scenarios (`apps/web/e2e/ui-components.spec.ts`, on the
+  fixture demo page) always run.
+- The account and team scenarios (`apps/web/e2e/accounts-and-teams.spec.ts`) and the app-shell
+  scenarios (`apps/web/e2e/app-shell.spec.ts`, with axe accessibility checks) and the data
+  client scenarios (`apps/web/e2e/data-client.spec.ts`) and the dashboard scenarios
+  (`apps/web/e2e/dashboard.spec.ts`, which insert fake contacts and campaigns with
+  `E2eDatabase.seedDashboard` and drive polling with Playwright's clock) start the built API on port 3101 and
+  the web app on 3100, and need `E2E_DATABASE_URL`: a PostgreSQL URL
   whose database name ends in `_test`. Migrations are applied to it first
   (`prisma migrate deploy`), into its `public` schema. Without the variable the scenarios
   are reported as skipped.

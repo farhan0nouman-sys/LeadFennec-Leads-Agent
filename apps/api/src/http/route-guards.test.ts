@@ -1,40 +1,19 @@
 // Authorization review (task 04C, docs/security/authorization-review.md): every route the
 // application registers is checked for the guards its shape requires, so a new route that
 // forgets one fails here rather than in production.
-import { Writable } from 'node:stream';
-import { isPermissionKey } from '@lead-fennec-ai/shared';
-import { createLogger } from '@lead-fennec-ai/shared/logger';
-import { RequestMethod, type CanActivate, type Type } from '@nestjs/common';
-import {
-  GUARDS_METADATA,
-  METHOD_METADATA,
-  PATH_METADATA,
-} from '@nestjs/common/constants.js';
-import {
-  DiscoveryModule,
-  DiscoveryService,
-  MetadataScanner,
-} from '@nestjs/core';
-import { Test } from '@nestjs/testing';
+import { isPermissionKey, WORKSPACE_SECTIONS } from '@lead-fennec-ai/shared';
+import { type CanActivate, type Type } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { AppModule } from '../app.module.js';
 import { CsrfGuard, OriginGuard, SessionGuard } from '../auth/auth-guards.js';
-import { apiEnvSchema } from '../env.js';
-import { READINESS_CHECKS } from '../health/health.tokens.js';
+import {
+  registeredRoutes,
+  type RegisteredRoute as Route,
+} from '../testing/registered-routes.js';
 import {
   PermissionGuard,
-  REQUIRED_PERMISSIONS,
   WorkspaceGuard,
 } from '../workspaces/workspace-guards.js';
-
-interface Route {
-  readonly id: string;
-  readonly method: string;
-  readonly path: string;
-  readonly guards: readonly Type<CanActivate>[];
-  readonly permissions: readonly string[];
-}
 
 /** Routes anyone may call: health probes and the signed-out account flows. */
 const PUBLIC_ROUTES = new Set([
@@ -50,84 +29,6 @@ const PUBLIC_ROUTES = new Set([
 
 /** Workspace routes that need membership only (no permission). */
 const MEMBERSHIP_ONLY_ROUTES = new Set(['GET /workspaces/:workspaceId']);
-
-const joinPath = (...parts: unknown[]) =>
-  '/' +
-  parts
-    .flatMap((part): unknown[] => (Array.isArray(part) ? part : [part]))
-    .filter((part): part is string => typeof part === 'string' && part !== '')
-    .map((part) => part.replace(/^\/+|\/+$/g, ''))
-    .filter((part) => part !== '')
-    .join('/');
-
-const guardsOf = (target: object): Type<CanActivate>[] =>
-  (Reflect.getMetadata(GUARDS_METADATA, target) as
-    Type<CanActivate>[] | undefined) ?? [];
-
-async function registeredRoutes(): Promise<Route[]> {
-  const env = apiEnvSchema.parse({
-    APP_ENV: 'test',
-    DATABASE_URL: 'postgresql://test:test@127.0.0.1:1/leadfennec_test',
-    REDIS_URL: 'redis://127.0.0.1:1/15',
-  });
-  const logger = createLogger({
-    app: 'api',
-    level: 'silent',
-    destination: new Writable({
-      write: (_chunk, _encoding, done) => {
-        done();
-      },
-    }),
-  });
-  // Compiled, never started: nothing is dialled.
-  const moduleRef = await Test.createTestingModule({
-    imports: [AppModule.forRoot(env, logger), DiscoveryModule],
-  })
-    .overrideProvider(READINESS_CHECKS)
-    .useValue([])
-    .compile();
-  try {
-    const scanner = new MetadataScanner();
-    const routes: Route[] = [];
-    for (const wrapper of moduleRef.get(DiscoveryService).getControllers()) {
-      const controller = wrapper.metatype as Type | null;
-      if (controller === null) {
-        continue;
-      }
-      const prototype = controller.prototype as Record<string, unknown>;
-      for (const name of scanner.getAllMethodNames(prototype)) {
-        const handler = prototype[name];
-        if (typeof handler !== 'function') {
-          continue;
-        }
-        const methodPath: unknown = Reflect.getMetadata(PATH_METADATA, handler);
-        if (methodPath === undefined) {
-          continue;
-        }
-        const method =
-          RequestMethod[
-            Reflect.getMetadata(METHOD_METADATA, handler) as RequestMethod
-          ];
-        const path = joinPath(
-          Reflect.getMetadata(PATH_METADATA, controller),
-          methodPath,
-        );
-        routes.push({
-          id: `${method} ${path}`,
-          method,
-          path,
-          guards: [...guardsOf(controller), ...guardsOf(handler)],
-          permissions:
-            (Reflect.getMetadata(REQUIRED_PERMISSIONS, handler) as
-              string[] | undefined) ?? [],
-        });
-      }
-    }
-    return routes;
-  } finally {
-    await moduleRef.close();
-  }
-}
 
 describe('route guards (authorization review, task 04C)', () => {
   let routes: Route[];
@@ -159,6 +60,10 @@ describe('route guards (authorization review, task 04C)', () => {
         'GET /workspaces/:workspaceId/invitations',
         'POST /workspaces/:workspaceId/invitations',
         'DELETE /workspaces/:workspaceId/invitations/:invitationId',
+        'GET /workspaces/:workspaceId/leads/summary',
+        'GET /workspaces/:workspaceId/campaigns/summary',
+        'GET /workspaces/:workspaceId/activity',
+        'GET /workspaces/:workspaceId/integrations/health',
         'POST /invitations/preview',
         'POST /invitations/accept',
         'GET /platform/workspaces',
@@ -215,6 +120,28 @@ describe('route guards (authorization review, task 04C)', () => {
     for (const route of routes) {
       if (/:(membershipId|invitationId|roleId)\b/.test(route.path)) {
         expect(workspaceRoutes, route.id).toContain(route);
+      }
+    }
+  });
+
+  it('requires the permission of the section that shows the data (task 05A)', () => {
+    // packages/shared/src/navigation.ts: the web app shows a section only with its permission;
+    // the API routes behind it must ask for the same one, so hiding and refusing agree.
+    const nested = routes.filter((route) =>
+      route.path.startsWith('/workspaces/:workspaceId/'),
+    );
+    expect(nested.length).toBeGreaterThan(0);
+    for (const route of nested) {
+      const resource = route.path.split('/')[3] ?? '';
+      const section = WORKSPACE_SECTIONS.find((s) =>
+        (s.apiResources as readonly string[]).includes(resource),
+      );
+      expect(
+        section,
+        `${route.id}: add "${resource}" to a section's apiResources`,
+      ).toBeDefined();
+      if (route.method === 'GET' && section?.permission != null) {
+        expect(route.permissions, route.id).toContain(section.permission);
       }
     }
   });

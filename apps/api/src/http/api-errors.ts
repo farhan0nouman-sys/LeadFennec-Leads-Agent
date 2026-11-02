@@ -94,9 +94,12 @@ function validationFailed(error: ZodError): ApiHttpException {
   );
 }
 
-/** Validates a body or query against a contract schema; issues never echo the input. */
+/**
+ * Validates a body or query against a contract schema; issues never echo the input. The schema
+ * is public so the API contract test can check it is the endpoint list's (task 05B).
+ */
 export class ZodPipe<TSchema extends z.ZodType> implements PipeTransform {
-  constructor(private readonly schema: TSchema) {}
+  constructor(readonly schema: TSchema) {}
 
   transform(value: unknown): z.output<TSchema> {
     const result = this.schema.safeParse(value);

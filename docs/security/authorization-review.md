@@ -3,9 +3,22 @@
 Every API route and every data-access function that existed after 04B was checked for missing
 authorization. Decisions: `docs/decisions.md` D-04C-04. The route list is enforced by
 `apps/api/src/http/route-guards.test.ts`: a new route fails that test until it is added to its
-reviewed list, so add it here too.
+reviewed list, so add it here too. Since 05B the API contract test
+(`apps/api/src/http/api-contract.test.ts`) also requires every route to be in the endpoint list
+(`packages/shared/src/contracts/endpoints.ts`) with the same access, permission, status and
+validation schemas; the list generates `docs/api/openapi.json`.
 
 ## How access is decided
+
+Since 05A the web server checks every page before rendering it, and the API's route test ties
+each page's navigation permission to its API routes (`docs/decisions.md` D-05A-03):
+
+| Layer | Check |
+|---|---|
+| Navigation | Shows the sections the member's permissions open (`packages/shared/src/navigation.ts`). Convenience only. |
+| Web server | `apps/web/lib/server/access.ts` on every page: sign-in, membership (`404`), the section's permission ("You don't have access"), platform admin for `/admin`. |
+| API | The layers below, unchanged. |
+
 
 | Layer | Check |
 |---|---|
@@ -17,7 +30,7 @@ reviewed list, so add it here too.
 | Platform admins | Only `/platform/*`, through `platformConsole` / `platformAdminScope`: re-checked on each request, a stated reason, audited, read-only (except status changes and limit overrides). |
 | Workers | `claimJob` takes the workspace from the task row, never from the message. |
 
-## Routes (24)
+## Routes (28)
 
 | Route | Guards | Repository check | Result |
 |---|---|---|---|
@@ -32,11 +45,28 @@ reviewed list, so add it here too.
 | `PATCH /workspaces/:workspaceId/members/:membershipId` | Throttler, Origin, Session, CSRF, Workspace, Permission `members.manage` | `members.changeRole`: `members.manage`; ids in the workspace; last-admin rule | OK |
 | `POST /workspaces/:workspaceId/invitations` | Throttler, Origin, Session, CSRF, Workspace, Permission `members.manage` | `invitations.create`: `members.manage`; role id in the workspace | OK |
 | `DELETE /workspaces/:workspaceId/invitations/:invitationId` | same | `invitations.revoke`: `members.manage`; id in the workspace | OK |
+| `GET /workspaces/:workspaceId/leads/summary` | Throttler, Session, Workspace, Permission `contacts.read` | `dashboard.leadSummary`: `contacts.read`; counts filtered by the workspace | OK (05C) |
+| `GET /workspaces/:workspaceId/campaigns/summary` | Throttler, Session, Workspace, Permission `campaigns.read` | `dashboard.campaignSummary`: `campaigns.read` | OK (05C) |
+| `GET /workspaces/:workspaceId/activity` | Throttler, Session, Workspace, Permission `audit.read` | `dashboard.activity` via `audit.list`: `audit.read`; names only from this workspace's memberships; no record ids or metadata | OK (05C) |
+| `GET /workspaces/:workspaceId/integrations/health` | Throttler, Session, Workspace, Permission `settings.manage` | `dashboard.integrationHealth`: `settings.manage` | OK (05C) |
 | `POST /invitations/preview`, `POST /invitations/accept` | Throttler, Origin, Session, CSRF | Bound to the signed-in user's normalized email; accept also to the confirmed workspace id | OK: the workspace comes from the invitation, never from the request alone |
 | `GET /platform/workspaces` | Throttler, Session (Origin, CSRF pass on GET) | `platformConsole`: platform admin, reason, audited | OK |
 | `POST /platform/workspaces/:workspaceId/access`, `/status` | Throttler, Origin, Session, CSRF | `platformAdminScope` / `platformConsole.setTenantStatus`: platform admin, reason, audited | OK |
 
+Every `/workspaces/:workspaceId/<resource>` route must belong to a section in
+`packages/shared/src/navigation.ts` (`apiResources`), and every GET route there must require
+that section's permission (route test, task 05A). Today: `members`, `roles` and `invitations`
+belong to Team (`members.read`). Since 05C: `leads` to Leads (`contacts.read`), `campaigns` to
+Campaigns (`campaigns.read`), `activity` to Audit log (`audit.read`) and `integrations` to
+Integrations (`settings.manage`). The dashboard shows a panel only when its section opens.
+
 Reads (`GET`) skip the per-IP request limit (`@SkipThrottle`); the guard is still attached.
+
+**Client cache (05B, D-05B-03).** The web app caches API reads in browser memory only. Every key
+holds the user's id and, for workspace data, the workspace id from the request path;
+invalidation matches those stored fields; signing out clears the cache. The session (with its
+CSRF token) and platform-admin reads are never cached. The server caches nothing across
+requests.
 
 ## Data-access functions
 
@@ -50,6 +80,7 @@ Reads (`GET`) skip the per-IP request limit (`@SkipThrottle`); the guard is stil
 | `createWorkspace`, `listUserWorkspaces` | The session's user | OK |
 | `audit.record` | Any scope (append-only, application code) | OK |
 | `audit.list` | **Was any scope.** Now `audit.read` or a platform admin | **Fixed** |
+| `dashboard.leadSummary`, `campaignSummary`, `activity`, `integrationHealth` | The section's permission (`contacts.read`, `campaigns.read`, `audit.read`, `settings.manage`), or a platform admin's audited scope; workers refused | OK (05C) |
 | `billing.currentSubscription`, `billing.effectiveLimits` | **Were any scope.** Now `billing.read`, the system actor or a platform admin | **Fixed** |
 | `usage.summary` | **Was any scope.** Now as billing reads | **Fixed** |
 | `billing.setLimitOverride` | Platform admins only, audited | OK |

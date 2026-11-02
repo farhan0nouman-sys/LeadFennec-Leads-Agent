@@ -1721,6 +1721,391 @@ the API returns the same messages in `validation_failed` issues. They never echo
 
 ---
 
+## 05A: App shell, navigation and route shells (2026-11-02)
+
+**Basis.** The plan is still missing (O-01), so "all pages listed in the source" could not be
+read. The page list comes from the 05A prompt (leads, campaigns, approvals, inbox,
+automations, integrations, analytics, billing, admin), the data model (03A–03C) and the
+permission catalog (04B). It must be checked against the plan (O-25).
+
+### D-05A-01: The shell
+
+| Part | What it does |
+|---|---|
+| Sidebar (≥ 1024 px) | The app name, the workspace selector and the navigation, sticky |
+| Top bar | The menu button (narrow screens), breadcrumbs, the Admin link (platform admins), the user's name and Sign out |
+| Narrow screens | The same selector and navigation in a native modal `<dialog>`: focus stays inside, Escape and the backdrop close it, choosing a link closes it, focus returns to the menu button |
+| Main | `<main id="main" tabindex="-1">`, the target of a "Skip to content" link that is the first focusable element of every page |
+| Shells | `WorkspaceShell` (a workspace's pages), `AdminShell` (`/admin`), `HomeShell` (the workspace list, and pages the user can't open) |
+
+- **Typography** (`components/ui/typography.tsx`): `PageHeader` (the page's only h1, with an
+  optional badge and actions), `SectionHeading` (h2), `Muted`. Base styles balance headings and
+  respect reduced motion.
+- **Controls:** shadcn/ui-style source components as in D-04C-02, plus `Breadcrumb`. The
+  workspace selector stays a native `<select>` (keyboard and screen-reader support built in).
+  Navigation links have `aria-current="page"`; landmarks are labelled ("Workspace pages",
+  "Admin pages", "Breadcrumb").
+- **Icons:** `lucide-react` 1.66.0 (ISC), the shadcn/ui icon set; decorative only
+  (`aria-hidden`).
+
+### D-05A-02: One list of pages
+
+`packages/shared/src/navigation.ts` (`WORKSPACE_SECTIONS`, `ADMIN_SECTIONS`) is the only list.
+Each section has a path, a group, a label, a description, the permission it needs, its status
+(`available` or `unavailable`), and the first path segments of its API routes.
+
+| Group | Sections (permission) |
+|---|---|
+| Workspace | Overview (any member) |
+| Prospecting | Ideal customers (`icps.read`), Leads (`contacts.read`), Lead lists (`lead_lists.read`), Imports (`imports.create`) |
+| Outreach | Campaigns (`campaigns.read`), Approvals (`drafts.approve`), Inbox (`campaigns.read`), Automations (`campaigns.write`) |
+| Insights | Analytics (`campaigns.read`) |
+| Settings | Team (`members.read`), Integrations (`settings.manage`), Mailboxes (`email_accounts.manage`), Do-not-contact list (`suppressions.manage`), Billing (`billing.read`), Audit log (`audit.read`), Workspace settings (`settings.manage`) |
+| Admin (`/admin`, platform admins) | Workspaces (the 04C console), Users, Plans, Platform audit log |
+
+- **Built:** Overview, Team, and the admin Workspaces console. Everything else is a route
+  shell: it says "Not available yet", explains what it will do, and shows its main action
+  disabled. One dynamic route (`/workspaces/[workspaceId]/[section]`, `/admin/[section]`)
+  serves every shell; a built page gets its own folder, which takes precedence.
+- **Inbox, Automations, Analytics and Integrations** reuse existing permissions
+  (`campaigns.read`, `campaigns.write`, `campaigns.read`, `settings.manage`) instead of
+  adding new keys: workspaces get their grants when they are created, so a new key would need
+  a migration for existing roles (O-25).
+- **Navigation:** a member sees only the sections their permissions open (helpers
+  `workspaceNavigation`, `canOpenSection`); not-yet-built sections stay visible, marked
+  "Soon" (and "not available yet" for screen readers). Breadcrumbs: Workspaces › workspace ›
+  page; Admin › page.
+- **The console moved** from `/platform` to `/admin`; `/platform` redirects (308).
+
+### D-05A-03: Hiding and refusing agree: navigation, web server and API
+
+| Layer | Check |
+|---|---|
+| Navigation (browser) | Shows only the sections the member's permissions open, and the Admin link only to platform admins. Convenience, not protection. |
+| Web server (every page, every request) | `lib/server/access.ts`: signed out → `307` to sign-in (and back); not an active member of an active workspace (or no such page) → `404`; no permission → "You don't have access" (no page content rendered); admin pages → platform admins only. |
+| API (every data request) | `WorkspaceGuard`, `PermissionGuard` and the repositories, as before (D-04B-04). The route test now requires every `/workspaces/:workspaceId/<resource>` route to belong to a section, and every GET route to need that section's permission. |
+
+- **How the web server checks:** server components call the API with the request's session
+  cookie, nothing else (`lib/server/api.ts`), and validate the answers with the shared
+  schemas. React `cache` makes it one request per page view. The layout only fetches what the
+  shell shows: layouts don't re-render on navigation (Next.js authentication guide, checked
+  2026-11-02 in the docs bundled with `next` 16.4.3), so each page runs the check itself.
+- **Access denied renders with status 200:** Next.js's `forbidden()` is still experimental
+  (`authInterrupts`). The page is rendered on the server without the section's content; the
+  browser test checks the raw HTML.
+- **What reaches the browser:** server pages pass only the user's id, email, name and
+  platform-admin flag (`shellUser`). The CSRF token still comes only from the browser's own
+  `GET /auth/session` (D-04C-07).
+- **Session contract:** `GET /auth/session` and `POST /auth/login` now return
+  `user.platformAdmin`. It only decides whether the Admin link is shown; every `/platform`
+  route checks it again.
+
+### D-05A-04: Tests
+
+- **Shared** (`navigation.test.ts`, 9): unique keys, paths and API resources; catalog
+  permissions; the prompt's pages present; navigation for each role; paths; breadcrumbs.
+- **API:** the session reports `platformAdmin` (2 assertions); the route test's section rule
+  (`route-guards.test.ts`, now 7 tests).
+- **Browser** (`e2e/app-shell.spec.ts`, 7 scenarios):
+  - every section in the admin's navigation, grouped, unbuilt ones marked;
+  - every route shell, with its action disabled;
+  - the member's narrower navigation, each hidden section refused by the server (also in the
+    raw HTML), the API refusing a role change, and real 404s;
+  - signed-out requests redirected by the server (`307`);
+  - the skip link;
+  - the dialog on a 390-pixel screen;
+  - the selector keeping the page;
+  - the admin area for platform admins only.
+- **Automated accessibility checks:** `@axe-core/playwright` 4.14.0 (MPL-2.0, test-only)
+  checks the overview, a route shell, the team page, the narrow-screen dialog and the admin
+  console against WCAG 2.0, 2.1 and 2.2 A/AA rules: no violations. Axe finds only part of the
+  problems; a manual check with a screen reader hasn't been done (O-25).
+- **Fixed in the 04C scenarios:** the unconfirmed sign-in step could run before the
+  asynchronous registration had created the account (registration answers first, D-04A-02); it
+  now waits for the account.
+
+---
+
+## 05B: Shared UI components, typed API client, workspace-scoped cache (2026-11-02)
+
+**Basis.** The plan is still missing (O-01); this follows the 05B prompt and reuses the 04A–05A
+contracts, screens and tests.
+
+### D-05B-01: One list of API endpoints
+
+`packages/shared/src/contracts/endpoints.ts` (`API`, `ALL_ENDPOINTS`) describes all 24 routes.
+
+| Field | Meaning |
+|---|---|
+| `id` | Unique; the OpenAPI `operationId` (e.g. `members.list`) |
+| `method`, `path` | Nest-style path, e.g. `/workspaces/:workspaceId/members` |
+| `access` | `public`, `session`, `workspace` (active member) or `platform_admin` |
+| `permission` | The role permission a workspace route requires |
+| `params`, `query`, `headers`, `body`, `response` | The existing contract schemas (`auth.ts`, `workspaces.ts`), not copies |
+| `status`, `errors` | Success status; error codes specific to the route (generic ones follow from its shape) |
+| `cache`, `invalidates` | The cached resource a read fills; the resources a mutation makes stale (D-05B-03) |
+
+Helpers: `buildEndpointRequest` validates the input and builds the path (encoded parameters,
+sorted query). Also `endpointErrorCodes`, `needsCsrfToken` and `API_ERROR_STATUS`.
+
+### D-05B-02: The OpenAPI document is generated; the API is tested against the list
+
+- **Generated, not written by hand.** The controllers validate with zod pipes, not
+  class-validator DTOs. `@nestjs/swagger` would therefore need a second, decorator-based
+  description of every body. Instead, the document comes from the same zod schemas via zod
+  4.6.7's `z.toJSONSchema` (JSON Schema 2020-12, `unrepresentable: 'throw'`). No new
+  dependency.
+- **Version: OpenAPI 3.1.2** (published 2025-09-19; checked 2026-11-02 at
+  https://spec.openapis.org/oas/). 3.2.1 exists, but 3.1 has wider tool support and nothing
+  here needs 3.2.
+- **The document:** `docs/api/openapi.json`, written by `pnpm openapi`. A test in the shared
+  package fails when the file is out of date.
+  - Security schemes: `sessionCookie` (apiKey in the `__Host-lf_session` cookie) and
+    `csrfToken` (apiKey in the `x-csrf-token` header). Both are required on authenticated
+    mutations.
+  - Extensions: `x-access`, `x-permission`, `x-cache`, `x-invalidates` and `x-error-codes`.
+- **API contract test** (`apps/api/src/http/api-contract.test.ts`). It checks that:
+  - the registered routes are exactly the list's;
+  - the guards match `access` (session, workspace, permission, CSRF on mutations), and the
+    permission is the same;
+  - the success status is the route's `@HttpCode` (or Nest's default);
+  - the `ZodPipe` on `@Body()` and `@Query()` holds the **same schema object** as the list
+    (`ZodPipe.schema` is now public).
+- **Shared route discovery:** `apps/api/src/testing/registered-routes.ts`, used by this test
+  and by `route-guards.test.ts`.
+- **Proxy:** a web unit test checks that the `/api` proxy forwards every listed endpoint except
+  the health probes.
+- **Limits:**
+  - Response bodies aren't compared statically. The web client validates every response, and
+    the API integration suites parse responses with the shared schemas.
+  - Refinements, such as password length counted in code points, can't be expressed in JSON
+    Schema.
+  - The document is checked by structural tests only; no external OpenAPI validator has run
+    (O-26).
+
+### D-05B-03: Typed client, authenticated requests, cache scoped by workspace
+
+- **Browser client** (`apps/web/lib/api.ts`): `callApi(API.members.list, { params, query },
+  { csrfToken })`. Its input and result types come from the list.
+  - Input is validated before sending. Invalid input becomes `validation_failed` with field
+    issues, and nothing is sent.
+  - The CSRF token is attached where the endpoint needs it; without a token the call is
+    refused before sending.
+  - Every response is validated against the endpoint's schema. Anything off-contract becomes
+    `unexpected_response`.
+  - `apiRequest` and `apiCommand` are gone: every screen calls through the list.
+- **Server pages:** `serverApiGet(endpoint, input)` (`lib/server/api.ts`) works the same way.
+  It allows GET only, sends the session cookie only, and never caches.
+- **Cache** (`lib/query-cache.ts`, pure; `lib/query.tsx`, React):
+  - Keys are canonical JSON of `[userId, scope, workspaceId, resource, endpointId, path]`.
+    The workspace id is taken from the validated request path, so it can't be left out. A
+    resource has a fixed scope (`CACHE_RESOURCES`: `workspaces` is per user, the rest per
+    workspace).
+  - Invalidation names a user, a scope and resources, and matches each entry's stored fields,
+    never key prefixes.
+  - Signing out or another user clears everything. An answer that arrives after the clear is
+    discarded. One that was in flight during an invalidation is kept as stale and reloads.
+  - Memory only, per browser tab; at most 200 entries nobody watches. Never persisted.
+  - A screen that mounts shows cached data and reloads it in the background; data made stale
+    while it is open reloads at once.
+  - Not cached: the session (it holds the CSRF token), platform-admin reads (each one is an
+    audited access) and mutations.
+- **Hooks:**
+  - `useApiQuery(endpoint, input)`: loading, error, success, `refreshing` and `retry`.
+  - `useApiMutation(endpoint)`: sends the session's CSRF token and returns a result instead of
+    throwing. On success it invalidates the endpoint's `invalidates` in the workspace of the
+    request's own path.
+  - A 401 from either sends the user to sign in.
+- **Why not TanStack Query:** the safety properties above (user and workspace in every key,
+  invalidation by stored scope, discarding answers after sign-out) are the point. Here they
+  are about 250 lines with unit tests and no new runtime dependency. The hooks can be moved
+  onto a library later without changing screens.
+- **The server caches nothing across requests:** React `cache` lasts one request, and every
+  fetch is `no-store` (D-05A-03).
+
+### D-05B-04: Shared components
+
+| Component | File | Behaviour |
+|---|---|---|
+| `DataTable` | `components/data/data-table.tsx` | Caption; row headers; placeholder rows with an announced "Loading…"; empty state; retry state (keeps rows it already had); a named, focusable scroll region for narrow screens |
+| `CursorPagination` | `components/data/pagination.tsx` | Previous and Next over the API's keyset pages: `useCursorTrail` keeps the cursors of earlier pages and starts over when the view changes. Page number and page size; no totals (the API has none). |
+| `ListFilters`, `SearchField`, `FilterSelect` | `components/data/list-filters.tsx` | A labelled search landmark. The search applies after a 300 ms pause, or at once on Enter. "Clear filters" appears only while something is filtered. |
+| `useListParams` | `lib/use-list-params.ts`, `lib/list-params.ts` | The search, filters and page size live in the address bar. Each value is validated, and an invalid one falls back to its default (the address is untrusted input). |
+| `StatusLabel`, `Status` | `components/data/status-label.tsx` | The status in words plus a coloured dot; the colour only repeats the text. New `--warning` and `--info` colour tokens, used for the dots only. |
+| `FormField`, `SelectField`, `TextareaField`, `FormError`, `SubmitButton`, `useFormSubmit` | `components/form-field.tsx`, `lib/use-form-submit.ts` | Validation with the shared schema first. The API's field issues show on their fields; chosen error codes can map to a field; anything else shows above the form. |
+| `Dialog` | `components/ui/dialog.tsx` | Native modal `<dialog>`: focus stays inside, Escape closes it, focus returns afterwards, and text styles don't leak in from a table cell |
+| `ConfirmDialog`, `ConfirmButton` | `components/feedback/confirm.tsx` | `alertdialog` with Cancel focused first. It can't be dismissed while the action runs; a failure shows inside it; optionally the user must type a word to confirm. |
+| `EmptyState`, `RetryState` | `components/feedback/` | Retry shows only the API's own message, otherwise a generic text |
+| Error boundaries | `app/error.tsx`, `app/global-error.tsx`, `app/workspaces/[workspaceId]/error.tsx`, `app/admin/error.tsx`; `components/feedback/error-boundary.tsx` | Routes use `retry` (Next.js 16.4.3 docs bundled with `next`, checked 2026-11-02). They show the error's digest, never its message. Parts of a page use `catchError` from `next/error`, which lets `redirect` and `notFound` pass through. |
+
+**Used by the screens:**
+- **Team page:** members and invitations as paged tables with status labels, the invitation
+  form, and confirmations before revoking an invitation and before changing one's own role.
+- **Admin console:** a paged table, and a confirmation before suspending a workspace.
+
+**Visible behaviour changes:**
+- Revoking, suspending and changing one's own role now ask first.
+- "Show more" became Previous and Next.
+- Lists reload after a change instead of being patched in place.
+
+### D-05B-05: Fixture demonstrations, apart from production data
+
+- **The demo page:** `/dev/ui` shows every component on invented data (`apps/web/fixtures/`).
+  - The data: 42 leads on the reserved example domains (RFC 2606).
+  - `FixtureSource` pages by cursor like the API, waits a little to show loading states, and
+    can fail the next request on demand to show retry states.
+  - Its form returns the same result shape as `useApiMutation`, so `useFormSubmit` is
+    exercised identically.
+- **Where it exists:** only with `APP_ENV` `development` or `test` (`lib/demos.ts`), decided
+  per request (`connection()`); elsewhere it answers 404.
+  - It needs no sign-in, because it shows nothing real and calls no API.
+  - It isn't in the navigation and isn't indexed (`noindex`).
+- **ESLint, both directions** (`apps/web/eslint.config.mjs`):
+  - Production code may not import `fixtures/` or `app/dev/`.
+  - Demo code may not import `callApi`, `sendRequest`, `endpointRequest`, `lib/query`,
+    `lib/query-cache`, `lib/session` or `lib/server/*`.
+  - Both rules were shown to fire with throwaway files.
+
+### D-05B-06: Tests
+
+| Where | Tests |
+|---|---|
+| Shared | `endpoints.test.ts` (13): the list's internal rules, cache and invalidation scopes, CSRF, error codes, request building. `openapi.test.ts` (5): the document is up to date, complete, consistent and resolvable. |
+| API | `api-contract.test.ts` (4), with `route-guards.test.ts` (7) on the shared route discovery |
+| Web unit (new Vitest project, `apps/web/lib/**/*.test.ts`; `server-only` is stubbed) | `query-cache.test.ts` (9), `list-params.test.ts` (3, with the demo gate), `api.test.ts` (5: client and proxy) |
+| Browser | `ui-components.spec.ts` (8, no database: every component, address-bar state, untrusted parameters, retry, confirmations and focus, the form, the error boundary, axe). `data-client.spec.ts` (3, real API: invalidation within one workspace, no requests for another workspace's data, confirmation with Escape, sign-in after the session ends). `accounts-and-teams.spec.ts` now confirms revocation, suspension and own-role changes. |
+
+---
+
+## 05C: Dashboard aggregates, recent activity, integration health (2026-11-02)
+
+**Basis.** The plan is still missing (O-01); this follows the 05C prompt. It reuses the 05A
+sections, the 05B endpoint list, client, cache and components, and the 03C/04B repositories.
+
+### D-05C-01: Aggregate endpoints live under the sections that own the data
+
+| Route | Permission (section) | Data | Cache resource |
+|---|---|---|---|
+| `GET /workspaces/:workspaceId/leads/summary` | `contacts.read` (Leads) | Contacts and companies | `leadSummary` |
+| `GET /workspaces/:workspaceId/campaigns/summary` | `campaigns.read` (Campaigns) | Campaigns and campaign leads by status | `campaignSummary` |
+| `GET /workspaces/:workspaceId/activity?limit=` | `audit.read` (Audit log) | Latest audit records (1–25, default 10) and counts for 24 hours, 7 and 30 days | `activity` |
+| `GET /workspaces/:workspaceId/integrations/health` | `settings.manage` (Integrations) | Mailboxes, syncs and failed provider notifications per integration | `integrationHealth` |
+
+- **Why under the sections, not one `/dashboard` route:** the 05A rule then applies unchanged:
+  a GET route under a section needs that section's permission (route test, contract test).
+  The dashboard can't show more than the pages behind it.
+- **The overview has no API of its own.** It shows a panel exactly when the member could open
+  the panel's section (the same check as the navigation). Hidden panels match hidden pages.
+- `activity` joins `audit` in the Audit log section's API resources.
+- **Read-only:** no CSRF token, `Cache-Control: no-store`. Like the other reads, they skip the
+  per-address request limit; the client's polling is bounded instead (D-05C-04).
+- Inviting, revoking and role changes write audit records, so they now also invalidate
+  `activity` in the client cache.
+
+### D-05C-02: Counts come from the database, one workspace, one snapshot
+
+- **Repository:** `scope.dashboard` (`packages/database/src/tenancy/dashboard.ts`).
+  - Each method first checks its section's permission (`requireReadPermission`: a member
+    whose role grants it, or a platform admin's audited scope; workers are refused).
+  - Every query filters by `tenantId`.
+  - The counts of one summary are read in one `REPEATABLE READ` transaction, so they agree.
+- **Definitions:**
+  - contacts: `ACTIVE` contacts (archived ones left out);
+  - companies: organizations;
+  - contacts with email: a normalized email address is present;
+  - added in 30 days: `created_at` within 30 days of the scope's clock;
+  - leads in progress: campaign leads `PENDING` or `ACTIVE`.
+- **"Currently implemented":** the tables exist since 03A/03B, but no feature writes contacts
+  or campaigns yet. A new workspace therefore shows zeros, which is its true state.
+- **Activity:**
+  - Reuses `scope.audit.list` (newest first, keyset on id). Counts use `occurred_at`.
+  - Actor names come only from memberships of this workspace, by the membership id recorded
+    with the action: the display name, else the email address. (`audit.read` is an admin
+    permission, and admins already see members' addresses on the Team page.)
+  - A membership not found here (former member, or any other workspace's) is "A former
+    member", never named.
+  - Platform admins show as "Lead Fennec support" with their stated reason; automatic
+    processes as "Lead Fennec (automatic)".
+  - Record ids and audit metadata are never returned.
+
+### D-05C-03: Integration health
+
+- **Listed:** Gmail and Microsoft 365 (mailboxes), GoHighLevel and Apollo (syncs): the
+  `integration_provider` values except Stripe.
+  - Stripe belongs to Billing (`billing.read`).
+  - OpenAI and email verification are run by the platform, not connected per workspace. Their
+    health is a platform readiness concern. The panel says so.
+- **Inputs:**
+  - `email_accounts` by status;
+  - `integration_sync_cursors`: count, failing (`consecutive_failures > 0`), latest
+    `last_synced_at`;
+  - `inbound_events`: `FAILED` in the last 24 hours, latest `received_at`.
+- **State** (`integrationHealthState` in `@lead-fennec-ai/shared`, unit-tested), first match
+  wins:
+  1. **attention:** any failing sync, failed notification or `ERROR` mailbox;
+  2. **healthy:** an active or paused mailbox (for other integrations: any sync or
+     notification);
+  3. **connecting:** a mailbox waiting for authorization;
+  4. **not connected:** none of these.
+- **No provider is called.** Health is what the database recorded. Live checks (token
+  validity, provider status) belong to the connection tasks, after checking each provider's
+  official documentation.
+
+### D-05C-04: Refresh strategy: bounded polling for live panels
+
+| Panel | Refresh |
+|---|---|
+| Leads, Campaigns | When the page opens (stale-while-revalidate, D-05B-03), and with Refresh. No polling: these change only through later features. |
+| Recent activity | Every minute while the page is visible; at most 30 automatic refreshes |
+| Integration health | Every 2 minutes while the page is visible; at most 15 automatic refreshes |
+
+Rules (`apps/web/lib/polling.ts`, unit-tested; applied by `useApiQuery`'s `poll` option):
+- **Visible pages only** (Page Visibility API). A hidden page has no timers. When it becomes
+  visible, it refreshes at once and the count starts again.
+- **Bounded:** after 30 minutes of automatic refreshes the panel says "Automatic updates
+  stopped after 30 minutes." and offers Resume.
+- **Back-off:** after a failure, the wait doubles (capped at 5 minutes for activity, 10 for
+  health). After 3 consecutive failures polling stops ("Automatic updates paused after repeated
+  errors.") until the user retries.
+- **One request at a time:** a poll joins a load already in flight. A 401 sends the user to sign
+  in (05B).
+- **Worst case per open, visible tab:** 1.5 requests a minute (activity and health), ending
+  30 minutes after the user's last refresh or return to the tab.
+- **Why not server push** (Server-Sent Events, WebSockets): they need long-lived connections
+  through the web app's proxy and new server code. Polling is enough for data that changes
+  this slowly.
+
+### D-05C-05: Screens: metrics, states, accessibility, layout
+
+- **Metric catalog** `DASHBOARD_METRICS` (`@lead-fennec-ai/shared`):
+  - An available metric is read from its group's summary under the same key (a test enforces
+    it).
+  - An unavailable one says why ("Available once sending … is built") and shows "Not
+    available yet" in a dashed card, never a made-up 0.
+  - Unavailable today: verified emails, scored leads, emails sent, reply rate, meetings booked.
+- **Each panel:**
+  - a region named by its heading, `aria-busy` while loading;
+  - metrics as description lists;
+  - placeholders announced as "Loading"; failed counts show "–", read as "Not loaded";
+  - a retry state, and its own `ErrorBoundary`;
+  - the "Updated …" text is not a live region (it would be read every minute); a polite
+    status announces when updates stop;
+  - the refresh button's name includes the panel's title.
+- **Layout:** metrics in 2 columns on phones and 3 from `md`. Activity and health sit side by
+  side from `lg`. No sideways scrolling at 390 px.
+- **The overview** keeps "Your pages". The permission list moved into a collapsed "What your
+  role lets you do".
+
+### D-05C-06: Tests
+
+| Level | File | What it shows |
+|---|---|---|
+| Shared | `contracts/dashboard.test.ts` (7) | Metric keys match the summaries; permissions match the sections; health states; labels; no record ids in activity items |
+| Database | `dashboard.integration.test.ts` (6) | Counts of one workspace only; permission per method; actor names only from this workspace; health from mailboxes, syncs and events; platform admins only in an audited scope |
+| API | `workspaces/dashboard.integration.test.ts` (5) | 200 with the contract's schemas and `no-store`; 403 by role; 404 outside the workspace; 401; limit validation; nothing from other workspaces |
+| Web units | `lib/polling.test.ts` (5), `lib/format.test.ts` (2) | Interval, back-off, stop after 3 failures and after 30 minutes; relative times |
+| Browser | `e2e/dashboard.spec.ts` (5) | Real counts and "not available yet"; panels by role and the API's 403; polling with Playwright's clock (an update after a minute, nothing while hidden, at once when visible); a failed panel beside working ones, pausing after 3 failures, recovery; 390 px without sideways scrolling; axe |
+
 ## Open choices (need a decision from the user)
 
 | ID | Choice | Current state | Options |
@@ -1749,3 +2134,6 @@ the API returns the same messages in `validation_failed` issues. They never echo
 | O-22 | The auth decision against the plan | The plan was unavailable; 04A chose first-party sessions with Argon2id, HttpOnly cookies and synchronizer CSRF tokens (D-04A-01). | Confirm, or reconcile with the plan, e.g. if it prescribes a hosted identity provider. |
 | O-23 | Team management beyond 04B | The 04C screens cover inviting, revoking and role changes. Not built: suspending or removing members, custom roles per workspace, limits on workspaces per user, ownership transfer, and invitations to platform staff (D-04B-01 to D-04B-04, D-04C-01). | Decide before the next team-management task, and with the billing limits. |
 | O-24 | Screen design and copy | The 04C screens use shadcn/ui's neutral defaults and English copy written without the plan: no brand (the `branding` table is unused), no dark-mode switch, no translations; dates use the browser's locale (D-04C-01, D-04C-02). | Reconcile with the plan's design and copy, and with tenant branding. |
+| O-26 | Data layer of 05B | The client cache reloads data when a screen mounts and after the listed mutations; it has no time-based expiry, holds at most 200 unwatched entries, and caches nothing for platform admins (D-05B-03). The OpenAPI document is OpenAPI 3.1.2 with a hand-set API version (0.5.0), checked by structural tests only. The demo page ships in production builds but answers 404 there (D-05B-05). The list routes take no search or filter parameters yet, so the search and filter controls are used only on the demo page. | Confirm the cache policy, or add expiry times per resource. Add an OpenAPI validator to CI, or move to 3.2. Exclude `app/dev` from production builds if wanted. Add search and filters to the API list routes when the lead pages are built. |
+| O-25 | Pages and permissions of the app shell | 05A derived the page list from its prompt, the data model and the permission catalog, not from the plan. Inbox, Analytics, Automations and Integrations reuse `campaigns.read`, `campaigns.write` and `settings.manage`; "Admin" is read as the platform-admin area (D-05A-02). Accessibility is checked with axe only, not with a screen reader. | Reconcile the pages, groups and permissions with the plan. New permission keys need a migration that grants them to existing roles. Test with a screen reader (NVDA or VoiceOver) before release. |
+| O-27 | Dashboard definitions and refresh (05C) | Metric definitions, the integration list and the polling intervals were chosen without the plan (D-05C-02 to D-05C-04). Activity names a member without a display name by email address. The 24-hour, 7-day and 30-day activity counts and the contact counts read all of a workspace's rows of those tables (no `(tenant_id, occurred_at)` index). The dashboard has nothing for platform admins. | Confirm or adjust the metrics, intervals and naming. Add an index or stored counters in a new migration when volumes grow. Decide whether the admin area needs its own dashboard. |

@@ -2,7 +2,9 @@
 
 Task 04B. The machine-readable contract is `packages/shared/src/contracts/workspaces.ts`
 (`@lead-fennec-ai/shared`). The permission catalog and the system roles are in
-`packages/shared/src/authorization.ts`. Conventions (JSON, `Cache-Control: no-store`, the
+`packages/shared/src/authorization.ts`. Every route is also in the endpoint list (`packages/shared/src/contracts/endpoints.ts`) and
+in the generated OpenAPI 3.1.2 document [openapi.json](openapi.json) (task 05B).
+Conventions (JSON, `Cache-Control: no-store`, the
 error envelope, the session cookie, CSRF and origin checks) are as in
 [auth.md](auth.md). Decisions: `docs/decisions.md` D-04B-*.
 

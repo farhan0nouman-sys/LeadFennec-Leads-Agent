@@ -1,9 +1,6 @@
 'use client';
 
-import {
-  AUTH_ROUTES,
-  emailVerifiedResponseSchema,
-} from '@lead-fennec-ai/shared';
+import { API } from '@lead-fennec-ai/shared';
 import Link from 'next/link';
 import { useState } from 'react';
 import { AuthShell } from '@/components/auth-shell';
@@ -11,8 +8,8 @@ import { Loading } from '@/components/page-states';
 import { ResendVerification } from '@/components/resend-verification';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button, buttonVariants } from '@/components/ui/button';
-import { ApiError, apiRequest, errorMessage } from '@/lib/api';
-import { useLinkToken } from '@/lib/links';
+import { ApiError, callApi, errorMessage } from '@/lib/api';
+import { useLinkToken } from '@/lib/link-token';
 
 type Outcome =
   | { readonly kind: 'verified' }
@@ -42,10 +39,7 @@ function VerifyEmail({ token }: { readonly token: string | null }) {
   async function confirm(value: string) {
     setPending(true);
     try {
-      await apiRequest(AUTH_ROUTES.verifyEmail, emailVerifiedResponseSchema, {
-        method: 'POST',
-        body: { token: value },
-      });
+      await callApi(API.auth.verifyEmail, { body: { token: value } });
       setOutcome({ kind: 'verified' });
     } catch (error) {
       setOutcome(

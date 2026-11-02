@@ -1,7 +1,4 @@
-import Link from 'next/link';
-import type { ReactNode } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { buttonVariants } from '@/components/ui/button';
 
 export function Loading({ label = 'Loading…' }: { readonly label?: string }) {
   return (
@@ -28,27 +25,5 @@ export function Unavailable({ onRetry }: { readonly onRetry?: () => void }) {
         )}
       </AlertDescription>
     </Alert>
-  );
-}
-
-/** For routes the user may not open: unknown ids and other workspaces look the same. */
-export function NotAvailable({
-  title,
-  children,
-}: {
-  readonly title: string;
-  readonly children: ReactNode;
-}) {
-  return (
-    <div className="mx-auto grid max-w-lg gap-4 py-12">
-      <h1 className="text-2xl font-semibold">{title}</h1>
-      <div className="text-muted-foreground">{children}</div>
-      <Link
-        href="/workspaces"
-        className={buttonVariants({ variant: 'outline' })}
-      >
-        Go to your workspaces
-      </Link>
-    </div>
   );
 }

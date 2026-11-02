@@ -505,7 +505,11 @@ describe.runIf(testDatabaseUrl !== undefined)(
           cookie.domain ?? cookie.maxAge ?? cookie.expires,
         ).toBeUndefined();
         expect(result.text).not.toContain(token);
-        expect(body.user).toMatchObject({ email, emailVerified: true });
+        expect(body.user).toMatchObject({
+          email,
+          emailVerified: true,
+          platformAdmin: false,
+        });
         expect(body.session).toEqual({
           idleExpiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
           absoluteExpiresAt: new Date(

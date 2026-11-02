@@ -4,6 +4,7 @@ export * from './actors.js';
 export * from './audit.js';
 export * from './authorization.js';
 export * from './billing.js';
+export * from './dashboard.js';
 export * from './invitations.js';
 export * from './members.js';
 export * from './notifications.js';

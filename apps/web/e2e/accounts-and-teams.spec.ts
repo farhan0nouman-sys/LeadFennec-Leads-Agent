@@ -152,7 +152,9 @@ test('registers with form validation, confirms the email once, and signs in', as
     page.getByRole('heading', { name: 'Check your inbox' }),
   ).toBeVisible();
 
-  // An unconfirmed account can't sign in yet.
+  // An unconfirmed account can't sign in yet. Registration answers before the account exists
+  // (no account enumeration), so wait for it.
+  await db.userId(alice.email);
   await page.goto('/login');
   await fillSignIn(page, alice, PASSWORD);
   await expect(
@@ -248,6 +250,10 @@ test('an admin creates a workspace, invites people and revokes an invitation', a
   await page
     .getByRole('button', { name: `Revoke the invitation for ${dave.email}` })
     .click();
+  await page
+    .getByRole('alertdialog', { name: 'Revoke this invitation?' })
+    .getByRole('button', { name: 'Revoke invitation' })
+    .click();
   await expect(page.getByTestId(`invitation-${dave.email}`)).toHaveCount(0);
   await expect(
     page.getByText(`The invitation for ${dave.email} was revoked.`),
@@ -339,12 +345,8 @@ test('a team member sees the team but cannot change it', async ({
   expect(refused.status()).toBe(403);
   expect(await refused.json()).toMatchObject({ error: { code: 'forbidden' } });
 
-  // The platform console is not for members.
-  await page.goto('/platform');
-  await page
-    .getByLabel('Reason for this access')
-    .fill('Curious about the console');
-  await page.getByRole('button', { name: 'Open console' }).click();
+  // The admin area is not for members (checked by the server since 05A).
+  await page.goto('/admin');
   await expect(
     page.getByRole('heading', { name: 'Platform admins only' }),
   ).toBeVisible();
@@ -375,9 +377,11 @@ test('switching workspaces; other workspaces stay closed', async ({
   // The switcher keeps the page and changes the workspace.
   await alicePage.goto(`/workspaces/${alphaId}/team`);
   await expect(alicePage.getByTestId(`member-${bob.email}`)).toBeVisible();
-  await alicePage.getByLabel('Workspace', { exact: true }).selectOption({
-    label: betaName,
-  });
+  await alicePage
+    .getByRole('combobox', { name: 'Workspace', exact: true })
+    .selectOption({
+      label: betaName,
+    });
   await expect(alicePage).toHaveURL(`${WEB_URL}/workspaces/${betaId}/team`);
   await expect(alicePage.getByTestId(`member-${carol.email}`)).toBeVisible();
   await expect(alicePage.getByTestId(`member-${bob.email}`)).toHaveCount(0);
@@ -391,7 +395,7 @@ test('switching workspaces; other workspaces stay closed', async ({
   ]) {
     await bobPage.goto(path);
     await expect(
-      bobPage.getByRole('heading', { name: 'Workspace not found' }),
+      bobPage.getByRole('heading', { name: 'Page not found' }),
     ).toBeVisible();
   }
   await bobPage.goto('/workspaces');
@@ -412,6 +416,11 @@ test('admins change roles, and a workspace always keeps an admin', async ({
   await page
     .getByRole('combobox', { name: `Role of ${alice.email}` })
     .selectOption({ label: 'Client Team Member' });
+  // Changing one's own role asks first (05B).
+  await page
+    .getByRole('alertdialog', { name: 'Change your own role?' })
+    .getByRole('button', { name: 'Change my role' })
+    .click();
   await expect(
     page.getByText('A workspace needs at least one admin.', { exact: false }),
   ).toBeVisible();
@@ -468,6 +477,10 @@ test('expired and revoked invitations are refused', async ({
   await carolPage
     .getByRole('button', { name: `Revoke the invitation for ${erin.email}` })
     .click();
+  await carolPage
+    .getByRole('alertdialog', { name: 'Revoke this invitation?' })
+    .getByRole('button', { name: 'Revoke invitation' })
+    .click();
   await expect(carolPage.getByTestId(`invitation-${erin.email}`)).toHaveCount(
     0,
   );
@@ -517,10 +530,10 @@ test('a platform admin acts only through the console, with a reason', async ({
   // No implicit member access.
   await page.goto(`/workspaces/${alphaId}`);
   await expect(
-    page.getByRole('heading', { name: 'Workspace not found' }),
+    page.getByRole('heading', { name: 'Page not found' }),
   ).toBeVisible();
 
-  await page.goto('/platform');
+  await page.goto('/admin');
   await page.getByRole('button', { name: 'Open console' }).click();
   await expect(
     page.getByText('State the reason in at least 10 characters.'),
@@ -539,11 +552,15 @@ test('a platform admin acts only through the console, with a reason', async ({
   ).toBeVisible();
 
   await beta.getByRole('button', { name: 'Suspend' }).click();
+  await page
+    .getByRole('alertdialog', { name: `Suspend ${betaName}?` })
+    .getByRole('button', { name: 'Suspend workspace' })
+    .click();
   await expect(page.getByText(`${betaName} is now suspended.`)).toBeVisible();
   const carolPage = await browserOf(browser, carol);
   await carolPage.goto(`/workspaces/${betaId}`);
   await expect(
-    carolPage.getByRole('heading', { name: 'Workspace not found' }),
+    carolPage.getByRole('heading', { name: 'Page not found' }),
   ).toBeVisible();
 
   await beta.getByRole('button', { name: 'Reactivate' }).click();

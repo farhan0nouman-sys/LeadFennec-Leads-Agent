@@ -7,7 +7,7 @@ import {
   CSRF_HEADER_NAME,
   SESSION_COOKIE_NAME,
 } from '@lead-fennec-ai/shared';
-import { loadWebEnv } from '@/env';
+import { apiBase } from './server/config';
 
 /** First path segments the proxy forwards; everything else is 404 without reaching the API. */
 const API_ROOTS = new Set(['auth', 'workspaces', 'invitations', 'platform']);
@@ -33,13 +33,6 @@ const RESPONSE_HEADERS = [
   'retry-after',
   'x-request-id',
 ];
-
-let apiBaseUrl: string | undefined;
-
-function apiBase(): string {
-  apiBaseUrl ??= loadWebEnv(process.env).API_BASE_URL.replace(/\/+$/, '');
-  return apiBaseUrl;
-}
 
 function errorResponse(
   status: number,

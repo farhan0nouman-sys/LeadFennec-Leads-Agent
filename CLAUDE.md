@@ -175,8 +175,12 @@ if needed; next prompt ID.
   - never trust a tenant id carried in a job.
 - **Platform admins:** add operations only as explicit `/platform/*` routes with a required
   reason. Each one writes audit records in the same transaction as its change.
-- **New API routes:** add each one to `apps/api/src/http/route-guards.test.ts` and to
+- **New API routes:** add each one to the endpoint list
+  (`packages/shared/src/contracts/endpoints.ts`, with the contract's own schemas; the API
+  contract test fails otherwise), run `pnpm openapi` to regenerate `docs/api/openapi.json`,
+  and add it to `apps/api/src/http/route-guards.test.ts` and
   `docs/security/authorization-review.md` after checking its guards and repository checks.
+  A cacheable read names its `cache` resource; a mutation lists what it `invalidates`.
   `scope.db` checks no permission: routes use repositories or call `requirePermission`.
 - **Audit:** membership changes go to the workspace's `audit_records`; a user's own security
   events go to `platform_audit_records` (`recordSecurityEvent`). Never put tokens, passwords,
@@ -184,21 +188,53 @@ if needed; next prompt ID.
 - **Web app:**
   - the browser calls the API only through `/api/*` (`apps/web/lib/api-proxy.ts`); add new
     API roots there deliberately;
-  - client code uses `apiRequest` with the shared response schema, and forms validate with
-    the shared request schemas;
+  - client code calls the API only through the endpoint list
+    (`packages/shared/src/contracts/endpoints.ts`): `callApi(API.…)`, `useApiQuery` for reads
+    (cached per user and workspace) and `useApiMutation` for changes (it invalidates the
+    endpoint's `invalidates` in the request's own workspace); forms validate with the shared
+    request schemas (`useFormSubmit`);
   - keep the CSRF token in memory only; read emailed tokens with `useLinkToken`, which removes
     them from the address bar;
   - redirects after sign-in go through `safeNextPath`.
+- **Pages:** every page is listed once in `packages/shared/src/navigation.ts` (path, group,
+  permission, status, API resources). A new page:
+  - is a server component that calls `requireWorkspaceSection` / `requirePlatformAdmin`
+    (`apps/web/lib/server/access.ts`) before rendering anything; never rely on hidden
+    navigation alone;
+  - gets its own folder when built (it then replaces the `[section]` shell), and its section's
+    status becomes `available`;
+  - lists its API resources in the section, so the route test can check that its GET routes
+    need the section's permission.
+- **Server components** call the API only through `lib/server/api.ts` (an endpoint of the list,
+  the session cookie, nothing else). Pass client components a `ShellUser`, never the session or
+  its CSRF token.
+- **Dashboard** (`docs/decisions.md` D-05C-*): aggregates live under the section that owns
+  the data and need its permission (`leads/summary`, `campaigns/summary`, `activity`,
+  `integrations/health`), through `scope.dashboard`. A metric a later feature provides is
+  listed in `DASHBOARD_METRICS` as `unavailable` until its summary field exists; never show
+  a made-up number. Live panels refresh with `useApiQuery(…, { poll })` and a policy from
+  `apps/web/lib/polling.ts` (visible pages only, back-off, a stop after 30 minutes); never
+  a bare `setInterval`.
+- **Screens** use the shared components (`docs/decisions.md` D-05B-04): `DataTable` with
+  `CursorPagination`, `ListFilters` with `useListParams` (address-bar state, validated),
+  `StatusLabel`, the form fields with `useFormSubmit`, `ConfirmButton` before anything
+  destructive, `EmptyState`, `RetryState` and `ErrorBoundary`. Never show a raw error
+  message; show the API's message or a generic one.
+- **Fixtures** for demonstrations live in `apps/web/fixtures` and are used only by the demo
+  pages under `app/dev` (development and test only, 404 elsewhere). ESLint keeps production
+  code from importing them and demos from calling the API or its cache.
 - **Browser tests:** scenarios that need the API go in `apps/web/e2e`, skip without
-  `E2E_DATABASE_URL`, and use `e2e/support/db.ts` instead of an inbox.
+  `E2E_DATABASE_URL`, and use `e2e/support/db.ts` instead of an inbox
+  (`e2e/support/accounts.ts` for accounts). Check new screens with `@axe-core/playwright`.
 - **Account email:** goes through `TransactionalMailProvider`; tests read links from the
   fake's `sent` list.
 
 ## Testing and logging
 
-- **Tests:** `src/**/*.test.ts` next to the code (`*.integration.test.ts` for integration),
-  Vitest via each package's `vitest.config.mjs`, which merges `vitest.shared.mjs`. Browser smoke
-  tests use Playwright in `apps/web/e2e`. See `README.md` for commands.
+- **Tests:** `src/**/*.test.ts` next to the code (`*.integration.test.ts` for integration;
+  `lib/**/*.test.ts` in the web app), Vitest via each package's `vitest.config.mjs`, which
+  merges `vitest.shared.mjs`. Browser tests use Playwright in `apps/web/e2e`. See `README.md`
+  for commands.
 - **No network in tests.** The network guard blocks all non-loopback connections. Never disable
   it or route around it. Tests use fake providers (`createFakeProviders()`); never live adapters.
 - **Test databases:** only through `assertTestDatabaseUrl` / `assertTestRedisUrl` (`_test`

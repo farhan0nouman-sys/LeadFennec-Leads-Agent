@@ -21,7 +21,11 @@ export function AuthShell({
   readonly footer?: ReactNode;
 }) {
   return (
-    <main className="flex min-h-svh flex-col items-center justify-center gap-6 bg-muted p-6">
+    <main
+      id="main"
+      tabIndex={-1}
+      className="flex min-h-svh flex-col items-center justify-center gap-6 bg-muted p-6 outline-none"
+    >
       <Link href="/" className="text-sm font-semibold tracking-tight">
         Lead Fennec AI
       </Link>

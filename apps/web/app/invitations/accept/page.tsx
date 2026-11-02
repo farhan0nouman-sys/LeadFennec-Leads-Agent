@@ -1,9 +1,9 @@
 'use client';
 
 import {
+  API,
   WORKSPACE_ROUTES,
   invitationPreviewSchema,
-  userWorkspaceSchema,
 } from '@lead-fennec-ai/shared';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -13,8 +13,10 @@ import { AuthShell } from '@/components/auth-shell';
 import { Loading, Unavailable } from '@/components/page-states';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button, buttonVariants } from '@/components/ui/button';
-import { ApiError, apiRequest, errorMessage } from '@/lib/api';
-import { loginPath, rememberLinkToken, useLinkToken } from '@/lib/links';
+import { ApiError, callApi, errorMessage } from '@/lib/api';
+import { rememberLinkToken, useLinkToken } from '@/lib/link-token';
+import { loginPath } from '@/lib/links';
+import { useApiMutation } from '@/lib/query';
 import { useSession } from '@/lib/session';
 
 /**
@@ -69,7 +71,7 @@ function AcceptInvitation({
   const router = useRouter();
   const { state, signOut, handleAuthError } = useSession();
   const [step, setStep] = useState<Step>({ kind: 'loading' });
-  const [pending, setPending] = useState(false);
+  const acceptInvitation = useApiMutation(API.invitations.accept);
 
   const session = state.status === 'signed_in' ? state.session : null;
 
@@ -78,11 +80,11 @@ function AcceptInvitation({
       return;
     }
     let active = true;
-    apiRequest(WORKSPACE_ROUTES.previewInvitation, invitationPreviewSchema, {
-      method: 'POST',
-      body: { token },
-      csrfToken: session.csrfToken,
-    }).then(
+    callApi(
+      API.invitations.preview,
+      { body: { token } },
+      { csrfToken: session.csrfToken },
+    ).then(
       (preview) => {
         if (active) {
           setStep({ kind: 'preview', preview });
@@ -103,25 +105,14 @@ function AcceptInvitation({
     if (token == null || session === null) {
       return;
     }
-    setPending(true);
-    try {
-      const joined = await apiRequest(
-        WORKSPACE_ROUTES.acceptInvitation,
-        userWorkspaceSchema,
-        {
-          method: 'POST',
-          body: { token, workspaceId: preview.workspace.id },
-          csrfToken: session.csrfToken,
-        },
-      );
+    const joined = await acceptInvitation.mutate({
+      body: { token, workspaceId: preview.workspace.id },
+    });
+    if (joined.ok) {
       rememberLinkToken(STORAGE_KEY, null);
-      router.push(WORKSPACE_ROUTES.workspace(joined.workspace.id));
-    } catch (error) {
-      if (!handleAuthError(error)) {
-        setStep(stepFor(error));
-      }
-    } finally {
-      setPending(false);
+      router.push(WORKSPACE_ROUTES.workspace(joined.data.workspace.id));
+    } else if (!joined.signedOut) {
+      setStep(stepFor(joined.error));
     }
   }
 
@@ -206,8 +197,11 @@ function AcceptInvitation({
               The invitation is valid until{' '}
               {dateFormat.format(new Date(preview.expiresAt))}.
             </p>
-            <Button disabled={pending} onClick={() => void accept(preview)}>
-              {pending ? 'Joining…' : 'Join workspace'}
+            <Button
+              disabled={acceptInvitation.pending}
+              onClick={() => void accept(preview)}
+            >
+              {acceptInvitation.pending ? 'Joining…' : 'Join workspace'}
             </Button>
           </div>
         </AuthShell>

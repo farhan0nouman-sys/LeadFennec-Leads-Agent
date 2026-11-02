@@ -6,8 +6,10 @@ background worker in a pnpm/Turborepo monorepo, with PostgreSQL and Redis.
 > **Status:** early. Infrastructure, configuration, health checks, logging, the test setup,
 > the data model, the account API (registration, email verification, sign-in, sessions,
 > password reset), the workspace API (workspaces, invitations, roles, platform-admin
-> operations) and their screens exist. There are no lead-generation screens yet. Build
-> progress: `docs/build-progress.md`.
+> operations), their screens, the app shell, the shared UI components, the typed API client
+> and the workspace dashboard exist. The lead-generation pages are shells marked "Not available
+> yet". Build progress:
+> `docs/build-progress.md`.
 > Decisions and pinned versions: `docs/decisions.md`. Rules for contributors and coding
 > agents: `CLAUDE.md`.
 
@@ -44,11 +46,15 @@ are covered in **[docs/local-development.md](docs/local-development.md)**.
 
 ```
 apps/web            Next.js 16 (App Router), Tailwind CSS 4, shadcn/ui-style components:
-                    account, workspace, team and platform-console screens; /api proxy
+                    app shell, account, workspace, team and admin screens, route shells;
+                    shared tables, filters, forms, dialogs and states; typed API client and
+                    workspace-scoped cache (lib); server-side page checks (lib/server);
+                    /api proxy; fixture demo at /dev/ui (development and test only)
 apps/api            NestJS 12 API: health, auth (docs/api/auth.md), workspaces and teams
                     (docs/api/workspaces.md)
 apps/worker         Background worker (job processors not added yet)
-packages/shared     Env validation, health checks, logging, redaction, test network guard
+packages/shared     Env validation, health checks, logging, redaction, test network guard;
+                    API contracts, the endpoint list and the OpenAPI generator
 packages/database   Prisma schema, migrations and client; tenant-aware access (entry points,
                     scoped client, repositories); pagination; fixture tenants and factories;
                     PostgreSQL/Redis readiness probes; test-database guards
@@ -59,26 +65,33 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
 
 ## Commands
 
-| Command                             | What it does                                                              |
-| ----------------------------------- | ------------------------------------------------------------------------- |
-| `pnpm dev`                          | Local services plus all apps in watch mode                                |
-| `pnpm build`                        | Build every package and app                                               |
-| `pnpm lint`                         | ESLint (strict, type-aware) for every package and the root scripts        |
-| `pnpm typecheck`                    | Strict TypeScript checks for every package, including tests               |
-| `pnpm test`                         | Unit and integration tests (Vitest)                                       |
-| `pnpm test:e2e`                     | Builds the web app and API, then runs the Playwright browser tests        |
-| `pnpm db:migrate`                   | Applies pending migrations to `DATABASE_URL` (`prisma migrate deploy`)    |
-| `pnpm db:fixtures [--reset]`        | Loads the two fixture tenants into `DATABASE_URL` (development/test only) |
-| `pnpm format` / `pnpm format:check` | Prettier                                                                  |
+| Command                             | What it does                                                                         |
+| ----------------------------------- | ------------------------------------------------------------------------------------ |
+| `pnpm dev`                          | Local services plus all apps in watch mode                                           |
+| `pnpm build`                        | Build every package and app                                                          |
+| `pnpm lint`                         | ESLint (strict, type-aware) for every package and the root scripts                   |
+| `pnpm typecheck`                    | Strict TypeScript checks for every package, including tests                          |
+| `pnpm test`                         | Unit and integration tests (Vitest)                                                  |
+| `pnpm test:e2e`                     | Builds the web app and API, then runs the Playwright browser tests                   |
+| `pnpm openapi`                      | Regenerates `docs/api/openapi.json` from the endpoint list (`--check` compares only) |
+| `pnpm db:migrate`                   | Applies pending migrations to `DATABASE_URL` (`prisma migrate deploy`)               |
+| `pnpm db:fixtures [--reset]`        | Loads the two fixture tenants into `DATABASE_URL` (development/test only)            |
+| `pnpm format` / `pnpm format:check` | Prettier                                                                             |
 
 ## Tests
 
-- **Unit tests:** `src/**/*.test.ts` next to the code, run with Vitest 5.
+- **Unit tests:** `src/**/*.test.ts` next to the code, run with Vitest 5. The web app's are in
+  `apps/web/lib/**/*.test.ts` (the client cache, address-bar parameters, the typed client, the
+  proxy, the polling rules and the dashboard formatting).
+- **API contract:** `apps/api/src/http/api-contract.test.ts` checks the registered routes
+  against the endpoint list (guards, permission, status, the validation schemas), and a
+  shared test fails when `docs/api/openapi.json` is out of date.
 - **API integration tests:** `apps/api/src/**/*.integration.test.ts` boot the real NestJS app on
   a loopback port and call it over HTTP.
   - The health tests replace the readiness checks with fakes, so they need no services.
-  - The auth and workspace tests (`apps/api/src/auth/auth.integration.test.ts`,
-    `apps/api/src/workspaces/workspaces.integration.test.ts`) need `TEST_DATABASE_URL` and are
+  - The auth, workspace and dashboard tests (`apps/api/src/auth/auth.integration.test.ts`,
+    `apps/api/src/workspaces/workspaces.integration.test.ts`,
+    `apps/api/src/workspaces/dashboard.integration.test.ts`) need `TEST_DATABASE_URL` and are
     reported as skipped without it. They share a harness (`apps/api/src/testing`) and run one
     file at a time. They use their own migrated schema, the fake mail
     provider and a controllable clock, and run every account flow over HTTP. They check each
@@ -87,9 +100,9 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
 - **Database integration tests:** `packages/database/src/*.integration.test.ts` run against
   real PostgreSQL and Redis **only** when `TEST_DATABASE_URL` and `TEST_REDIS_URL` are set.
   Otherwise those suites are reported as _skipped_. CI always sets them.
-  - There are seven suites: core data; outreach and jobs; billing, usage, audit and
-    notifications; authentication; workspaces, invitations and the worker context; catalog
-    structure; and tenant access. Each creates its own schema in the
+  - There are eight suites: core data; outreach and jobs; billing, usage, audit and
+    notifications; authentication; workspaces, invitations and the worker context; dashboard
+    aggregates; catalog structure; and tenant access. Each creates its own schema in the
     `_test` database, applies every migration and drops the schema afterwards.
   - Together they check:
     - no drift between the migrations and `schema.prisma`;
@@ -107,10 +120,16 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
   - The database package runs its test files one at a time.
 - **Browser tests** (Playwright, Chromium) run against the production builds. Install the
   browser once with `pnpm --filter @lead-fennec-ai/web exec playwright install chromium --only-shell`.
-  - `apps/web/e2e/smoke.spec.ts` always runs (web app on `127.0.0.1:3100`).
+  - `apps/web/e2e/smoke.spec.ts` and `apps/web/e2e/ui-components.spec.ts` (8 scenarios on the
+    fixture demo page) always run (web app on `127.0.0.1:3100`).
   - `apps/web/e2e/accounts-and-teams.spec.ts` (11 scenarios: two workspaces, all three roles)
-    also starts the built API on `127.0.0.1:3101`. It needs `E2E_DATABASE_URL` (a `*_test`
-    database; migrations are applied first) and is reported as skipped without it. See
+    `apps/web/e2e/app-shell.spec.ts` (7 scenarios: navigation by role, server-side page
+    checks, keyboard, narrow screens, the admin area, axe accessibility checks) and
+    `apps/web/e2e/data-client.spec.ts` (3 scenarios: the workspace-scoped cache, confirmations,
+    an ended session) and `apps/web/e2e/dashboard.spec.ts` (5 scenarios: counts from the
+    database, panels by role, bounded polling with Playwright's clock, error recovery, narrow
+    screens) also start the built API on `127.0.0.1:3101`. They need `E2E_DATABASE_URL` (a `*_test` database;
+    migrations are applied first) and are reported as skipped without it. See
     `docs/local-development.md` → Browser tests.
 
 ### Safety in tests
@@ -300,12 +319,32 @@ decisions: `docs/decisions.md` D-04B-*.
 ## Screens
 
 The web app has the account and team screens (`docs/decisions.md` D-04C-*): sign-in,
-registration, email confirmation, password reset, the workspace list, a workspace overview with
-a workspace switcher, the team page (members, roles, invitations) and the platform console.
+registration, email confirmation, password reset, the workspace list, a workspace overview, the
+team page (members, roles, invitations) and the platform console (`/admin`).
+
+- **App shell** (D-05A-*): a sidebar (a drawer on narrow screens) with the workspace selector
+  and the pages the member's role opens, breadcrumbs, a skip link, and route shells for the
+  pages not built yet.
+- **Pages** are listed once, in `packages/shared/src/navigation.ts`: path, group, permission,
+  status and API resources.
+- **Server-side checks:** every page calls `apps/web/lib/server/access.ts` before rendering
+  (sign-in, membership, permission, platform admin). The API checks every data request again.
+- **Shared components** (D-05B-04): paginated tables, search and filters kept in the address
+  bar, status labels, form fields, dialogs and confirmations, empty and retry states, and error
+  boundaries. `/dev/ui` shows them all on invented data (development and test only).
+- **Dashboard** (D-05C-*): the workspace overview shows lead and campaign counts from the
+  database, metrics that later features will provide as "Not available yet", recent
+  activity (audit records) and integration health. Each panel appears only when the
+  member's role opens its section. Activity and integration health refresh themselves while
+  the page is visible, for at most 30 minutes (`apps/web/lib/polling.ts`). API:
+  `docs/api/dashboard.md`.
 
 - **API access:** the browser calls only the web app's `/api/*`, which forwards to
-  `API_BASE_URL` with the session cookie (`apps/web/lib/api-proxy.ts`). Client code calls
-  `apiRequest` (`apps/web/lib/api.ts`) with the shared response schema.
+  `API_BASE_URL` with the session cookie (`apps/web/lib/api-proxy.ts`). Client code calls an
+  endpoint of the shared list: `callApi` (`apps/web/lib/api.ts`), or `useApiQuery` and
+  `useApiMutation` (`apps/web/lib/query.tsx`), which cache reads per user and workspace and
+  reload what a change made stale (D-05B-03). The OpenAPI document of every route is
+  `docs/api/openapi.json`.
 - **Session:** `SessionProvider` (`apps/web/lib/session.tsx`) holds the user and the CSRF token
   in memory. Pages that need a user call `useRequiredSession()`.
 - **Security events** (sign-in, sign-out, reset…) are written to the platform audit records;

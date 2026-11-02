@@ -1,9 +1,8 @@
 'use client';
 
 import {
-  AUTH_ROUTES,
+  API,
   PASSWORD_MIN_LENGTH,
-  acceptedResponseSchema,
   registerRequestSchema,
 } from '@lead-fennec-ai/shared';
 import Link from 'next/link';
@@ -12,7 +11,7 @@ import { AuthShell } from '@/components/auth-shell';
 import { FormField } from '@/components/form-field';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { apiRequest, errorMessage } from '@/lib/api';
+import { callApi, errorMessage } from '@/lib/api';
 import { apiFieldErrors, validate, type FieldErrors } from '@/lib/forms';
 
 export default function RegisterPage() {
@@ -47,10 +46,7 @@ export default function RegisterPage() {
     setErrors({});
     setPending(true);
     try {
-      await apiRequest(AUTH_ROUTES.register, acceptedResponseSchema, {
-        method: 'POST',
-        body: checked.value,
-      });
+      await callApi(API.auth.register, { body: checked.value });
       setPassword('');
       setConfirm('');
       setSentTo(checked.value.email);

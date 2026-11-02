@@ -1,11 +1,6 @@
 'use client';
 
-import {
-  AUTH_ROUTES,
-  acceptedResponseSchema,
-  loginRequestSchema,
-  sessionResponseSchema,
-} from '@lead-fennec-ai/shared';
+import { API, loginRequestSchema } from '@lead-fennec-ai/shared';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState, type SubmitEvent } from 'react';
@@ -14,7 +9,7 @@ import { FormField } from '@/components/form-field';
 import { Loading } from '@/components/page-states';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { ApiError, apiRequest, errorMessage } from '@/lib/api';
+import { ApiError, callApi, errorMessage } from '@/lib/api';
 import { apiFieldErrors, validate, type FieldErrors } from '@/lib/forms';
 import { safeNextPath } from '@/lib/links';
 import { useSession } from '@/lib/session';
@@ -51,14 +46,7 @@ function LoginForm() {
     setErrors({});
     setPending(true);
     try {
-      const session = await apiRequest(
-        AUTH_ROUTES.login,
-        sessionResponseSchema,
-        {
-          method: 'POST',
-          body: checked.value,
-        },
-      );
+      const session = await callApi(API.auth.login, { body: checked.value });
       setPassword('');
       signedIn(session);
       router.replace(next);
@@ -73,8 +61,7 @@ function LoginForm() {
   async function resend() {
     setPending(true);
     try {
-      await apiRequest(AUTH_ROUTES.resendVerification, acceptedResponseSchema, {
-        method: 'POST',
+      await callApi(API.auth.resendVerification, {
         body: { email: email.trim() },
       });
       setFailure(null);

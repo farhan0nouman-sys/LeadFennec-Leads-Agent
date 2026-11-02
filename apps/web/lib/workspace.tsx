@@ -1,22 +1,24 @@
 'use client';
 
 // The workspace a page under /workspaces/[workspaceId] belongs to, with the signed-in user's
-// membership. The API decides access; the permissions here only hide controls the user
-// can't use (the API refuses them anyway).
-import type {
-  PermissionKey,
-  SessionResponse,
-  UserWorkspace,
-} from '@lead-fennec-ai/shared';
+// membership. The server checked access before rendering; the permissions here only hide
+// controls the user can't use (the API refuses them anyway).
+import type { PermissionKey, UserWorkspace } from '@lead-fennec-ai/shared';
 import { createContext, useContext } from 'react';
+import type { ShellUser } from './shell-user';
 
 export interface WorkspaceContextValue {
-  readonly session: SessionResponse;
+  readonly user: ShellUser;
   readonly current: UserWorkspace;
-  /** Every active workspace of the user, for the switcher. */
+  /** Every active workspace of the user, for the selector. */
   readonly all: readonly UserWorkspace[];
   readonly can: (permission: PermissionKey) => boolean;
-  /** Re-reads the membership (e.g. after the user's own role changed). */
+  /**
+   * The session's CSRF token for mutations, from the browser's own session request (never
+   * from server-rendered props). Undefined until it has loaded.
+   */
+  readonly csrfToken: string | undefined;
+  /** Re-renders from the server (e.g. after the user's own role changed). */
   readonly reload: () => void;
 }
 

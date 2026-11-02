@@ -1,17 +1,13 @@
 'use client';
 
-import {
-  AUTH_ROUTES,
-  acceptedResponseSchema,
-  emailRequestSchema,
-} from '@lead-fennec-ai/shared';
+import { API, emailRequestSchema } from '@lead-fennec-ai/shared';
 import Link from 'next/link';
 import { useState, type SubmitEvent } from 'react';
 import { AuthShell } from '@/components/auth-shell';
 import { FormField } from '@/components/form-field';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { apiRequest, errorMessage } from '@/lib/api';
+import { callApi, errorMessage } from '@/lib/api';
 import { apiFieldErrors, validate, type FieldErrors } from '@/lib/forms';
 
 export default function ForgotPasswordPage() {
@@ -32,14 +28,7 @@ export default function ForgotPasswordPage() {
     setErrors({});
     setPending(true);
     try {
-      await apiRequest(
-        AUTH_ROUTES.passwordResetRequest,
-        acceptedResponseSchema,
-        {
-          method: 'POST',
-          body: checked.value,
-        },
-      );
+      await callApi(API.auth.passwordResetRequest, { body: checked.value });
       setSent(true);
     } catch (error) {
       setErrors(apiFieldErrors(error));

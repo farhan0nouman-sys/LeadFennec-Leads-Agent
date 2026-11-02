@@ -1,10 +1,9 @@
 'use client';
 
 import {
-  AUTH_ROUTES,
+  API,
   PASSWORD_MIN_LENGTH,
   passwordResetConfirmRequestSchema,
-  passwordResetResponseSchema,
 } from '@lead-fennec-ai/shared';
 import Link from 'next/link';
 import { useState, type SubmitEvent } from 'react';
@@ -13,9 +12,9 @@ import { FormField } from '@/components/form-field';
 import { Loading } from '@/components/page-states';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button, buttonVariants } from '@/components/ui/button';
-import { ApiError, apiRequest, errorMessage } from '@/lib/api';
+import { ApiError, callApi, errorMessage } from '@/lib/api';
 import { apiFieldErrors, validate, type FieldErrors } from '@/lib/forms';
-import { useLinkToken } from '@/lib/links';
+import { useLinkToken } from '@/lib/link-token';
 import { useSession } from '@/lib/session';
 
 type Outcome = 'invalid' | 'done';
@@ -61,14 +60,7 @@ function ResetPassword({ linkToken }: { readonly linkToken: string | null }) {
     setErrors({});
     setPending(true);
     try {
-      await apiRequest(
-        AUTH_ROUTES.passwordResetConfirm,
-        passwordResetResponseSchema,
-        {
-          method: 'POST',
-          body: checked.value,
-        },
-      );
+      await callApi(API.auth.passwordResetConfirm, { body: checked.value });
       setPassword('');
       setConfirm('');
       setOutcome('done');

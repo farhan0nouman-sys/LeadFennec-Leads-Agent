@@ -2,11 +2,7 @@
 
 // The signed-in user, from GET /auth/session (task 04C). The session cookie is HttpOnly; the
 // CSRF token for mutations lives only in this React state, never in storage or logs.
-import {
-  AUTH_ROUTES,
-  sessionResponseSchema,
-  type SessionResponse,
-} from '@lead-fennec-ai/shared';
+import { API, type SessionResponse } from '@lead-fennec-ai/shared';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   createContext,
@@ -17,7 +13,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { ApiError, apiCommand, apiRequest } from './api';
+import { ApiError, callApi } from './api';
 import { loginPath } from './links';
 
 export type SessionState =
@@ -48,10 +44,7 @@ const SessionContext = createContext<SessionContextValue | null>(null);
 
 async function fetchSession(): Promise<SessionState> {
   try {
-    const session = await apiRequest(
-      AUTH_ROUTES.session,
-      sessionResponseSchema,
-    );
+    const session = await callApi(API.auth.session);
     return { status: 'signed_in', session };
   } catch (error) {
     return error instanceof ApiError && error.status === 401
@@ -91,7 +84,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const csrfToken =
       state.status === 'signed_in' ? state.session.csrfToken : undefined;
     try {
-      await apiCommand(AUTH_ROUTES.logout, { method: 'POST', csrfToken });
+      await callApi(API.auth.logout, {}, { csrfToken });
     } catch {
       // The session may already have ended; the user is signed out here either way.
     }

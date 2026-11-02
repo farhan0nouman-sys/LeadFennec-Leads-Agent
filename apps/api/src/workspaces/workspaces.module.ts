@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module.js';
+import { DashboardController } from './dashboard.controller.js';
 import { InvitationsController } from './invitations.controller.js';
 import { PlatformController } from './platform.controller.js';
 import { PermissionGuard, WorkspaceGuard } from './workspace-guards.js';
@@ -11,6 +12,7 @@ import { WorkspacesController } from './workspaces.controller.js';
     WorkspacesController,
     InvitationsController,
     PlatformController,
+    DashboardController,
   ],
   providers: [WorkspaceGuard, PermissionGuard],
 })

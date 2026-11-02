@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start --port 3000",
     "lint": "eslint .",
+    "test": "vitest run",
     "test:e2e": "playwright test",
     "typecheck": "next typegen && tsc -p tsconfig.json --noEmit"
   },
@@ -15,6 +16,7 @@
     "@lead-fennec-ai/shared": "workspace:*",
     "class-variance-authority": "catalog:",
     "clsx": "catalog:",
+    "lucide-react": "catalog:",
     "next": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
@@ -22,6 +24,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@axe-core/playwright": "catalog:",
     "@lead-fennec-ai/database": "workspace:*",
     "@playwright/test": "catalog:",
     "@tailwindcss/postcss": "catalog:",
@@ -34,6 +37,8 @@
     "pg": "catalog:",
     "postcss": "catalog:",
     "tailwindcss": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
   }
 }

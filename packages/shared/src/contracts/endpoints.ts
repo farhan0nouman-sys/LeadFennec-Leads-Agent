@@ -17,6 +17,19 @@ import {
   verifyEmailRequestSchema,
 } from './auth.js';
 import {
+  activateCampaignRequestSchema,
+  activationReportSchema,
+} from './campaign-activation.js';
+import {
+  CAMPAIGN_ROUTES,
+  campaignOptionsSchema,
+  campaignPageSchema,
+  campaignSchema,
+  createCampaignRequestSchema,
+  duplicateCampaignRequestSchema,
+  updateCampaignRequestSchema,
+} from './campaigns.js';
+import {
   activityQuerySchema,
   activityResponseSchema,
   campaignSummarySchema,
@@ -24,6 +37,12 @@ import {
   integrationHealthResponseSchema,
   leadSummarySchema,
 } from './dashboard.js';
+import {
+  DISCOVERY_ROUTES,
+  discoveryAcceptedSchema,
+  discoveryRequestSchema,
+  importRunSchema,
+} from './lead-discovery.js';
 import {
   ACCESS_REASON_HEADER,
   WORKSPACE_ROUTES,
@@ -72,6 +91,16 @@ export const ENDPOINT_TAGS = [
     description: 'Previewing and accepting an invitation.',
   },
   {
+    name: 'campaigns',
+    description:
+      'Campaign configuration, saved incrementally while a campaign is a draft.',
+  },
+  {
+    name: 'imports',
+    description:
+      'Lead discovery runs: organization searches from an ICP, queued and followed by run id.',
+  },
+  {
     name: 'dashboard',
     description:
       'Counts, recent activity and integration health for the workspace dashboard.',
@@ -100,6 +129,11 @@ export const CACHE_RESOURCES = {
   campaignSummary: 'workspace',
   activity: 'workspace',
   integrationHealth: 'workspace',
+  campaigns: 'workspace',
+  campaign: 'workspace',
+  campaignOptions: 'workspace',
+  campaignReadiness: 'workspace',
+  importRun: 'workspace',
 } as const;
 
 export type CacheResource = keyof typeof CACHE_RESOURCES;
@@ -167,6 +201,12 @@ export const readinessResponseSchema = z
 const workspaceParams = z.object({ workspaceId: z.uuid() }).strict();
 const memberParams = z
   .object({ workspaceId: z.uuid(), membershipId: z.uuid() })
+  .strict();
+const campaignParams = z
+  .object({ workspaceId: z.uuid(), campaignId: z.uuid() })
+  .strict();
+const importParams = z
+  .object({ workspaceId: z.uuid(), importId: z.uuid() })
   .strict();
 const invitationParams = z
   .object({ workspaceId: z.uuid(), invitationId: z.uuid() })
@@ -465,6 +505,173 @@ export const API = {
       invalidates: ['workspaces'],
     }),
   },
+  campaigns: {
+    list: endpoint({
+      id: 'campaigns.list',
+      method: 'GET',
+      path: CAMPAIGN_ROUTES.campaigns(':workspaceId'),
+      tag: 'campaigns',
+      summary:
+        "The workspace's campaigns, newest first, with what each still needs.",
+      access: 'workspace',
+      permission: 'campaigns.read',
+      params: workspaceParams,
+      query: pageQuerySchema,
+      status: 200,
+      response: campaignPageSchema,
+      cache: 'campaigns',
+    }),
+    create: endpoint({
+      id: 'campaigns.create',
+      method: 'POST',
+      path: CAMPAIGN_ROUTES.campaigns(':workspaceId'),
+      tag: 'campaigns',
+      summary:
+        'Creates a draft campaign: inactive, with human approval and the workspace time zone.',
+      access: 'workspace',
+      permission: 'campaigns.write',
+      params: workspaceParams,
+      body: createCampaignRequestSchema,
+      status: 201,
+      response: campaignSchema,
+      errors: ['campaign_name_taken'],
+      invalidates: ['campaigns', 'campaignSummary', 'activity'],
+    }),
+    options: endpoint({
+      id: 'campaigns.options',
+      method: 'GET',
+      path: CAMPAIGN_ROUTES.options(':workspaceId'),
+      tag: 'campaigns',
+      summary:
+        "The ICPs, lead lists, mailboxes and templates a campaign may use (the workspace's usable ones).",
+      access: 'workspace',
+      permission: 'campaigns.read',
+      params: workspaceParams,
+      status: 200,
+      response: campaignOptionsSchema,
+      cache: 'campaignOptions',
+    }),
+    get: endpoint({
+      id: 'campaigns.get',
+      method: 'GET',
+      path: CAMPAIGN_ROUTES.campaign(':workspaceId', ':campaignId'),
+      tag: 'campaigns',
+      summary: "A campaign's configuration, version and readiness.",
+      access: 'workspace',
+      permission: 'campaigns.read',
+      params: campaignParams,
+      status: 200,
+      response: campaignSchema,
+      cache: 'campaign',
+    }),
+    update: endpoint({
+      id: 'campaigns.update',
+      method: 'PATCH',
+      path: CAMPAIGN_ROUTES.campaign(':workspaceId', ':campaignId'),
+      tag: 'campaigns',
+      summary:
+        'Saves the sections sent (each replaces its section) if the version is current; drafts only.',
+      access: 'workspace',
+      permission: 'campaigns.write',
+      params: campaignParams,
+      body: updateCampaignRequestSchema,
+      status: 200,
+      response: campaignSchema,
+      errors: [
+        'version_conflict',
+        'campaign_not_editable',
+        'campaign_name_taken',
+      ],
+      invalidates: ['campaigns', 'campaign', 'campaignReadiness', 'activity'],
+    }),
+    readiness: endpoint({
+      id: 'campaigns.readiness',
+      method: 'GET',
+      path: CAMPAIGN_ROUTES.readiness(':workspaceId', ':campaignId'),
+      tag: 'campaigns',
+      summary:
+        'Every check that must pass before the campaign can start, each with its reasons.',
+      access: 'workspace',
+      permission: 'campaigns.read',
+      params: campaignParams,
+      status: 200,
+      response: activationReportSchema,
+      cache: 'campaignReadiness',
+    }),
+    activate: endpoint({
+      id: 'campaigns.activate',
+      method: 'POST',
+      path: CAMPAIGN_ROUTES.activate(':workspaceId', ':campaignId'),
+      tag: 'campaigns',
+      summary:
+        'Starts a draft campaign if the version is current and every check passes; repeating it changes nothing.',
+      access: 'workspace',
+      permission: 'campaigns.write',
+      params: campaignParams,
+      body: activateCampaignRequestSchema,
+      status: 200,
+      response: campaignSchema,
+      errors: [
+        'version_conflict',
+        'campaign_not_editable',
+        'campaign_not_ready',
+      ],
+      invalidates: [
+        'campaigns',
+        'campaign',
+        'campaignReadiness',
+        'campaignSummary',
+        'activity',
+      ],
+    }),
+    duplicate: endpoint({
+      id: 'campaigns.duplicate',
+      method: 'POST',
+      path: CAMPAIGN_ROUTES.duplicate(':workspaceId', ':campaignId'),
+      tag: 'campaigns',
+      summary:
+        'Copies the configuration and sequences into a new draft; never leads, drafts, approvals or sends.',
+      access: 'workspace',
+      permission: 'campaigns.write',
+      params: campaignParams,
+      body: duplicateCampaignRequestSchema,
+      status: 201,
+      response: campaignSchema,
+      errors: ['campaign_name_taken'],
+      invalidates: ['campaigns', 'campaignSummary', 'activity'],
+    }),
+  },
+  discovery: {
+    request: endpoint({
+      id: 'discovery.request',
+      method: 'POST',
+      path: DISCOVERY_ROUTES.request(':workspaceId'),
+      tag: 'imports',
+      summary:
+        'Queues an organization search from an ICP of the workspace; answers with the run id and where to follow it. Finds companies only, never contacts.',
+      access: 'workspace',
+      permission: 'imports.create',
+      params: workspaceParams,
+      body: discoveryRequestSchema,
+      status: 202,
+      response: discoveryAcceptedSchema,
+      invalidates: ['importRun', 'activity'],
+    }),
+    get: endpoint({
+      id: 'discovery.get',
+      method: 'GET',
+      path: DISCOVERY_ROUTES.run(':workspaceId', ':importId'),
+      tag: 'imports',
+      summary:
+        'A run of the workspace: its status, what was searched, the source and the counts so far.',
+      access: 'workspace',
+      permission: 'imports.create',
+      params: importParams,
+      status: 200,
+      response: importRunSchema,
+      cache: 'importRun',
+    }),
+  },
   dashboard: {
     leadSummary: endpoint({
       id: 'dashboard.leadSummary',
@@ -589,6 +796,10 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
   invalid_or_expired_invitation: 400,
   invitation_for_another_account: 403,
   invitation_for_another_workspace: 400,
+  version_conflict: 409,
+  campaign_not_editable: 409,
+  campaign_name_taken: 409,
+  campaign_not_ready: 409,
 };
 
 /** Mutations need the session's CSRF token (and every non-GET route checks the origin). */

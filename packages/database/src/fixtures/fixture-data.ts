@@ -194,6 +194,7 @@ export function fixtureIds(key: FixtureKey) {
     contactNoEmail: fixtureId(g, 52),
     leadList: fixtureId(g, 60),
     import: fixtureId(g, 70),
+    importSearch: fixtureId(g, 71),
     sourceCsvRow1: fixtureId(g, 80),
     sourceCsvRow2: fixtureId(g, 81),
     sourceApollo: fixtureId(g, 82),
@@ -1025,6 +1026,10 @@ function buildTenant(key: FixtureKey): FixtureTenant {
   const tenantId = ids.tenant;
   const alpha = key === 'alpha';
   const ownOrgName = alpha ? 'Alpha Only Analytics' : 'Beta Only Dental';
+  /** The ICP's company filters, as a search plans them (task 07A). */
+  const searchFilters = alpha
+    ? { industries: ['software'], employees: { min: 50, max: 500 } }
+    : { industries: ['dental'], employees: { min: 5, max: 50 } };
   const ownWebsite = alpha
     ? 'https://alpha-only.test'
     : 'http://WWW.Beta-Only.test/';
@@ -1236,6 +1241,38 @@ function buildTenant(key: FixtureKey): FixtureTenant {
         importedRows: 2,
         startedAt: new Date('2026-10-01T09:00:00Z'),
         completedAt: new Date('2026-10-01T09:00:05Z'),
+      },
+      // An organization search from the ICP (task 07A), queued and not yet run.
+      {
+        tenantId,
+        id: ids.importSearch,
+        source: 'ORGANIZATION_SEARCH',
+        status: 'PENDING',
+        icpId: ids.icp,
+        searchProvider: 'FAKE',
+        searchFilters,
+        resultLimit: 100,
+        querySha256: payloadSha256({
+          provider: 'FAKE',
+          filters: searchFilters,
+          maxResults: 100,
+        }),
+        sourceMetadata: {
+          attribution:
+            'Synthetic companies from the Lead Fennec test directory, not real businesses.',
+          ignoredCriteria: ['titles'],
+          capabilities: {
+            supportedFilters: [
+              'industries',
+              'countries',
+              'employees',
+              'keywords',
+            ],
+            maxPageSize: 25,
+            maxResultsPerSearch: 500,
+          },
+        },
+        createdAt: new Date('2026-11-05T08:00:00Z'),
       },
     ],
     sourceRecords: [

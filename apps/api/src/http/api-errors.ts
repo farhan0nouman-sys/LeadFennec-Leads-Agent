@@ -4,6 +4,12 @@ import type { ServerResponse } from 'node:http';
 import {
   ActorNotAllowedError,
   AlreadyMemberError,
+  CampaignConfigurationError,
+  CampaignNameTakenError,
+  CampaignNotEditableError,
+  CampaignNotReadyError,
+  CampaignVersionConflictError,
+  DiscoveryRequestError,
   InvitationError,
   LastAdminError,
   PermissionDeniedError,
@@ -178,6 +184,57 @@ export function toApiException(error: unknown): ApiHttpException | null {
   if (error instanceof InvitationError) {
     return INVITATION_ERRORS[error.reason]();
   }
+  if (error instanceof CampaignVersionConflictError) {
+    return new ApiHttpException(
+      409,
+      'version_conflict',
+      'This campaign was changed since you opened it. Reload it, then make your change again.',
+    );
+  }
+  if (error instanceof CampaignNotEditableError) {
+    return new ApiHttpException(
+      409,
+      'campaign_not_editable',
+      'Only draft campaigns can be changed.',
+    );
+  }
+  if (error instanceof CampaignNameTakenError) {
+    return new ApiHttpException(
+      409,
+      'campaign_name_taken',
+      'Another campaign in this workspace has this name.',
+    );
+  }
+  if (error instanceof CampaignNotReadyError) {
+    // One issue per reason; the path is the check's key.
+    return new ApiHttpException(
+      409,
+      'campaign_not_ready',
+      "The campaign can't start yet. Every check must pass first.",
+      {
+        issues: error.report.checks.flatMap((check) =>
+          check.reasons.map((reason) => ({ path: check.key, message: reason })),
+        ),
+      },
+    );
+  }
+  if (error instanceof CampaignConfigurationError) {
+    return new ApiHttpException(
+      400,
+      'validation_failed',
+      'The request is invalid.',
+      { issues: error.issues },
+    );
+  }
+  if (error instanceof DiscoveryRequestError) {
+    // One issue per reason: the ICP (icpId), the limit (maxResults) or its criteria (criteria.*).
+    return new ApiHttpException(
+      400,
+      'validation_failed',
+      "The search can't run as asked.",
+      { issues: error.issues },
+    );
+  }
   if (error instanceof ZodError) {
     return validationFailed(error);
   }
@@ -211,6 +268,12 @@ function send(
   AlreadyMemberError,
   SlugTakenError,
   InvitationError,
+  CampaignVersionConflictError,
+  CampaignNotEditableError,
+  CampaignNameTakenError,
+  CampaignNotReadyError,
+  CampaignConfigurationError,
+  DiscoveryRequestError,
   ZodError,
 )
 export class ApiExceptionFilter implements ExceptionFilter {

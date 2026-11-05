@@ -80,6 +80,10 @@ export function WorkspaceShell({
   const workspaceId = current.workspace.id;
   const permissions = current.membership.permissions;
   const section = workspaceSectionForPathname(pathname, workspaceId);
+  // A page below the section (e.g. one campaign, task 06B).
+  const detail =
+    section !== null &&
+    pathname.startsWith(`${workspaceSectionHref(workspaceId, section)}/`);
 
   const groups = workspaceNavigation(permissions).map((group) => ({
     key: group.key,
@@ -112,7 +116,7 @@ export function WorkspaceShell({
       navigationLabel="Workspace navigation"
       navigation={<NavList label="Workspace pages" groups={groups} />}
       sidebarTop={<WorkspaceSelector current={current} all={all} />}
-      breadcrumbs={workspaceBreadcrumbs(current.workspace, section)}
+      breadcrumbs={workspaceBreadcrumbs(current.workspace, section, detail)}
     >
       {/* A new workspace starts its pages from a clean state. */}
       <WorkspaceContext.Provider key={workspaceId} value={value}>

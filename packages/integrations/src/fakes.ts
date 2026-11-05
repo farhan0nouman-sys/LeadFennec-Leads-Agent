@@ -21,6 +21,9 @@ import type {
   TransactionalSendReceipt,
   UsageRecord,
 } from './providers.js';
+import { FakeOrganizationSearchProvider } from './fake-organization-search.js';
+
+export { FakeOrganizationSearchProvider };
 
 // In-memory fakes: deterministic, inspectable, and they never open a network connection.
 
@@ -168,6 +171,7 @@ export class FakeTransactionalMailProvider implements TransactionalMailProvider 
 export interface FakeProviderSet extends ProviderSet {
   readonly ai: FakeAiProvider;
   readonly leadData: FakeLeadDataProvider;
+  readonly organizationSearch: FakeOrganizationSearchProvider;
   readonly emailVerification: FakeEmailVerificationProvider;
   readonly gmail: FakeMailboxProvider;
   readonly microsoftGraph: FakeMailboxProvider;
@@ -180,6 +184,7 @@ export function createFakeProviders(): FakeProviderSet {
   return {
     ai: new FakeAiProvider(),
     leadData: new FakeLeadDataProvider(),
+    organizationSearch: new FakeOrganizationSearchProvider(),
     emailVerification: new FakeEmailVerificationProvider(),
     gmail: new FakeMailboxProvider('gmail'),
     microsoftGraph: new FakeMailboxProvider('microsoft-graph'),

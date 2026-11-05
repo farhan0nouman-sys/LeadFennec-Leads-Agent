@@ -4,6 +4,530 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## GIT-09: Commit 06A–07A (2026-11-05)
+
+**Status: Done (local commit only).** The request was `git commit`.
+
+| Step | Actual result |
+|---|---|
+| Branch and author | `feat/05a-app-shell` (on top of `06b34b2`); author `LeadFennec-Leads-Agent` with the GitHub `noreply` address |
+| Content | One commit for 06A (campaign configuration API), 06B (setup wizard), 06C (readiness and activation, M2) and 07A (lead discovery requests and organization search), with the GIT-08 and this log entry |
+| Checks before committing | The 07A regression (see the 07A entry), which ran on the whole working tree and so covers 06A–06C; format check exit 0; a scan of the staged changes for credentials and the personal email found nothing |
+| Commit | The commit that contains this entry (`git log`) |
+
+- **Not pushed:** CI hasn't run on 06A–07A. The workflow runs on pushes to `main`, pull
+  requests and manual dispatch.
+- **Branch name:** the branch is still named after 05A; it now holds 05A–07A.
+
+---
+
+## 07A: Lead discovery requests and organization search (2026-11-05)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL:** the database, API and browser suites ran on PGlite only; CI has not run.
+- **Plan:** the criteria vocabulary, identity rules and limits could not be checked against the
+  missing plan (O-01, O-31).
+- **Not committed:** on branch `feat/05a-app-shell`, with 06A–06C.
+
+The user sent 07A, 08A, 07B and 07C; asked which to do first, they chose "07A first". 07B,
+07C and 08A wait until they are sent again.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `identity.ts`: `normalizeCompanyIdentity`, `CompanyIdentity`, `IdentityNormalizationError`. `contracts/lead-discovery.ts` (new): `icpCriteriaSchema`, company and people filter keys, `organizationSearchFiltersSchema`, `OrganizationSearchCapabilities`, `planOrganizationSearch`, `discoveryRequestSchema`, `discoveryAcceptedSchema`, `importRunSchema`, `DISCOVERY_ROUTES`, limits (1000, default 100). `contracts/endpoints.ts`: tag `imports`, cache resource `importRun`, `discovery.request`, `discovery.get`; 38 endpoints. `index.ts`. Tests: `contracts/lead-discovery.test.ts` (new, 5); `endpoints.test.ts` (count 38). |
+| Integrations | `providers.ts`: `OrganizationSearchProvider`, request, page, quota and organization types, `ProviderError` with `PROVIDER_ERROR_CODES`; `ProviderSet.organizationSearch`. `fake-organization-search.ts` (new): the deterministic fake (240 synthetic companies). `lead-discovery.ts` (new): `LeadDiscoveryService`, `DiscoveryPlanError`. `fakes.ts`, `index.ts`, `package.json` (zod, catalog), `pnpm-lock.yaml`. Tests: `lead-discovery.test.ts` (new, 8); `fakes.test.ts` (provider list). |
+| Database | `prisma/schema.prisma`: `ImportSource.ORGANIZATION_SEARCH`, `SourceProvider.FAKE`, the search columns on `imports`, the `imports → icps` relation. Migrations `20261105000000_organization_search_imports` and `20261105000100_organization_search_import_checks` (checks and immutability trigger). `tenancy/discovery.ts` (new): `scope.discovery.request` / `get`, `DiscoveryRequestError`, `DISCOVERY_TASK_TYPE`. `tenancy/access.ts`, `tenancy/index.ts`. `fixtures/fixture-data.ts`: a queued search in each fixture tenant. Tests: `discovery.integration.test.ts` (new, 5); `tenant-access.integration.test.ts` (62 relations). |
+| API | `workspaces/discovery.controller.ts` (new): `POST …/imports/discovery` (202), `GET …/imports/:importId`. `workspaces/discovery-provider.ts` (new): the `ORGANIZATION_SEARCH` token (fake in development and test). `workspaces/workspaces.module.ts`. `http/api-errors.ts`: `DiscoveryRequestError` → `400 validation_failed` with issues. Tests: `workspaces/discovery.integration.test.ts` (new, 3); `http/route-guards.test.ts` (both routes reviewed). |
+| Root | `docs/api/openapi.json` regenerated. |
+| Docs | `docs/decisions.md` D-07A-01 to 06 and O-31; `docs/api/discovery.md` (new); `docs/security/authorization-review.md` (38 routes); README (lead discovery, tests, fixtures); `CLAUDE.md` (lead discovery rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end; ports 54329, 3100 and 3101 are free.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 (run before and after the fixture fix) |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached (twice) |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14 tasks, 0 cached; root ESLint OK (twice) |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 10/10 tasks, 0 cached: shared **185**, integrations **21**, database **46 passed, 328 skipped**, web **31**, worker **4**, api **31 passed, 57 skipped** (same before and after the fixture fix) |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | First run: **failed**, see below. After the fix: exit 0; 10/10 tasks, 0 cached: shared **185**, integrations **21**, database **372 passed, 2 skipped** (the concurrency tests that skip on PGlite), web **31**, worker **4**, api **88** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 17 migrations (2 new); up to date; exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **42 passed** (no new browser scenarios: 07A has no screen) |
+| `pnpm test:e2e` without it | **9 passed, 33 skipped** |
+| Reference repos / credential and personal-email scan of the 37 files changed by 07A (including the lockfile, `openapi.json` and this log) | 0 changes in each of the 9 / no matches (one old placeholder, `'secret-value'` in `endpoints.test.ts`, is not a credential) |
+
+**Earlier failures in this task (logged honestly):**
+1. **Regression, database run 1:** `tenant-access.integration.test.ts` failed 2 tests, caused
+   by 07A. The new `imports → icps` foreign key made 62 tenant relations (the test expected
+   61), and no fixture row used it, so the cross-tenant check had no row to try ("no beta
+   row"). Fixed by raising the count and adding a queued search from the ICP to both fixture
+   tenants; the rerun passed.
+2. **A run that never ran:** restarting PGlite and starting the tests in the same shell call
+   ended the call with exit 4 and no output; no test ran. Restarting in its own call worked.
+   Not counted as a pass.
+3. **Development:** a regex with literal combining characters (rewritten with escapes); type
+   errors in integrations until shared was rebuilt; zod missing from integrations (added);
+   the fake-provider key list in `fakes.test.ts` (expected); an unnecessary type assertion
+   and a non-null assertion (lint); one test expected "filter(s)" where the contract says
+   "filter"; README backticks lost to shell substitution in a scripted edit (rewritten with
+   the editor). All fixed.
+
+### What 07A proves (local)
+
+- **An ICP creates a tenant-owned discovery request.**
+  - `POST /workspaces/:workspaceId/imports/discovery` answers `202` with `runId`, `status:
+    PENDING` and `statusUrl`.
+  - The status URL returns the run: the ICP, provider `FAKE`, the company filters planned
+    from the ICP, the limit, the ignored people criteria and the attribution.
+  - The import row belongs to the workspace, with a durable job task (`{ importId }` only)
+    and an audit record, in one transaction.
+  - No company or contact is written. The provider is never called while the API answers.
+- **Unsupported filters fail clearly.**
+  - A filter the provider doesn't support gives `criteria.<filter>`: "Company search can't
+    filter by technologies yet. Remove it from the profile to search."
+  - An unknown key is named, a profile with no company filter is refused, and an archived
+    ICP is refused. Nothing is stored for a refused request.
+- **Excessive limits fail clearly.**
+  - Over the provider's cap: "Ask for at most 500 companies in one search."
+  - Over the platform cap (1000), zero or not a whole number: rejected by the request schema.
+- **Unauthorized access fails clearly.**
+  - Another workspace's ICP is "Not found in this workspace."; its runs are `404`.
+  - A non-member gets `404`; a member without `imports.create` gets `403`.
+  - No session gives `401`; no CSRF token or another site's origin gives `403`.
+  - Workers and platform admins can't request a search; a platform admin reads with a
+    stated reason.
+- **Fake results are repeatable.**
+  - The same plan with a new fake provider returns the same companies in the same order,
+    with the same identities.
+  - The same search twice has the same query hash.
+  - The directory is synthetic (`.example` domains, `raw.synthetic`) and identical on every
+    call.
+- **Provider interface:** paging by opaque token, resuming an interrupted run without
+  repeats, quota and credits reported, typed and sanitized errors (rate limit with
+  retry-after, quota exceeded, timeout), and errors raised after the pages already
+  returned.
+- **Company identity:** domains normalized (upper-case `www.`, taken from the website when
+  missing); values that aren't domains are dropped rather than guessed; name keys are used
+  without a domain; duplicates and invalid records are counted, not returned.
+- **Database:** the search inputs are present exactly for searches and can't change
+  afterwards; error codes have a fixed format; an ICP with searches can't be deleted.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL and CI.
+- No live provider: 07A uses only the fake, and no Apollo documentation or account was used
+  (that is 07B).
+- The `pg` 8.23 deprecation warning from Prisma's `adapter-pg` still appears in runs (O-14).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker (O-06).
+3. Open: O-19 to O-31. Runs stay `PENDING` until the 07C worker publishes and runs them; the
+   API refuses to start in staging and production until a live search adapter exists (07B).
+
+### Manual check
+
+None needed: 07A has no screen. Optional, with `pnpm dev` and a workspace that has an ICP,
+`POST /api/workspaces/<id>/imports/discovery` with `{ "icpId": "<icp id>" }` from the
+signed-in browser answers `202`, and the `statusUrl` (through `/api`) shows the run.
+
+### Next prompt
+
+07B, 07C or 08A, whichever the user sends next (each was sent once and is waiting). In
+build order: 07B (Apollo organization search), then 07C (search jobs, CSV import, discovery
+screens).
+
+---
+
+## M2: Campaign setup milestone (2026-11-04)
+
+**Status: Reached on local checks.** The 06C prompt asks for M2 to be recorded once the wizard
+and readiness behavior pass; both did, in the 06C regression below. The plan that defines M2 is
+missing (O-01), so this records what the prompts asked for, not the plan's wording.
+
+**Still open (not passed):**
+- Real PostgreSQL and CI: everything ran on PGlite; nothing since `06b34b2` is pushed.
+- A screen-reader pass (O-25, O-29).
+- Commit: 06A–06C are uncommitted on `feat/05a-app-shell`.
+
+| Part | Task | Evidence (06C regression) |
+|---|---|---|
+| Campaign drafts: sections, bounds, references within the workspace, version checks, safe duplication | 06A | Database `campaigns.integration.test.ts` (9), API `campaigns.integration.test.ts` (8): passed |
+| Eight-stage wizard: save and reopen an incomplete campaign, the same validation as the API, back navigation, honest notices | 06B | Web units (7), browser `campaign-wizard.spec.ts` (7, axe on every stage): passed |
+| Readiness and activation: every blocker named, unbuilt services fail closed, saving never starts, repeating changes nothing, stale versions conflict | 06C | Shared (5), database `campaign-activation.integration.test.ts` (5), API `campaign-activation.integration.test.ts` (3), the review screen in the browser test: passed |
+
+**What M2 means in practice:** a workspace member can set up a campaign completely and see
+exactly why it can't start. No campaign can start in production yet: checking leads, preparing
+the emails and sending are later services, and their checks block (D-06C-02).
+
+---
+
+## 06C: Campaign readiness and activation (2026-11-04)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL:** the database, API and browser suites ran on PGlite only; CI has not run.
+- **Plan:** the checks and their wording could not be checked against the missing plan (O-01,
+  O-30).
+- **Not committed:** on branch `feat/05a-app-shell`, with 06A and 06B.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `contracts/campaign-activation.ts` (new): `CAMPAIGN_SETUP_STAGES`, `ACTIVATION_CHECKS` (13), `CampaignServices` / `BUILT_SERVICES` (none built), `ActivationFacts`, `evaluateActivation`, the report and activation request schemas. `contracts/campaigns.ts`: routes `readiness`, `activate`; error `campaign_not_ready`. `contracts/endpoints.ts`: `campaigns.readiness` (cache `campaignReadiness`), `campaigns.activate`; the save also invalidates readiness; 36 endpoints. `contracts/dashboard.ts`: activity label. `contracts/campaign-activation.test.ts` (new, 5). |
+| Database | `tenancy/campaigns.ts`: `readiness()` (facts gathered in one transaction), `activate()` (version first, idempotent repeat, compare-and-set, audit), `CampaignNotReadyError`; the repository takes the scope's clock. `tenancy/access.ts`. `campaign-activation.integration.test.ts` (new, 5). |
+| API | `workspaces/campaign-services.ts` (new): the `CAMPAIGN_SERVICES` token (production: `BUILT_SERVICES`). `workspaces/campaigns.controller.ts`: `GET …/readiness`, `POST …/activate`. `http/api-errors.ts`: `409 campaign_not_ready` with one issue per reason. `testing/api-harness.ts`: `startApi(db, policy, services)`. `http/route-guards.test.ts`: both routes reviewed. `workspaces/campaign-activation.integration.test.ts` (new, 3). |
+| Web | `components/campaigns/activation-panel.tsx` (new): every check with its reasons, "Fix in <stage>", Start campaign with confirmation. `delivery-stages.tsx`: the review stage uses it (the 06B "Still needed" notice and the "Starting the campaign: Not available yet" placeholder are gone). `campaign-wizard.tsx`: "Campaign started at …". `lib/campaign-wizard.test.ts`: stage keys match the shared list. `e2e/campaign-wizard.spec.ts`: the review checks. |
+| Root | `docs/api/openapi.json` regenerated. |
+| Docs | `docs/decisions.md` D-06C-01 to 05 and O-30; `docs/api/campaigns.md` (starting a campaign); `docs/security/authorization-review.md` (36 routes); README (status, screens, tests); `CLAUDE.md` (activation rule). This entry and M2. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end; ports 54329, 3100 and 3101 are free.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | First run: **failed** on README.md (lines to reflow). Prettier then turned two `D-06…-*` references in one paragraph into italics markers (`D-06B-_`), so they were rewritten as explicit ranges; then exit 0. |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 10/10 tasks, 0 cached: shared **180**, integrations **13**, database **46 passed, 323 skipped**, web **31**, worker **4**, api **31 passed, 54 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 10/10 tasks, 0 cached: shared **180**, integrations **13**, database **367 passed, 2 skipped**, web **31**, worker **4**, api **85** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 15 migrations (none new); up to date; exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **42 passed** (11 accounts and teams, 7 app shell, 7 campaign wizard with the review checks, 3 data client, 5 dashboard, 8 components, 1 smoke); axe included, no violations |
+| `pnpm test:e2e` without it | **9 passed, 33 skipped** |
+| Screens, by eye | The review checks at 1280 px and 390 px (throwaway screenshot spec, deleted) |
+| Reference repos / credential and personal-email scan of the 51 changed files (06A–06C) | 0 changes in each of the 9 / no matches |
+
+**Earlier failures in this task (logged honestly):**
+1. **Lint:** an optional chain (shared), two non-null assertions in the new test, an unused
+   import and a boolean comparison (web). All fixed.
+2. **Scripted edits:**
+   - a review-stage edit didn't match Prettier's multi-line import; nothing was written, and
+     it was redone from a script file;
+   - the docs script stopped at a README line with other wording, after writing three files.
+     Only the README and `CLAUDE.md` parts were rerun, so nothing was applied twice.
+3. **Formatting:** see the table (README).
+
+### What 06C proves (local)
+
+- **No campaign starts merely by saving it.**
+  - A save can't name a status (the strict schema: `400`).
+  - A complete campaign that passes every check stays `DRAFT` after saving, in the database
+    test, over HTTP and in the browser.
+  - Only `activate` sets `ACTIVE`.
+- **Repeated activation is idempotent.**
+  - With the services built (tests only), the first call starts the campaign: `activated_at`
+    from the clock, one `campaign.activated` audit record.
+  - The same request again returns the identical campaign (`200`), with no second record.
+  - So does a repeat when the checks would now refuse.
+- **Stale versions conflict:** a stale (or future) version gets `409 version_conflict`
+  before anything else, also once the campaign is running.
+- **Readiness with deterministic fixtures:**
+  - shared tests with fixed facts: one ready campaign and 17 single problems, each blocking
+    exactly its check with the expected words;
+  - database tests with the fixture tenants: a new draft's exact blockers; a complete campaign
+    blocked only by the workspace's sending switch and the services; the mailbox's daily limit.
+- **Fail closed:** in production (no services built) activation is `409 campaign_not_ready`
+  with one reason per unbuilt service, the same twice, and the campaign stays a draft.
+- **Each blocker on the review screen:** every one of the 13 checks shows its state and the
+  API's own reasons. Unbuilt services say "Not available yet", "Start campaign" is disabled,
+  and "Fix in Mailbox" leads to the mailbox stage.
+- **Permissions:**
+  - automatic approval needs `drafts.approve` to start;
+  - workers can't read readiness or start campaigns;
+  - another workspace gets `404`;
+  - CSRF is required.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL and CI.
+- A screen-reader pass (O-25, O-29).
+- The `pg` 8.23 deprecation warning from Prisma's `adapter-pg` still appears in runs (O-14).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker (O-06).
+3. Open: O-19 to O-30. Starting a campaign stays impossible until the eligibility, drafting
+   and sending services are built (O-30, by design).
+
+### Manual check
+
+Optional, with `pnpm dev`: open a campaign's Review stage and read the list under "Before the
+campaign can start". Every check that doesn't pass names what to do or says the service isn't
+available yet, and "Start campaign" stays disabled.
+
+### Next prompt
+
+Not known: the plan is missing (O-01).
+
+---
+
+## 06B: Campaign setup wizard (2026-11-04)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL:** the database, API and browser suites ran on PGlite only; CI has not run
+  (CI runs only on `main` and pull requests).
+- **Plan:** the eight stages are the ones the prompt names; their contents and wording could not
+  be checked against the missing plan (O-01, O-29).
+- **Accessibility:** axe on every stage and at 390 px; no screen reader (O-25, O-29).
+- **Not committed:** on branch `feat/05a-app-shell`, together with the uncommitted 06A work.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Web: pages | `app/workspaces/[workspaceId]/campaigns/page.tsx` and `campaign-list.tsx` (new): the Campaigns list, "New campaign" dialog, "Make a copy". `campaigns/[campaignId]/page.tsx` (new): the wizard; unknown or foreign campaigns are a real 404. |
+| Web: wizard | `components/campaigns/` (new): `campaign-wizard.tsx` (loading, stage from `?stage=`, latest version, conflict notice, read-only mode, copy), `stage-frame.tsx` (`useStageForm`, step list, Back / Save draft / Save and continue, focus, unsaved-changes guard, "Not available yet" notice), `profile-stages.tsx` (business profile, target audience, offer, lead filters), `delivery-stages.tsx` (mailbox, sequence, schedule, review). `lib/campaign-wizard.ts` (new): stages, form ↔ save conversion, checking with the API's schema, issue → field mapping. |
+| Web: shared parts | `components/form-field.tsx`: `CheckboxField`, `ChoiceGroup`. `components/data/status-label.tsx`: campaign and mailbox statuses. `components/shell/workspace-shell.tsx`: breadcrumbs of detail pages. |
+| Web: tests | `lib/campaign-wizard.test.ts` (new, 7). `e2e/campaign-wizard.spec.ts` (new, 7 scenarios). `e2e/support/db.ts`: `seedCampaignChoices`, `markCampaignRunning`. `e2e/app-shell.spec.ts`: the unbuilt-page example is now Imports. |
+| Shared | `contracts/campaigns.ts`: `CAMPAIGN_ROUTES.options`, `campaignOptionsSchema`; plain wording for numbers, days, times and the required name. `contracts/endpoints.ts`: `campaigns.options` (cache `campaignOptions`); 34 endpoints. `navigation.ts`: Campaigns `available`, `detailLabel`, `workspaceBreadcrumbs(…, detail)`. Tests updated. |
+| Database / API | `tenancy/campaigns.ts`: `options()`. `workspaces/campaigns.controller.ts`: `GET …/campaigns/options` (before `:campaignId`). `http/route-guards.test.ts`: the route reviewed. One test each in the database and API campaign suites. |
+| Root | `docs/api/openapi.json` regenerated. |
+| Docs | `docs/decisions.md` D-06B-01 to 06 and O-29; `docs/api/campaigns.md`; `docs/security/authorization-review.md` (34 routes); `docs/local-development.md`; README (status, tests, screens); `CLAUDE.md` (wizard rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end; ports 54329, 3100 and 3101 are free.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` / `pnpm format:check` | Exit 0 / no peer issues / exit 0 |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 10/10 tasks, 0 cached: shared **175**, integrations **13**, database **46 passed, 318 skipped**, web **31**, worker **4**, api **31 passed, 51 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 10/10 tasks, 0 cached: shared **175**, integrations **13**, database **362 passed, 2 skipped**, web **31**, worker **4**, api **82** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 15 migrations (none new); up to date; exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached; web routes include `ƒ /workspaces/[workspaceId]/campaigns` and `…/campaigns/[campaignId]` |
+| `pnpm openapi --check` | Up to date |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **42 passed**: 11 accounts and teams, 7 app shell, 7 campaign wizard, 3 data client, 5 dashboard, 8 components, 1 smoke; axe included, no violations |
+| `pnpm test:e2e` without it | **9 passed, 33 skipped** |
+| Screens, by eye | The list, a stage with an error, lead filters, mailbox, sequence and review at 1280 px; business profile and sequence at 390 px (throwaway screenshot spec, deleted) |
+| Reference repos / credential and personal-email scan of the 44 changed files (06A and 06B) | 0 changes in each of the 9 / no matches |
+
+**Earlier failures in this task (logged honestly):**
+1. **Unit tests:** a type error in the new test (typed forms cast to one type); fixed with a
+   small typed wrapper.
+2. **Database test:** a check of mine was wrong (fixture ids share a prefix). The data was
+   right; the check was removed.
+3. **Scripted edits:** a test title lost its escaping, and a regular expression lost a
+   backslash. Both were fixed with direct edits.
+4. **Wizard browser test, first runs (each fixed, then rerun):**
+   - The step links were named "Business profile , not done yet": Chrome adds a space before
+     visually hidden text, and the test's locator didn't match.
+   - Explicit `aria-label`s on the step links failed axe's label-in-name rule (the visible step
+     number). They are named by their content again, and the locator allows the space.
+   - The move buttons' names ("Move step 1 up") didn't contain their visible text ("Move up");
+     now "Move up step 1".
+   - The Review summary wrapped `dt`/`dd` in an extra element (invalid list structure).
+     Restructured with a grid; the summary is now read before its Edit link.
+
+### What 06B proves (local)
+
+- **Completion check A: saving and reopening an incomplete campaign loses nothing valid.**
+  - In the browser, a new campaign got a business profile without a description, a lead list,
+    and only an offer name.
+  - It was saved through Save and continue and Back, then left from the list ("1 of 6 parts
+    filled in"). Reopened, and after a full reload, every saved value is there and the stage
+    states are right.
+  - Unit test: for a complete and an empty campaign, every stage's unchanged values give back
+    exactly what is stored, and are a valid save.
+- **Completion check A: the page and the API validate alike.**
+  - The page checks each save with the API's own schema; no request is sent for an invalid
+    value (the test saw no `PATCH`).
+  - For five values (website scheme, leads per day, company size range, a country code, the
+    sending window), the message next to the field is word for word the API's message for
+    the same save.
+  - Unit test: every message the schema gives lands on a field of its stage, list entries
+    numbered; the API's reference issues map to fields.
+- **Back navigation:** the stage is in the address; Back, the step list and reloading work, and
+  moving saves first. An invalid stage stays put, with focus on the problem.
+- **Not faked:**
+  - The mailbox stage says connecting isn't available, and its connect buttons are disabled.
+    A stored mailbox shows "Waiting for authorization"; "Connected" appears nowhere.
+  - Sequence and Review say writing emails and starting aren't available; "Start campaign" is
+    disabled.
+- **Conflicts and read-only:**
+  - Two pages edit the same draft: the outdated one is told and can load the latest version.
+  - A running campaign is read-only and can be copied into a new draft.
+- **Narrow screens and accessibility:** all 8 stages at 390 px without sideways scrolling; axe
+  finds no WCAG 2.2 A/AA violations on the list or any stage.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL and CI.
+- A screen-reader pass (O-25, O-29).
+- The `pg` 8.23 deprecation warning from Prisma's `adapter-pg` still appears in runs (O-14).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker (O-06).
+3. Open: O-19 to O-29.
+
+### Manual check
+
+Optional, with `pnpm dev`:
+- Open Campaigns, create a campaign, fill a few stages, close the tab, and reopen it from the
+  list. Check that everything you saved is there.
+- Leave a stage with an invalid value (a website without https://) and check the message next
+  to the field.
+
+### Next prompt
+
+Not known: the plan is missing (O-01).
+
+---
+
+## 06A: Campaign configuration API (2026-11-02)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL:** the database, API and browser suites ran on PGlite only. CI has not run
+  (the branch was pushed in GIT-08; CI runs only on `main` and pull requests).
+- **Plan:** the sections, fields, bounds and approval modes could not be checked against the
+  missing plan (O-01, O-28).
+- **Not committed:** on branch `feat/05a-app-shell`, after `06b34b2`.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Database | `schema.prisma`: `CampaignApprovalMode` (`HUMAN`, `AUTOMATIC`); `campaigns` gains `version`, `approval_mode`, `business_profile`, `offer`, `audience_filters`, `exclusions` (JSONB), `daily_new_lead_limit`, `max_leads`. Migrations `20261102000000_campaign_configuration` (generated) and `20261102000100_campaign_configuration_checks` (hand-written CHECKs). `tenancy/campaigns.ts` (new): `scope.campaigns` with `list`, `get`, `create`, `update`, `duplicate` and four errors. `tenancy/access.ts`, `tenancy/index.ts`. `campaigns.integration.test.ts` (new, 8 tests). |
+| Shared | `contracts/campaigns.ts` (new): routes, bounds, section schemas (requests normalize time zone, domains, addresses, country codes), create, save and duplicate requests, the campaign and list responses, `campaignReadiness`, error codes. `contracts/endpoints.ts`: 5 endpoints (tag `campaigns`), cache resources `campaigns` and `campaign`, statuses of the 3 new error codes. `contracts/workspaces.ts`: the codes in `API_ERROR_CODES`. `contracts/dashboard.ts`: activity labels for campaign actions. `contracts/campaigns.test.ts` (new, 7 tests); endpoint count 28 → 33. |
+| API | `workspaces/campaigns.controller.ts` (new), registered after `DashboardController` in `workspaces.module.ts`. `http/api-errors.ts`: `version_conflict`, `campaign_not_editable`, `campaign_name_taken` (409), reference problems as `400 validation_failed` with issues. `http/route-guards.test.ts`: the 5 routes reviewed; `campaignId` only under a workspace. `workspaces/campaigns.integration.test.ts` (new, 7 tests). |
+| Root | `docs/api/openapi.json` regenerated (33 operations). |
+| Docs | `docs/decisions.md` D-06A-01 to 06 and O-28; `docs/api/campaigns.md` (new); `docs/security/authorization-review.md` (33 routes, the repository); README (status, migrations, tests); `CLAUDE.md` (campaign rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end; ports 54329, 3100 and 3101 are free.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | First run: **failed**, 1 new test file unformatted. Formatted with Prettier; then exit 0. |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14 tasks, 0 cached; root ESLint OK. Earlier in the task: 3 findings fixed (see below). |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 10/10 tasks, 0 cached: shared **175**, integrations **13**, database **46 passed, 317 skipped**, web **24**, worker **4**, api **31 passed, 50 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 10/10 tasks, 0 cached: shared **175**, integrations **13**, database **361 passed, 2 skipped**, web **24**, worker **4**, api **81** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | **15 migrations** (2 new); up to date; exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **35 passed** (no new browser scenarios: 06A has no screen) |
+| `pnpm test:e2e` without it | **9 passed, 26 skipped** |
+| Reference repos / credential and personal-email scan of the 26 changed files | 0 changes in each of the 9 / no matches |
+
+**Earlier failures in this task (logged honestly):**
+1. **First migration apply:** `DATABASE_URL` wasn't set in that shell, so `migrate deploy`
+   failed and the drift check reported exit 1 without checking anything. Re-run with the
+   variable: applied, drift exit 0.
+2. **Database suite, first run:** 7 of 8 passed. The audit metadata listed the changed
+   sections in request order; they are now in the contract's fixed order.
+3. **Shared tests, first run:** one expectation was too narrow (a body with only an unknown
+   field gets two root-level issues).
+4. **Lint (3 findings, fixed):**
+   - an unnecessary type assertion, then a ternary where `??` is preferred (both in the
+     repository's JSON helper);
+   - a test calling `toBeDefined` without `()`. That assertion never ran; the test now
+     checks the parsed value.
+
+### What 06A proves (local)
+
+- **A draft survives reloads (completion check A):**
+  - Sections saved one request at a time are all there afterwards: through another database
+    connection and a new scope, and over HTTP after a new sign-in.
+  - Every save raises the version.
+- **Cross-tenant references are refused (completion check A):**
+  - Another workspace's ICP, lead list, excluded lead list, mailbox or step template, in an
+    incomplete draft, gives one issue per field and saves nothing.
+  - An id that exists nowhere gets the same answer.
+  - Another workspace's campaign is `404`, by id and by route.
+- **Duplication (completion check B):**
+  - A copy of the running fixture campaign (which has leads, drafts, an approval, an outbound
+    intent and a job schedule) has 0 leads, 0 drafts, 0 approvals, 0 intents and 0
+    schedules.
+  - The copy is `DRAFT`, version 1, `HUMAN` approval (even from an `AUTOMATIC` source), with
+    no activation times.
+  - Its sequences and steps are new rows with the same settings, and the source is unchanged.
+  - Over HTTP: a copy of a running campaign with an enrolled lead has no lead.
+- **Version checks:** a save from a stale (or future) version is `409 version_conflict` and
+  changes nothing.
+- **Bounds:** lead limits, schedule, steps and delays, list sizes, text lengths, website
+  scheme, country codes, domains, addresses, time zone and unknown fields are refused by the
+  API and again by the repository.
+- **Defaults:** a new campaign is `DRAFT` with `HUMAN` approval and the workspace's time zone.
+  `AUTOMATIC` is refused without `drafts.approve` (`403`) and while the workspace requires
+  approval (`400`).
+- **Only drafts change:** saving a running campaign is `409 campaign_not_editable`.
+- **Same rules as the rest of the API:** the route test, the contract test, the OpenAPI
+  document and the authorization review cover the 5 routes.
+  `GET …/campaigns/summary` (05C) still answers.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL and CI.
+- The `pg` 8.23 deprecation warning from Prisma's `adapter-pg` still appears in runs (O-14).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker (O-06).
+3. Open: O-19 to O-28.
+
+### Manual check
+
+None needed: there is no screen yet. Optional, with `pnpm dev` and a signed-in browser
+session: create a campaign and save a section with `PATCH /api/workspaces/<id>/campaigns/<id>`,
+as described in `docs/api/campaigns.md`.
+
+### Next prompt
+
+Not known: the plan is missing (O-01).
+
+---
+
+## GIT-08: Push `feat/05a-app-shell` (2026-11-02)
+
+**Status: Done.** The request was `git push`.
+
+| Step | Actual result |
+|---|---|
+| Pushed | `feat/05a-app-shell` → `origin/feat/05a-app-shell` (new remote branch, tracking set), head `06b34b2` (05A–05C, on top of `3e0b418`) |
+| Remote | `github.com/farhan0nouman-sys/LeadFennec-Leads-Agent` (**public**); `main` unchanged at `7fc44f2`; `feat/04a-auth` unchanged at `3e0b418` |
+
+- **CI has not run:** the workflow runs on pushes to `main`, on pull requests and on manual
+  dispatch, not on pushes to other branches. A pull request into `main` (or a manual run)
+  would give the first real-PostgreSQL results for 03A–05C. That is the user's decision.
+- This entry is not in the pushed commit; it is a local change to the log.
+
+---
+
 ## GIT-07: Commit 05A–05C (2026-11-02)
 
 **Status: Done (local commit only).** The request was `git commit`.

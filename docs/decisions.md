@@ -2106,6 +2106,471 @@ Rules (`apps/web/lib/polling.ts`, unit-tested; applied by `useApiQuery`'s `poll`
 | Web units | `lib/polling.test.ts` (5), `lib/format.test.ts` (2) | Interval, back-off, stop after 3 failures and after 30 minutes; relative times |
 | Browser | `e2e/dashboard.spec.ts` (5) | Real counts and "not available yet"; panels by role and the API's 403; polling with Playwright's clock (an update after a minute, nothing while hidden, at once when visible); a failed panel beside working ones, pausing after 3 failures, recovery; 390 px without sideways scrolling; axe |
 
+## 06A: Campaign configuration API (2026-11-02)
+
+**Basis.** The plan is still missing (O-01); this follows the 06A prompt. It reuses the 03B
+campaign, sequence and step tables, the 04B scopes and guards, the 05B endpoint list and the
+05C dashboard routes.
+
+### D-06A-01: Where each part of the configuration lives
+
+| Section | Stored in | Notes |
+|---|---|---|
+| Name, description | `campaigns.name`, `description` | Name unique per workspace, 1–120 characters |
+| Business profile | `campaigns.business_profile` (JSONB) | Company name, website (http/https only), description, value proposition |
+| Offer | `campaigns.offer` (JSONB) | Name, description, call to action, up to 10 proof points |
+| Audience | `campaigns.icp_id`, `lead_list_id`, `audience_filters` (JSONB) | ICP and lead list of the workspace; filters: countries (ISO 3166-1 alpha-2), industries, titles, company size |
+| Exclusions | `campaigns.exclusions` (JSONB) | Up to 100 domains and 100 addresses (normalized, deduplicated), up to 20 lead lists; "skip contacts in other campaigns" (default on). The workspace's do-not-contact list always applies as well. |
+| Lead limits | `campaigns.daily_new_lead_limit`, `max_leads` | 1–500 a day, 1–50,000 in total, daily ≤ total |
+| Time zone | `campaigns.timezone` | IANA (`normalizeTimeZone`); a new campaign takes the workspace's |
+| Schedule | `campaigns.send_weekdays`, `send_window_*` | ISO weekdays, a daily window in local minutes |
+| Sender | `campaigns.email_account_id` | A mailbox of the workspace, not disconnected |
+| Sequence | `sequences`, `sequence_steps` | The campaign's oldest sequence; up to 10 steps, each a delay (0 to 1 year) and an optional active template |
+| Approval mode | `campaigns.approval_mode` | `HUMAN` (default) or `AUTOMATIC` (D-06A-04) |
+| Version | `campaigns.version` | Raised by every save (D-06A-02) |
+
+- **Why JSONB for four sections:** they are free-form settings read as a whole, not queried
+  row by row. Like `icps.criteria`, each is validated by the shared schema before every write
+  and again when read. A CHECK keeps each one a JSON object of bounded size.
+- **No new table.** The business profile is per campaign for now. If the plan wants one profile
+  per workspace, it becomes its own table and campaigns reference it.
+- Migrations: `20261102000000_campaign_configuration` (generated) and
+  `20261102000100_campaign_configuration_checks` (hand-written CHECKs: version, name,
+  description, lead limits, JSON shape and size).
+
+### D-06A-02: Incremental saves with a version check
+
+- `PATCH …/campaigns/:campaignId` takes `version` and any of the sections. Each section sent
+  replaces that section entirely; sections left out are untouched. A save must change at least
+  one section.
+- **Version check (optimistic concurrency):** the save names the version it started from.
+  - If that isn't the stored version, nothing is saved: `409 version_conflict`.
+  - The update itself is a compare-and-set on `(tenant_id, id, version, status = DRAFT)`. A
+    concurrent save of the same version waits for the row, then matches nothing and gets the
+    same `409`.
+  - Each successful save raises the version by one.
+- **Drafts only:** only `DRAFT` campaigns can be configured (`409 campaign_not_editable`).
+  Pausing, editing running campaigns and activation are later tasks.
+- **Audit:** `campaign.created`, `campaign.updated` (metadata: the sections changed, in the
+  contract's order, and the new version) and `campaign.duplicated` (the source campaign's
+  id). No content goes into audit metadata.
+- **Readiness:** every answer says which of business profile, offer, audience, lead limits,
+  sender and sequence are still missing (`campaignReadiness`). A draft may be saved without
+  any of them.
+
+### D-06A-03: Bounds and references are checked even for incomplete drafts
+
+- **Bounds:** the shared request schemas, checked by the API and again by the repository. The
+  database checks the numeric ones and the JSON size.
+- **References:** every id a save names must be a record of the same workspace:
+  - the ICP (not archived), the lead list and the excluded lead lists (not archived), the
+    mailbox (not disconnected) and each step's template (active);
+  - all problems are reported at once, as `400 validation_failed` with one issue per field
+    (e.g. `sequence.steps.1.templateId`);
+  - another workspace's record reads exactly like a missing one ("Not found in this
+    workspace."), so ids of other workspaces can't be probed.
+  - The composite foreign keys (`(tenant_id, x_id)`) would refuse such a reference anyway;
+    the check turns that into a clear answer.
+- A malformed campaign id is `404`, like an unknown one.
+
+### D-06A-04: Human approval by default
+
+- New campaigns are `DRAFT` (inactive) with `approval_mode = HUMAN`.
+- `AUTOMATIC` needs both:
+  - the member's role grants `drafts.approve` (waiving approval is an approver's decision);
+  - the workspace allows it: `tenant_settings.require_send_approval` is false. It is true by
+    default, so today nobody can set `AUTOMATIC` without an explicit workspace change.
+- A copy always starts with `HUMAN` approval.
+- `AUTOMATIC` has no effect yet: nothing is sent before the sending tasks. They must check
+  the workspace setting and the mode again at send time (`CLAUDE.md` → Sending).
+
+### D-06A-05: Duplication copies configuration only
+
+- `POST …/campaigns/:campaignId/duplicate` creates a new `DRAFT` with version 1, `HUMAN`
+  approval and no activation times. Any campaign may be copied, also a running one.
+- **Copied:** every configuration section, the references (same workspace by construction),
+  and every sequence with its steps as new rows.
+- **Never copied:** campaign leads (enrollments), drafts, approvals, outbound intents and
+  attempts (sends), email threads and job schedules.
+- **Name:** "<name> (copy)", then "(copy 2)" and so on, or a name given in the request
+  (`409 campaign_name_taken` if used).
+
+### D-06A-06: API and tests
+
+| Route | Permission | Cache resource / invalidates |
+|---|---|---|
+| `GET /workspaces/:workspaceId/campaigns` | `campaigns.read` | `campaigns` |
+| `POST /workspaces/:workspaceId/campaigns` | `campaigns.write` | invalidates `campaigns`, `campaignSummary`, `activity` |
+| `GET /workspaces/:workspaceId/campaigns/:campaignId` | `campaigns.read` | `campaign` |
+| `PATCH /workspaces/:workspaceId/campaigns/:campaignId` | `campaigns.write` (+ `drafts.approve` for `AUTOMATIC`) | invalidates `campaigns`, `campaign`, `activity` |
+| `POST /workspaces/:workspaceId/campaigns/:campaignId/duplicate` | `campaigns.write` | invalidates `campaigns`, `campaignSummary`, `activity` |
+
+- `CampaignsController` is registered after `DashboardController`, so
+  `GET …/campaigns/summary` (05C) still matches before `…/:campaignId`. The API test checks it.
+- **Tests:**
+
+  | Level | File | Tests |
+  |---|---|---|
+  | Shared | `contracts/campaigns.test.ts` | 7 |
+  | Database | `campaigns.integration.test.ts` | 8 |
+  | API | `workspaces/campaigns.integration.test.ts` | 7 |
+
+- **No screen yet.** The Campaigns page stays "Not available yet" until the screens task.
+
+## 06B: Campaign setup wizard (2026-11-04)
+
+**Basis.** The plan is still missing (O-01); the eight stages are the ones the 06B prompt names.
+It reuses the 06A draft API, the 05B client, cache and components, and the 05A page checks.
+
+### D-06B-01: Pages and stages
+
+- **Campaigns** (`/workspaces/[id]/campaigns`) is now a built page (`status: 'available'`):
+  - a list with each campaign's status, setup progress ("3 of 6 parts filled in" or "Ready to
+    start"), approval and last change;
+  - "New campaign" (a dialog for the name), and "Make a copy".
+- **Setup wizard** (`/workspaces/[id]/campaigns/[campaignId]?stage=…`):
+  - The server checks the section as for every page. An unknown or foreign campaign is a real
+    `404`.
+  - Breadcrumbs: Campaigns (a link) › Campaign setup (`detailLabel` in the page list).
+- **Stages, and the sections each one saves:**
+
+  | Stage | Saves |
+  |---|---|
+  | Business profile | `businessProfile` |
+  | Target audience | `audience.icpId`, `audience.leadListId` (filters kept as stored) |
+  | Offer | `offer` |
+  | Lead filters | `audience.filters` (ICP and list kept as stored), `exclusions`, `leadLimits` |
+  | Mailbox | `sender` |
+  | Sequence | `sequence` (steps: days and hours → minutes, template) |
+  | Schedule | `timezone`, `schedule` (30-minute steps) |
+  | Review | `name`, `description`; a summary with Edit links, approval, what is still needed |
+
+- Lead limits sit under Lead filters, because they decide how many leads join. Approval is shown
+  on Review but can't be changed there: the workspace requires approval by default (D-06A-04).
+
+### D-06B-02: Saving, navigation, and not losing anything
+
+- **Address bar:** the stage is in `?stage=`, so Back, the browser's back button and reloading
+  keep the place. Unknown values open the first stage.
+- **Saving:**
+  - Each stage saves only its sections, with the version the page holds. Blank fields mean
+    "not set", so an incomplete stage saves.
+  - "Save draft" stays; "Save and continue", "Back" and the step list save first, then move.
+  - A stage with an invalid value doesn't move or save. Focus goes to the first field with a
+    problem, and a notice says nothing on the step was saved.
+  - The typed values stay in the form; nothing already saved is touched.
+- **After a save:**
+  - the stage starts again from the stored campaign, so it shows what was stored (e.g.
+    normalized domains);
+  - a polite status says "Draft saved at 10:42.";
+  - the cache entries the endpoint lists are reloaded (05B).
+- **Unsaved changes:** closing or reloading the tab asks first (`beforeunload`).
+  - Leaving through the sidebar or the breadcrumbs doesn't ask (a limit of client-side
+    navigation, O-29).
+- **Conflicts:** a save from an outdated page gets `409 version_conflict`.
+  - The wizard says so, keeps the typed values until the user chooses "Load the latest
+    version", then shows the stored campaign.
+- **Read-only:**
+  - A campaign that isn't a draft opens read-only, with "Make a copy" (06A duplication).
+  - So does any campaign for a role without `campaigns.write` (no system role is like that
+    today).
+
+### D-06B-03: The page and the API validate with the same schema
+
+- `apps/web/lib/campaign-wizard.ts` turns each stage's form values into the save the API takes
+  and checks it with `updateCampaignRequestSchema`, the schema the API validates with.
+- Every issue path, the page's own or the API's (reference checks, conflicts with stored data),
+  is mapped to the field it belongs to, with the same message:
+  - list entries get "Line n:" or "Entry n:";
+  - a step's issues go to that step's delay or template;
+  - anything that belongs to another stage is shown above the form, never dropped.
+- Form-only conversions are deliberately loose so they can't disagree: blank means not set, and
+  numbers are passed on as typed, so the schema refuses fractions and out-of-range values in
+  its own words.
+- The shared schemas got plain wording where zod's defaults showed:
+  - "Use a whole number." and "Use a delay of zero or more.";
+  - day and time choices;
+  - "Enter a name for the campaign." for the required name.
+
+### D-06B-04: Honest about what isn't built
+
+- **Mailbox:**
+  - "Connecting a mailbox: Not available yet", with disabled "Connect Gmail" and "Connect
+    Microsoft 365" buttons.
+  - Mailboxes already in the workspace are listed with their stored status: "Waiting for
+    authorization", "Needs reconnecting", "Paused" or, only for `ACTIVE`, "Connected".
+  - Nothing claims a connection.
+- **Sequence:** "Writing the emails: Not available yet". Steps save their timing and, if the
+  workspace has templates, a template; nothing is sent.
+- **Review:** "Starting the campaign: Not available yet", with a disabled "Start campaign".
+- **Choices** come from a new read-only endpoint, `GET /workspaces/:workspaceId/campaigns/options`
+  (`campaigns.read`). It returns the workspace's ICPs and lead lists (not archived), mailboxes
+  (not disconnected) and active templates, up to 200 of each by name: the same records a save
+  accepts. Creating them isn't built yet, so the pickers say when there are none.
+
+### D-06B-05: Accessibility and layout
+
+- **Step list:**
+  - a `nav` with an ordered list; the current stage has `aria-current="step"`;
+  - each link is named by its content plus hidden state text ("Offer, not done yet"). Chrome
+    reads it with a space before the comma. Explicit `aria-label`s were tried first and
+    failed axe's label-in-name rule, because of the visible step number.
+- **Fields:** errors are tied to their field (`aria-describedby`, `aria-invalid`). Groups of
+  checkboxes and radios are fieldsets with a legend, with the error on the group.
+- **Headings and focus:** moving to a stage focuses its heading. "Step n of 8" is stated as
+  text.
+- **Layout:** the step list is a sidebar from `lg`, and two columns on phones. No sideways
+  scrolling at 390 px on any stage.
+
+### D-06B-06: Tests
+
+| Level | File | What it shows |
+|---|---|---|
+| Web units | `lib/campaign-wizard.test.ts` (7) | The eight stages; an unchanged stage gives back exactly what is stored (nothing lost on reopening) and is a valid save, complete or not; blank fields save; every message the schema gives lands on a field of its stage with the API's words; the API's reference issues map to fields; days and hours as minutes; stage states |
+| Database | `campaigns.integration.test.ts` (+1) | Choices: only the workspace's usable records |
+| API | `workspaces/campaigns.integration.test.ts` (+1) | Choices over HTTP; `404` outside the workspace |
+| Shared | `navigation.test.ts` | Breadcrumbs of a detail page; Campaigns is built |
+| Browser | `e2e/campaign-wizard.spec.ts` (7) | A half-done campaign reopens with everything valid (list, stage list, reload); five refused values give the same words on the page as from the API, and the page sends nothing; mailbox and sequence notices, no "Connected"; schedule and review; a conflict between two pages; a running campaign is read-only and can be copied; every stage at 390 px; `404`s; axe on every stage |
+
+The 05A app-shell scenario used Campaigns as its example of an unbuilt page; it now uses
+Imports.
+
+## 06C: Campaign readiness and activation (2026-11-04)
+
+**Basis.** The plan is still missing (O-01); the checks follow the 06C prompt ("mandatory
+settings, authorized sender health, eligibility policy, schedule, limits and approval mode").
+It reuses the 06A repository and version checks, the 06B review stage, the 03C billing helpers
+and the 04B permissions.
+
+### D-06C-01: One readiness service, decided by application code
+
+`evaluateActivation` (`packages/shared/src/contracts/campaign-activation.ts`) is pure. It
+turns facts about one campaign into 13 checks, in a fixed order, each passed or blocked with
+reasons a person can read. `scope.campaigns.readiness` gathers the facts in one
+`REPEATABLE READ` transaction, filtered by the workspace.
+
+| Check | Kind | Blocks when |
+|---|---|---|
+| Business profile | setting | No company name, or no description |
+| Offer | setting | No name, or no description |
+| Target audience | setting | Neither an ICP nor a lead list; either one archived or gone |
+| Lead eligibility | setting | No lead list (finding leads from an ICP alone isn't built); nobody on the list has an email address |
+| Lead limits | setting | Either limit missing; daily above total; daily above the mailbox's daily send limit |
+| Sending mailbox | setting | None chosen; not `ACTIVE` (waiting for authorization, paused, disconnected, needs reconnecting); no stored authorization; a failing sync |
+| Sequence | setting | No step; a step without a template, or with an archived or missing one |
+| Schedule | setting | No day; the window ends before it starts; the time zone isn't valid |
+| Approval | setting | `HUMAN` and no active member whose role grants `drafts.approve`; `AUTOMATIC` while the workspace requires approval |
+| Workspace plan and sending | workspace | No entitled subscription (03C statuses); the plan allows no `EMAILS_SENT`; `tenant_settings.outbound_sending_enabled` is off (the default) |
+| Checking leads before they join | service | Not built (suppressions and verification per lead) |
+| Preparing the emails | service | Not built (content per lead and step) |
+| Sending email | service | Not built (Gmail and Microsoft 365) |
+
+- Every setting check names the wizard stage that fixes it.
+- Reasons are plain sentences; the review screen and the API show the same ones.
+
+### D-06C-02: Unfinished services fail closed
+
+- `BUILT_SERVICES` (shared) says which later services exist: none yet.
+- The API provides it through the `CAMPAIGN_SERVICES` token, so in production activation is
+  always refused, with one reason per missing service.
+- Only tests pass other values: the repository tests directly, and the API harness through
+  `startApi(db, policy, services)`. That is how the successful path is proven without
+  building the services.
+- When a service is built, its flag is set to true in the same change, with its own tests.
+
+### D-06C-03: Activation: explicit, versioned, idempotent
+
+- **The only way a campaign starts** is `POST /workspaces/:workspaceId/campaigns/:campaignId/activate`
+  with `{ version }` (`campaigns.write`).
+  - A save can't set a status: the request schema is strict.
+  - Creating and copying always give a `DRAFT`.
+- **Order of decisions:**
+  1. A version other than the stored one: `409 version_conflict`, before anything else (also
+     for a running campaign).
+  2. Already `ACTIVE` from that version: the campaign is returned unchanged, with `200`. No
+     second change, audit record or check. This is what makes repeating idempotent.
+  3. Paused, completed or cancelled: `409 campaign_not_editable`.
+  4. `AUTOMATIC` approval: the member also needs `drafts.approve`.
+  5. Any blocked check: `409 campaign_not_ready`, with one issue per reason (the issue's
+     `path` is the check's key).
+  6. A compare-and-set on `(tenant_id, id, version, status = DRAFT)` sets `ACTIVE` and
+     `activated_at` from the scope's clock, and writes `campaign.activated` (metadata: the
+     version) in the same transaction.
+  7. If a concurrent request started it first, the re-read finds it `ACTIVE` from the same
+     version and answers the same way.
+- **The version doesn't change on activation.** It counts configuration saves, and keeping it
+  lets a retried request be recognised as the same one.
+- **Nothing else happens yet.** Enrolling leads, scheduling and sending are later tasks; with
+  the services unbuilt, production can't reach this point.
+
+### D-06C-04: Review screen
+
+- **"Before the campaign can start"** lists every check:
+  - with "Passes", "To do", "Needs a workspace change" or "Not available yet";
+  - with its reasons;
+  - and, for a setting, "Fix in <stage>", which saves the review form first.
+- **"Start campaign":**
+  - It is enabled only when the report is for the version on screen, every check passes, the
+    campaign is a draft, the member may change campaigns and the review form is saved.
+  - It asks for confirmation.
+  - Refusals update the list; a conflict shows the 06B conflict notice.
+- **Cache:** `campaignReadiness` (per workspace). Saves and activation invalidate it, and the
+  review stage reloads it when it opens.
+
+### D-06C-05: Tests
+
+| Level | File | What it shows |
+|---|---|---|
+| Shared | `contracts/campaign-activation.test.ts` (5) | Deterministic facts: a ready campaign passes everything; the unbuilt services fail closed; 17 single problems each block exactly one check with the expected words; never ready unless a draft; the endpoint's shape |
+| Database | `campaign-activation.integration.test.ts` (5) | With the fixture tenants: every blocker of a new draft; a complete campaign blocked only by the workspace switch and the services; saving never starts; a stale version conflicts; refused while services are unbuilt; started once (`activated_at` from the clock, one audit record); repeated and still `ACTIVE`; paused can't be started; automatic approval needs `drafts.approve`; permissions |
+| API | `workspaces/campaign-activation.integration.test.ts` (3) | As in production: every reason in `409 campaign_not_ready`, twice alike, still a draft; CSRF, `404`, strict save; with the services built: `200` started, the same `200` again, stale `409`, one audit record, in the activity feed |
+| Web units | `lib/campaign-wizard.test.ts` | The wizard's stage keys are the ones checks link to |
+| Browser | `e2e/campaign-wizard.spec.ts` | Every check on the review screen with the API's reasons; "Not available yet" for services; Start disabled; the API refuses with the same reasons; a stale version conflicts; "Fix in Mailbox" |
+
+## 07A: Lead discovery requests and organization search (2026-11-05)
+
+**Basis.** The plan is still missing (O-01); this follows the 07A prompt ("LeadDiscoveryService
+and a provider interface for organization search, pagination, attribution, quotas and errors";
+"a deterministic fake provider"; "an asynchronous search request API returning run ID and
+status URL"; "do not begin contact enrichment here"). It reuses the 03A `imports` and
+`job_tasks` tables, the 04B permissions and job envelope, and the 05B endpoint list. No
+provider-specific detail is implemented: the only provider is the fake, and Apollo is 07B.
+
+### D-07A-01: ICP criteria and the search plan
+
+- **One vocabulary for ICP criteria:** `icpCriteriaSchema` (`packages/shared/src/contracts/lead-discovery.ts`).
+  - Company filters: `industries`, `countries` (ISO 3166-1 alpha-2, upper-cased), `employees`
+    (min/max), `keywords`, `technologies`, `annualRevenue` (min/max).
+  - People filters: `titles`, `seniorities`.
+  - Strict: an unknown key is refused by name ("Lead Fennec doesn't recognize the filter
+    "sector".").
+- **`planOrganizationSearch(criteria, maxResults, capabilities)`** is pure and decides,
+  before anything is stored or requested:
+  - the criteria are valid;
+  - at least one company filter is set;
+  - every company filter set is one the provider declares (`supportedFilters`), otherwise one
+    issue per filter ("Company search can't filter by technologies yet. Remove it from the
+    profile to search.");
+  - `maxResults` is between 1 and the lower of the platform cap (1000) and the provider's
+    `maxResultsPerSearch` (the fake's is 500), with the real number in the message.
+- **People filters are carried, not used:** they are listed as `ignoredCriteria` on the run.
+  Finding people is contact discovery (08A).
+- Issue paths: `icpId`, `maxResults`, `criteria` or `criteria.<filter>`.
+
+### D-07A-02: Company identity
+
+`normalizeCompanyIdentity({ name, domain?, website? })` (`@lead-fennec-ai/shared`, next to
+`normalizeEmail` and `normalizeDomain`):
+
+- **`name`:** Unicode NFC, trimmed, inner whitespace collapsed; at most 300 characters.
+- **`nameKey`:** compatibility-decomposed, accents removed, lower-case, `&` → `and`, other
+  punctuation → space, and trailing legal forms (`inc`, `llc`, `ltd`, `gmbh`, `sa`, …) removed
+  while more than one word remains.
+- **`domain`:** `normalizeDomain` of the domain, or else of the website's host; a value that
+  isn't a domain becomes `null` (never a guess).
+- **`key`:** `domain:<domain>`, or `name:<nameKey>` when there is no domain. It is the
+  identity used to drop duplicates within a run, and is meant for 07C's organization upserts.
+- An empty name, a name over 300 characters, or one with no letter or digit throws
+  `IdentityNormalizationError`.
+
+### D-07A-03: Provider interface, fake and LeadDiscoveryService
+
+- **`OrganizationSearchProvider`** (`packages/integrations/src/providers.ts`):
+  - `source` (`FAKE` or `APOLLO`) and `capabilities` (supported filters, page size, results
+    per search, attribution text);
+  - `searchOrganizations({ filters, pageSize, pageToken })` returns one page: companies,
+    an opaque `nextPageToken`, `totalAvailable`, `retrievedAt`, `quota` (remaining, reset)
+    and `creditsUsed`, each `null` when the provider doesn't say.
+  - Errors are `ProviderError` with a code (`unauthorized`, `forbidden`, `quota_exceeded`,
+    `rate_limited`, `invalid_request`, `unavailable`, `timeout`), `retryable` and
+    `retryAfterSeconds`. Messages are fixed sentences: a provider's own message or response
+    is never passed on.
+- **`FakeOrganizationSearchProvider`** (`fake-organization-search.ts`):
+  - a fixed directory of 240 synthetic companies on `.example` domains, each marked
+    `raw.synthetic = true`; the same every time, with no clock or randomness in the data;
+  - untidy records on purpose: upper-case `www.` domains, a website without a domain, neither,
+    a value that isn't a domain, two companies on one domain;
+  - pages by `p:<offset>` tokens; refuses a forged token, a page over 25 and an unsupported
+    filter (`invalid_request`);
+  - optional quota and scripted failures per call, for tests; it records each request.
+  - `createFakeProviders()` includes it. Live mode has no adapter yet (`LiveProvidersUnavailableError`).
+- **`LeadDiscoveryService`** (`lead-discovery.ts`) finds companies only:
+  - `plan()`: the plan above, or `DiscoveryPlanError`; nothing is requested for a search that
+    can't run;
+  - `pages(plan, resume?)`: pages until `maxResults` new companies are found or the provider
+    has no more; page size never above what is still needed; a hard page limit so a provider
+    that repeats itself still ends;
+  - every provider record is validated (zod) before use, then normalized (D-07A-02); invalid
+    records and repeats of an identity already found are counted, not returned;
+  - each company carries its provenance: provider, external id, `retrievedAt` and the
+    attribution;
+  - `resume` takes the page token, the identities and the count already found, so an
+    interrupted run continues without repeats (07C stores these between pages);
+  - provider errors end the iteration after the pages already returned; the caller records
+    them.
+
+### D-07A-04: Discovery requests are imports with a queued task
+
+- **Storage (one table per concept, D-03C-01):** a search is an `imports` row with
+  `source = ORGANIZATION_SEARCH` and new columns:
+  - `icp_id` (composite foreign key to the ICP, `NO ACTION`: an ICP with searches can't be
+    deleted), `search_provider`, `search_filters` (the planned filters, a snapshot of the ICP
+    when asked), `result_limit`, `query_sha256` (SHA-256 of the canonical provider, filters
+    and limit: the same search gives the same hash) and `source_metadata` (attribution,
+    ignored criteria and the provider's declared capabilities);
+  - `error_code` (machine-readable, never a provider's message), for 07C.
+  - Migrations `20261105000000_organization_search_imports` (generated) and
+    `20261105000100_organization_search_import_checks` (hand-written): the search columns are
+    set exactly for organization searches; provider `FAKE` or `APOLLO`; limit 1–1000; hash
+    format; JSON objects of at most 16 KB; error code format; and a trigger that makes the
+    source and every search input immutable. Status, counts and timestamps can change.
+  - `source_provider` gained `FAKE`, so results from the fake are never labelled as a real
+    source.
+- **`scope.discovery.request(input, provider)`** (`packages/database/src/tenancy/discovery.ts`):
+  1. `imports.create`, members only (workers and platform admins are refused);
+  2. the request schema (`{ icpId, maxResults? }`, strict; default 100);
+  3. in one transaction: the ICP by `(tenant_id, id)`. Missing or another workspace's:
+     "Not found in this workspace."; archived: "This ideal customer profile is archived.";
+  4. the plan against the provider's declared capabilities; any issue throws
+     `DiscoveryRequestError` and nothing is written;
+  5. the `imports` row (`PENDING`), a `job_tasks` row (`lead_discovery.search`, idempotency
+     key `import:<id>`, payload `{ importId }` only) and the audit record
+     `lead_discovery.requested` (ICP id, provider, limit; no criteria).
+- **`scope.discovery.get(id)`**: one import of the workspace (`imports.create`); a malformed
+  or unknown id, or another workspace's, is not found.
+- **No queue message yet.** No BullMQ producer or consumer exists; the task row is the durable
+  request, and publishing `{ v: 1, taskId }` and running the search are 07C's worker.
+- **The provider is never called while the API answers.** The request uses only its declared
+  capabilities. The API provides the fake in development and test (`ORGANIZATION_SEARCH`
+  token, `apps/api/src/workspaces/discovery-provider.ts`); staging and production ask for the
+  live adapter and refuse to start without one, as the mail provider does (O-19).
+
+### D-07A-05: API
+
+| Route | Permission | Answer |
+|---|---|---|
+| `POST /workspaces/:workspaceId/imports/discovery` | `imports.create` (Origin, session, CSRF) | `202 { runId, status: "PENDING", statusUrl }`; `400 validation_failed` with the request schema's issues ("The request is invalid.") or the plan's ("The search can't run as asked.") |
+| `GET /workspaces/:workspaceId/imports/:importId` | `imports.create` | `200` the run: source, status, search inputs and attribution, counts, error code, timestamps |
+
+- `statusUrl` is the API path of the run (`DISCOVERY_ROUTES.run`); the web app reaches it
+  through `/api`.
+- A workspace the caller isn't a member of, or a run of another workspace: `404`. A member
+  without `imports.create`: `403`.
+- Endpoint list: tag `imports`, cache resource `importRun`; the request invalidates
+  `importRun` and `activity`. The routes belong to the Imports section (`imports.create`).
+- Documented in `docs/api/discovery.md`.
+
+### D-07A-06: Tests
+
+| Level | File | What it shows |
+|---|---|---|
+| Shared | `contracts/lead-discovery.test.ts` (5) | The fixture ICP's plan (titles ignored); unknown criteria, unsupported filters and no company filter refused with their messages; limits; company identity normalization |
+| Integrations | `lead-discovery.test.ts` (8), `fakes.test.ts` | The fake directory is synthetic and identical every time; paging by token; forged tokens, page sizes and unsupported filters refused; quota and typed, sanitized errors; nothing requested for an invalid plan; matches with normalized identities and provenance, the same companies in the same order with a new provider; untidy data cleaned, duplicates and invalid records counted; stops at the limit; resumes after an interruption; errors after the pages already returned |
+| Database | `discovery.integration.test.ts` (5) | The fixture ICP becomes a `PENDING` import with filters, limit, hash and metadata, a task and an audit record; the same search gives the same hash; unsupported filters, limits, unknown keys and archived ICPs refused with nothing written; other workspaces' ICPs and runs not found; permissions for members, workers and platform admins; search inputs complete and immutable in the database |
+| Database | `tenant-access.integration.test.ts`, fixtures | Each fixture tenant has a queued search from its ICP; the new `imports → icps` relation (62 in all) is used in both tenants and refuses the other tenant's ICP |
+| API | `workspaces/discovery.integration.test.ts` (3) | `202` with run id and status URL; the status URL answers the run; one task, no companies or contacts written; refusals with a reason each; `404` for non-members and other workspaces' runs, `403` without `imports.create`, `401`, CSRF and origin checks |
+| API review | `http/route-guards.test.ts`, `http/api-contract.test.ts` | The two routes are reviewed, guarded and match the endpoint list |
+
 ## Open choices (need a decision from the user)
 
 | ID | Choice | Current state | Options |
@@ -2137,3 +2602,7 @@ Rules (`apps/web/lib/polling.ts`, unit-tested; applied by `useApiQuery`'s `poll`
 | O-26 | Data layer of 05B | The client cache reloads data when a screen mounts and after the listed mutations; it has no time-based expiry, holds at most 200 unwatched entries, and caches nothing for platform admins (D-05B-03). The OpenAPI document is OpenAPI 3.1.2 with a hand-set API version (0.5.0), checked by structural tests only. The demo page ships in production builds but answers 404 there (D-05B-05). The list routes take no search or filter parameters yet, so the search and filter controls are used only on the demo page. | Confirm the cache policy, or add expiry times per resource. Add an OpenAPI validator to CI, or move to 3.2. Exclude `app/dev` from production builds if wanted. Add search and filters to the API list routes when the lead pages are built. |
 | O-25 | Pages and permissions of the app shell | 05A derived the page list from its prompt, the data model and the permission catalog, not from the plan. Inbox, Analytics, Automations and Integrations reuse `campaigns.read`, `campaigns.write` and `settings.manage`; "Admin" is read as the platform-admin area (D-05A-02). Accessibility is checked with axe only, not with a screen reader. | Reconcile the pages, groups and permissions with the plan. New permission keys need a migration that grants them to existing roles. Test with a screen reader (NVDA or VoiceOver) before release. |
 | O-27 | Dashboard definitions and refresh (05C) | Metric definitions, the integration list and the polling intervals were chosen without the plan (D-05C-02 to D-05C-04). Activity names a member without a display name by email address. The 24-hour, 7-day and 30-day activity counts and the contact counts read all of a workspace's rows of those tables (no `(tenant_id, occurred_at)` index). The dashboard has nothing for platform admins. | Confirm or adjust the metrics, intervals and naming. Add an index or stored counters in a new migration when volumes grow. Decide whether the admin area needs its own dashboard. |
+| O-28 | Campaign configuration (06A) | The sections, their fields and bounds, the readiness rules and the approval modes were chosen without the plan (D-06A-01 to D-06A-05). The business profile is stored per campaign. Only DRAFT campaigns can be configured; there is no activation, pausing or deletion yet. `AUTOMATIC` approval is stored but unused, and blocked while the workspace requires approval (the default). | Confirm or adjust the fields, bounds and readiness. Decide whether the business profile belongs to the workspace, and when (if ever) automatic approval is allowed. Add activation, pausing, editing of running campaigns and deletion in later tasks. |
+| O-29 | Campaign wizard (06B) | The stage contents, wording and order of fields were written without the plan (D-06B-01). Leaving through the sidebar or breadcrumbs with unsaved changes doesn't ask (only closing or reloading the tab does). Approval mode can't be changed in the wizard. ICPs, lead lists, templates and mailboxes can't be created yet, so in a new workspace the pickers are empty. Checked with axe, not a screen reader. | Confirm the stages and copy against the plan. Decide whether in-app navigation should ask before leaving unsaved changes. Add the approval choice when automatic approval is allowed. Test with a screen reader. |
+| O-30 | Readiness rules (06C) | The 13 checks and their wording were chosen without the plan (D-06C-01). Leads come only from a lead list; each step needs a template; a campaign's new leads per day may not exceed its mailbox's daily limit; a workspace needs an entitled plan with email and sending turned on (off by default, and nobody can turn it on from the app yet). Activation is always refused in production until the eligibility, drafting and sending services exist (D-06C-02). Activation only changes the status; nothing is enrolled or scheduled yet. | Confirm the checks against the plan. Decide who turns on sending for a workspace (a platform-admin route?). Flip each service flag in the task that builds it. |
+| O-31 | Lead discovery (07A) | The ICP criteria vocabulary, the company identity rules, the limits (1000 per search, 100 by default) and the run fields were chosen without the plan (D-07A-01 to D-07A-04). Only the fake provider exists; staging and production refuse to start until a live adapter does (07B). Requests are stored with a job task, but no queue message is published and no worker runs them yet (07C), so runs stay PENDING. Company identity uses the domain when there is one, else the normalized name: two companies with the same name and no domain are treated as one. | Confirm the vocabulary, identity rules and limits against the plan. Build the Apollo adapter (07B, official docs first) and the worker, upserts and screens (07C). Decide whether a same-name company without a domain needs another tie-breaker (country, provider id). |

@@ -182,8 +182,8 @@ describe.runIf(testDatabaseUrl !== undefined)(
       });
 
       it('fixtures use every relation in both tenants (authorized: same tenant)', async () => {
-        // Every foreign key between two tenant tables (54 before 03C, 4 added by 03C, 3 by 04B).
-        expect(relations).toHaveLength(61);
+        // Every foreign key between two tenant tables (54 before 03C, 4 added by 03C, 3 by 04B, 1 by 07A).
+        expect(relations).toHaveLength(62);
         const unused: string[] = [];
         for (const fk of relations) {
           for (const [key, ids] of [

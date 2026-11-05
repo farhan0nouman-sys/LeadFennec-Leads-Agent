@@ -11,6 +11,8 @@ import type { MigratedSchema } from '@lead-fennec-ai/database/testing';
 import { FakeTransactionalMailProvider } from '@lead-fennec-ai/integrations';
 import {
   apiErrorResponseSchema,
+  BUILT_SERVICES,
+  type CampaignServices,
   AUTH_ROUTES,
   CSRF_HEADER_NAME,
   SESSION_COOKIE_NAME,
@@ -34,6 +36,7 @@ import {
 import { PRISMA_CLIENT } from '../database/database.module.js';
 import { apiEnvSchema } from '../env.js';
 import { TRANSACTIONAL_MAIL } from '../mail/mail.module.js';
+import { CAMPAIGN_SERVICES } from '../workspaces/campaign-services.js';
 
 export const WEB = 'https://app.lead-fennec.test';
 export const PASSWORD = 'correct horse battery staple';
@@ -83,6 +86,8 @@ export interface Harness {
 export async function startApi(
   db: MigratedSchema,
   policy: Partial<AuthPolicy> = {},
+  /** Later campaign services to treat as built (task 06C); none by default, as in production. */
+  services: CampaignServices = BUILT_SERVICES,
 ): Promise<Harness> {
   const env = apiEnvSchema.parse({
     APP_ENV: 'test',
@@ -106,6 +111,8 @@ export async function startApi(
     .useValue(mail)
     .overrideProvider(AUTH_CLOCK)
     .useValue(() => new Date(clock.now.getTime()))
+    .overrideProvider(CAMPAIGN_SERVICES)
+    .useValue(services)
     .overrideProvider(AUTH_POLICY)
     .useValue({
       ...DEFAULT_AUTH_POLICY,

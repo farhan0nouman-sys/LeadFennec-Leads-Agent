@@ -6,8 +6,10 @@ background worker in a pnpm/Turborepo monorepo, with PostgreSQL and Redis.
 > **Status:** early. Infrastructure, configuration, health checks, logging, the test setup,
 > the data model, the account API (registration, email verification, sign-in, sessions,
 > password reset), the workspace API (workspaces, invitations, roles, platform-admin
-> operations), their screens, the app shell, the shared UI components, the typed API client
-> and the workspace dashboard exist. The lead-generation pages are shells marked "Not available
+> operations), their screens, the app shell, the shared UI components, the typed API client,
+> the workspace dashboard, the campaign configuration API, the campaign setup wizard and the
+> campaign readiness checks exist. No campaign can start yet: the services it needs are marked
+> "Not available yet". The lead-generation pages are shells marked "Not available
 > yet". Build progress:
 > `docs/build-progress.md`.
 > Decisions and pinned versions: `docs/decisions.md`. Rules for contributors and coding
@@ -82,16 +84,18 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
 
 - **Unit tests:** `src/**/*.test.ts` next to the code, run with Vitest 5. The web app's are in
   `apps/web/lib/**/*.test.ts` (the client cache, address-bar parameters, the typed client, the
-  proxy, the polling rules and the dashboard formatting).
+  proxy, the polling rules, the dashboard formatting and the campaign wizard rules).
 - **API contract:** `apps/api/src/http/api-contract.test.ts` checks the registered routes
   against the endpoint list (guards, permission, status, the validation schemas), and a
   shared test fails when `docs/api/openapi.json` is out of date.
 - **API integration tests:** `apps/api/src/**/*.integration.test.ts` boot the real NestJS app on
   a loopback port and call it over HTTP.
   - The health tests replace the readiness checks with fakes, so they need no services.
-  - The auth, workspace and dashboard tests (`apps/api/src/auth/auth.integration.test.ts`,
+  - The auth, workspace, dashboard, campaign and discovery tests (`apps/api/src/auth/auth.integration.test.ts`,
     `apps/api/src/workspaces/workspaces.integration.test.ts`,
-    `apps/api/src/workspaces/dashboard.integration.test.ts`) need `TEST_DATABASE_URL` and are
+    `apps/api/src/workspaces/dashboard.integration.test.ts`,
+    `apps/api/src/workspaces/campaigns.integration.test.ts`,
+    `apps/api/src/workspaces/discovery.integration.test.ts`) need `TEST_DATABASE_URL` and are
     reported as skipped without it. They share a harness (`apps/api/src/testing`) and run one
     file at a time. They use their own migrated schema, the fake mail
     provider and a controllable clock, and run every account flow over HTTP. They check each
@@ -100,9 +104,10 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
 - **Database integration tests:** `packages/database/src/*.integration.test.ts` run against
   real PostgreSQL and Redis **only** when `TEST_DATABASE_URL` and `TEST_REDIS_URL` are set.
   Otherwise those suites are reported as _skipped_. CI always sets them.
-  - There are eight suites: core data; outreach and jobs; billing, usage, audit and
+  - There are eleven suites: core data; outreach and jobs; billing, usage, audit and
     notifications; authentication; workspaces, invitations and the worker context; dashboard
-    aggregates; catalog structure; and tenant access. Each creates its own schema in the
+    aggregates; campaign configuration; campaign activation; lead discovery requests; catalog
+    structure; and tenant access. Each creates its own schema in the
     `_test` database, applies every migration and drops the schema afterwards.
   - Together they check:
     - no drift between the migrations and `schema.prisma`;
@@ -128,7 +133,9 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
     `apps/web/e2e/data-client.spec.ts` (3 scenarios: the workspace-scoped cache, confirmations,
     an ended session) and `apps/web/e2e/dashboard.spec.ts` (5 scenarios: counts from the
     database, panels by role, bounded polling with Playwright's clock, error recovery, narrow
-    screens) also start the built API on `127.0.0.1:3101`. They need `E2E_DATABASE_URL` (a `*_test` database;
+    screens) and `apps/web/e2e/campaign-wizard.spec.ts` (7 scenarios, readiness checks included: saving and reopening a
+    half-done campaign, the page and the API refusing the same values, honest notices,
+    conflicts, read-only campaigns, narrow screens) also start the built API on `127.0.0.1:3101`. They need `E2E_DATABASE_URL` (a `*_test` database;
     migrations are applied first) and are reported as skipped without it. See
     `docs/local-development.md` → Browser tests.
 
@@ -188,6 +195,10 @@ The schema is `packages/database/prisma/schema.prisma` (Prisma 7). Migrations li
 - `20261101001100_user_audit_actor` was generated: the `USER` audit actor.
 - `20261101001200_user_audit_actor_checks` is hand-written: `USER` only in platform audit
   records; explicit actor lists in both audit tables.
+- `20261102000000_campaign_configuration` was generated: the campaign approval mode, version,
+  configuration sections (JSONB) and lead limits.
+- `20261102000100_campaign_configuration_checks` is hand-written: version, name, description
+  and lead-limit bounds, and the shape and size of the configuration sections.
 
 **Apply migrations:** `pnpm db:migrate` runs `prisma migrate deploy` against `DATABASE_URL`
 (read from the environment, or from the root `.env`). It only applies pending migrations and
@@ -230,7 +241,7 @@ reset data.
 
 - users, roles, permissions, memberships and settings;
 - an ICP, organizations, contacts and a lead list with members;
-- an import with source records;
+- an import with source records, and a queued organization search from the ICP (07A);
 - research, evidence, a score and a verification;
 - outreach in mid-flight:
   - a mailbox with a `fake://` secret reference, templates, and a campaign with a two-step
@@ -316,6 +327,26 @@ decisions: `docs/decisions.md` D-04B-*.
   `claimJob(prisma, defineWorker({ name, taskTypes }), message)`, which takes the workspace
   from the task row, never from the message.
 
+## Lead discovery
+
+A member with `imports.create` asks for an organization search from one of the workspace's
+ICPs (`POST /workspaces/:workspaceId/imports/discovery`) and gets `202` with a run id and a
+status URL. Contract: **[docs/api/discovery.md](docs/api/discovery.md)**; decisions:
+`docs/decisions.md` D-07A-*.
+
+- **Checked first:** the ICP's criteria (`icpCriteriaSchema`), at least one company filter,
+  only filters the provider supports, and the limit (at most 1000, and at most the provider's
+  own). A refused request stores nothing.
+- **Stored:** an `imports` row (`ORGANIZATION_SEARCH`) with the filters, limit, provider,
+  attribution and a query hash, all immutable, plus a queued job task and an audit record.
+- **Companies only:** people criteria (titles, seniorities) are kept for contact discovery;
+  nothing creates contacts. Running the search and saving companies are task 07C.
+- **Providers** sit behind `OrganizationSearchProvider` (`packages/integrations`).
+  `LeadDiscoveryService` pages through one, validates each record, normalizes company
+  identities (`normalizeCompanyIdentity`), drops duplicates and keeps each company's source.
+  Development and tests use `FakeOrganizationSearchProvider`: 240 synthetic companies, the
+  same results every time.
+
 ## Screens
 
 The web app has the account and team screens (`docs/decisions.md` D-04C-*): sign-in,
@@ -338,6 +369,12 @@ team page (members, roles, invitations) and the platform console (`/admin`).
   member's role opens its section. Activity and integration health refresh themselves while
   the page is visible, for at most 30 minutes (`apps/web/lib/polling.ts`). API:
   `docs/api/dashboard.md`.
+- **Campaigns** (D-06B-01 to 06): a list, and an eight-stage setup wizard (business profile, target
+  audience, offer, lead filters, mailbox, sequence, schedule, review). Each stage saves its part
+  of the draft, incomplete or not, with the same validation as the API. Connecting mailboxes
+  and writing emails are marked "Not available yet". The review stage lists every check that
+  must pass before the campaign can start (D-06C-01 to 05); starting uses its own endpoint, and the
+  checks for unbuilt services always block.
 
 - **API access:** the browser calls only the web app's `/api/*`, which forwards to
   `API_BASE_URL` with the session cookie (`apps/web/lib/api-proxy.ts`). Client code calls an

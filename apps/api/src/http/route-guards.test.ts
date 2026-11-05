@@ -64,6 +64,16 @@ describe('route guards (authorization review, task 04C)', () => {
         'GET /workspaces/:workspaceId/campaigns/summary',
         'GET /workspaces/:workspaceId/activity',
         'GET /workspaces/:workspaceId/integrations/health',
+        'GET /workspaces/:workspaceId/campaigns',
+        'GET /workspaces/:workspaceId/campaigns/options',
+        'POST /workspaces/:workspaceId/campaigns',
+        'GET /workspaces/:workspaceId/campaigns/:campaignId',
+        'PATCH /workspaces/:workspaceId/campaigns/:campaignId',
+        'POST /workspaces/:workspaceId/campaigns/:campaignId/duplicate',
+        'GET /workspaces/:workspaceId/campaigns/:campaignId/readiness',
+        'POST /workspaces/:workspaceId/campaigns/:campaignId/activate',
+        'POST /workspaces/:workspaceId/imports/discovery',
+        'GET /workspaces/:workspaceId/imports/:importId',
         'POST /invitations/preview',
         'POST /invitations/accept',
         'GET /platform/workspaces',
@@ -118,7 +128,11 @@ describe('route guards (authorization review, task 04C)', () => {
     }
     // Other record ids only ever appear under a workspace.
     for (const route of routes) {
-      if (/:(membershipId|invitationId|roleId)\b/.test(route.path)) {
+      if (
+        /:(membershipId|invitationId|roleId|campaignId|importId)\b/.test(
+          route.path,
+        )
+      ) {
         expect(workspaceRoutes, route.id).toContain(route);
       }
     }

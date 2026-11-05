@@ -157,18 +157,17 @@ test('an admin sees every section, grouped, with pages not built yet marked', as
   );
   await expectAccessible(page);
 
-  await nav.getByRole('link', { name: linkName('Campaigns') }).click();
-  await expect(page).toHaveURL(
-    `${WEB_URL}/workspaces/${workspaceId}/campaigns`,
-  );
+  // A page that isn't built yet (Imports; Campaigns is built since 06B).
+  await nav.getByRole('link', { name: linkName('Imports') }).click();
+  await expect(page).toHaveURL(`${WEB_URL}/workspaces/${workspaceId}/imports`);
   await expect(
-    page.getByRole('heading', { level: 1, name: 'Campaigns' }),
+    page.getByRole('heading', { level: 1, name: 'Imports' }),
   ).toBeVisible();
   await expect(
     page.getByText('Not available yet', { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole('button', { name: 'New campaign' }),
+    page.getByRole('button', { name: 'Import leads' }),
   ).toBeDisabled();
   await expect(
     page.getByRole('heading', { name: 'This page is not available yet' }),
@@ -177,12 +176,12 @@ test('an admin sees every section, grouped, with pages not built yet marked', as
     'href',
     `/workspaces/${workspaceId}`,
   );
-  await expect(crumbs.getByText('Campaigns')).toHaveAttribute(
+  await expect(crumbs.getByText('Imports')).toHaveAttribute(
     'aria-current',
     'page',
   );
   await expect(
-    nav.getByRole('link', { name: linkName('Campaigns') }),
+    nav.getByRole('link', { name: linkName('Imports') }),
   ).toHaveAttribute('aria-current', 'page');
   await expectAccessible(page);
 

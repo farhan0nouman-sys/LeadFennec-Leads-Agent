@@ -72,7 +72,7 @@ describe('section registry', () => {
       WORKSPACE_SECTIONS.filter((s) => s.status === 'available').map(
         (s) => s.key,
       ),
-    ).toEqual(['overview', 'team']);
+    ).toEqual(['overview', 'campaigns', 'team']);
     expect(ADMIN_SECTIONS.map((s) => s.key)).toContain('workspaces');
   });
 });
@@ -159,6 +159,21 @@ describe('paths and breadcrumbs', () => {
       { label: 'Workspaces', href: '/workspaces' },
       { label: 'Acme', href: `/workspaces/${W}` },
       { label: 'Campaigns' },
+    ]);
+    // A page below the section (task 06B): the section links back.
+    expect(workspaceBreadcrumbs(workspace, section('campaigns'), true)).toEqual(
+      [
+        { label: 'Workspaces', href: '/workspaces' },
+        { label: 'Acme', href: `/workspaces/${W}` },
+        { label: 'Campaigns', href: `/workspaces/${W}/campaigns` },
+        { label: 'Campaign setup' },
+      ],
+    );
+    // A section without detail pages ignores it.
+    expect(workspaceBreadcrumbs(workspace, section('team'), true)).toEqual([
+      { label: 'Workspaces', href: '/workspaces' },
+      { label: 'Acme', href: `/workspaces/${W}` },
+      { label: 'Team' },
     ]);
     expect(workspaceBreadcrumbs(workspace, section('overview'))).toEqual([
       { label: 'Workspaces', href: '/workspaces' },

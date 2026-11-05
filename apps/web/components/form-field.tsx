@@ -131,3 +131,62 @@ export function SubmitButton({
     </Button>
   );
 }
+
+/** A checkbox with its label after it (task 06B). */
+export function CheckboxField({
+  label,
+  hint,
+  ...input
+}: { readonly label: string; readonly hint?: string } & Omit<
+  ComponentProps<'input'>,
+  'id' | 'type'
+>) {
+  const field = useField(hint === undefined ? {} : { hint });
+  return (
+    <div className="grid gap-1">
+      <div className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          {...field.control}
+          {...input}
+          className="mt-0.5 size-4 shrink-0 accent-primary disabled:opacity-50"
+        />
+        <Label htmlFor={field.id} className="font-normal">
+          {label}
+        </Label>
+      </div>
+      <div className="pl-6">{field.after}</div>
+    </div>
+  );
+}
+
+/**
+ * Checkboxes or radio buttons under one legend (task 06B), with one hint and one error for the
+ * group. `data-invalid` marks it so a failed save can move focus to its first control.
+ */
+export function ChoiceGroup({
+  legend,
+  hint,
+  error,
+  children,
+  className,
+}: {
+  readonly legend: string;
+  readonly hint?: string;
+  readonly error?: string | undefined;
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
+  const field = useField({ error, ...(hint === undefined ? {} : { hint }) });
+  return (
+    <fieldset
+      aria-describedby={field.control['aria-describedby']}
+      data-invalid={error === undefined ? undefined : true}
+      className={className ?? 'grid gap-2'}
+    >
+      <legend className="mb-1 text-sm font-medium">{legend}</legend>
+      {children}
+      {field.after}
+    </fieldset>
+  );
+}

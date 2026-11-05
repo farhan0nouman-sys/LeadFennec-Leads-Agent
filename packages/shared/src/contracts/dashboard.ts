@@ -132,6 +132,10 @@ export const ACTIVITY_LABELS: Readonly<Record<string, string>> = {
   'limit_override.set': 'changed a plan limit',
   'subscription.synced': 'updated the subscription',
   'approval.decided': 'reviewed a draft',
+  'campaign.created': 'created a campaign',
+  'campaign.updated': 'changed a campaign',
+  'campaign.duplicated': 'duplicated a campaign',
+  'campaign.activated': 'started a campaign',
 };
 
 export function activityLabel(action: string): string {

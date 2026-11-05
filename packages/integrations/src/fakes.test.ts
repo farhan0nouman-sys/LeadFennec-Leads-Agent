@@ -150,6 +150,7 @@ describe('other fakes', () => {
       'leadData',
       'mail',
       'microsoftGraph',
+      'organizationSearch',
     ]);
     expect(createFakeProviders().gmail).not.toBe(providers.gmail);
   });

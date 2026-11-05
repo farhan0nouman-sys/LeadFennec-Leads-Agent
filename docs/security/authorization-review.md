@@ -30,7 +30,7 @@ each page's navigation permission to its API routes (`docs/decisions.md` D-05A-0
 | Platform admins | Only `/platform/*`, through `platformConsole` / `platformAdminScope`: re-checked on each request, a stated reason, audited, read-only (except status changes and limit overrides). |
 | Workers | `claimJob` takes the workspace from the task row, never from the message. |
 
-## Routes (28)
+## Routes (36)
 
 | Route | Guards | Repository check | Result |
 |---|---|---|---|
@@ -49,6 +49,13 @@ each page's navigation permission to its API routes (`docs/decisions.md` D-05A-0
 | `GET /workspaces/:workspaceId/campaigns/summary` | Throttler, Session, Workspace, Permission `campaigns.read` | `dashboard.campaignSummary`: `campaigns.read` | OK (05C) |
 | `GET /workspaces/:workspaceId/activity` | Throttler, Session, Workspace, Permission `audit.read` | `dashboard.activity` via `audit.list`: `audit.read`; names only from this workspace's memberships; no record ids or metadata | OK (05C) |
 | `GET /workspaces/:workspaceId/integrations/health` | Throttler, Session, Workspace, Permission `settings.manage` | `dashboard.integrationHealth`: `settings.manage` | OK (05C) |
+| `GET /workspaces/:workspaceId/campaigns`, `/campaigns/:campaignId` | Throttler, Session, Workspace, Permission `campaigns.read` | `campaigns.list`, `campaigns.get`: `campaigns.read`; id in the workspace | OK (06A) |
+| `GET /workspaces/:workspaceId/campaigns/:campaignId/readiness` | Throttler, Session, Workspace, Permission `campaigns.read` | `campaigns.readiness`: `campaigns.read`; every fact read inside the workspace | OK (06C) |
+| `POST /workspaces/:workspaceId/campaigns/:campaignId/activate` | Throttler, Origin, Session, CSRF, Workspace, Permission `campaigns.write` | `campaigns.activate`: `campaigns.write` (and `drafts.approve` for automatic approval); version check; every check passes; audited | OK (06C) |
+| `GET /workspaces/:workspaceId/campaigns/options` | Throttler, Session, Workspace, Permission `campaigns.read` | `campaigns.options`: `campaigns.read`; only this workspace's usable ICPs, lead lists, mailboxes and templates (names, mailbox addresses and statuses) | OK (06B) |
+| `POST /workspaces/:workspaceId/campaigns`, `PATCH …/campaigns/:campaignId`, `POST …/campaigns/:campaignId/duplicate` | Throttler, Origin, Session, CSRF, Workspace, Permission `campaigns.write` | `campaigns.create`, `update`, `duplicate`: `campaigns.write` (and `drafts.approve` for automatic approval); campaign and every referenced id in the workspace; version check | OK (06A) |
+| `POST /workspaces/:workspaceId/imports/discovery` | Throttler, Origin, Session, CSRF, Workspace, Permission `imports.create` | `discovery.request`: `imports.create` (members only); the ICP read by `(tenant_id, id)`, another workspace's is not found; the plan checked before anything is written; import, task and audit record in one transaction | OK (07A) |
+| `GET /workspaces/:workspaceId/imports/:importId` | Throttler, Session, Workspace, Permission `imports.create` | `discovery.get`: `imports.create`; id in the workspace (a malformed id is not found) | OK (07A) |
 | `POST /invitations/preview`, `POST /invitations/accept` | Throttler, Origin, Session, CSRF | Bound to the signed-in user's normalized email; accept also to the confirmed workspace id | OK: the workspace comes from the invitation, never from the request alone |
 | `GET /platform/workspaces` | Throttler, Session (Origin, CSRF pass on GET) | `platformConsole`: platform admin, reason, audited | OK |
 | `POST /platform/workspaces/:workspaceId/access`, `/status` | Throttler, Origin, Session, CSRF | `platformAdminScope` / `platformConsole.setTenantStatus`: platform admin, reason, audited | OK |
@@ -58,7 +65,7 @@ Every `/workspaces/:workspaceId/<resource>` route must belong to a section in
 that section's permission (route test, task 05A). Today: `members`, `roles` and `invitations`
 belong to Team (`members.read`). Since 05C: `leads` to Leads (`contacts.read`), `campaigns` to
 Campaigns (`campaigns.read`), `activity` to Audit log (`audit.read`) and `integrations` to
-Integrations (`settings.manage`). The dashboard shows a panel only when its section opens.
+Integrations (`settings.manage`). Since 07A: `imports` to Imports (`imports.create`). The dashboard shows a panel only when its section opens.
 
 Reads (`GET`) skip the per-IP request limit (`@SkipThrottle`); the guard is still attached.
 
@@ -80,6 +87,11 @@ requests.
 | `createWorkspace`, `listUserWorkspaces` | The session's user | OK |
 | `audit.record` | Any scope (append-only, application code) | OK |
 | `audit.list` | **Was any scope.** Now `audit.read` or a platform admin | **Fixed** |
+| `campaigns.list`, `get`, `options`, `readiness` | `campaigns.read`, or a platform admin's audited scope | OK (06A–06C) |
+| `campaigns.activate` | `campaigns.write` (members only); automatic approval also `drafts.approve` | OK (06C) |
+| `discovery.request` | `imports.create` (members only; workers and platform admins refused) | OK (07A) |
+| `discovery.get` | `imports.create`, or a platform admin's audited scope | OK (07A) |
+| `campaigns.create`, `update`, `duplicate` | `campaigns.write` (members only); `update` to automatic approval also `drafts.approve` and a workspace that allows it | OK (06A) |
 | `dashboard.leadSummary`, `campaignSummary`, `activity`, `integrationHealth` | The section's permission (`contacts.read`, `campaigns.read`, `audit.read`, `settings.manage`), or a platform admin's audited scope; workers refused | OK (05C) |
 | `billing.currentSubscription`, `billing.effectiveLimits` | **Were any scope.** Now `billing.read`, the system actor or a platform admin | **Fixed** |
 | `usage.summary` | **Was any scope.** Now as billing reads | **Fixed** |

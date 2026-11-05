@@ -33,6 +33,8 @@ export interface WorkspaceSection {
   readonly description: string;
   /** The main action, shown disabled while the page is unavailable. */
   readonly primaryAction?: string;
+  /** Breadcrumb of the pages below this one (e.g. one campaign), if it has any. */
+  readonly detailLabel?: string;
   /**
    * First path segments of this section's API routes below `/workspaces/:workspaceId/`. The
    * API's route test requires every GET route there to need `permission`.
@@ -108,10 +110,11 @@ export const WORKSPACE_SECTIONS = [
     group: 'outreach',
     path: 'campaigns',
     permission: 'campaigns.read',
-    status: 'unavailable',
+    status: 'available',
     description:
       'Email sequences for your lead lists, with drafts that can require approval before anything is sent.',
     primaryAction: 'New campaign',
+    detailLabel: 'Campaign setup',
     apiResources: ['campaigns', 'sequences'],
   },
   {
@@ -368,10 +371,14 @@ export interface Breadcrumb {
   readonly href?: string;
 }
 
-/** Workspaces › workspace name › section (the overview ends at the workspace name). */
+/**
+ * Workspaces › workspace name › section (the overview ends at the workspace name). On a page
+ * below the section (`detail`), the section links back and the section's detail label follows.
+ */
 export function workspaceBreadcrumbs(
   workspace: { readonly id: string; readonly name: string },
   section: WorkspaceSection | null,
+  detail = false,
 ): Breadcrumb[] {
   const crumbs: Breadcrumb[] = [{ label: 'Workspaces', href: '/workspaces' }];
   if (section === null || section.key === 'overview') {
@@ -382,6 +389,14 @@ export function workspaceBreadcrumbs(
     label: workspace.name,
     href: `/workspaces/${workspace.id}`,
   });
+  if (detail && section.detailLabel !== undefined) {
+    crumbs.push({
+      label: section.label,
+      href: workspaceSectionHref(workspace.id, section),
+    });
+    crumbs.push({ label: section.detailLabel });
+    return crumbs;
+  }
   crumbs.push({ label: section.label });
   return crumbs;
 }

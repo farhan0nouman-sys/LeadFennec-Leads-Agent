@@ -52,6 +52,20 @@ export const STATUS_LABELS = {
     ACTIVE: { label: 'Active', tone: 'success' },
     SUSPENDED: { label: 'Suspended', tone: 'warning' },
   },
+  campaign: {
+    DRAFT: { label: 'Draft', tone: 'neutral' },
+    ACTIVE: { label: 'Running', tone: 'success' },
+    PAUSED: { label: 'Paused', tone: 'warning' },
+    COMPLETED: { label: 'Completed', tone: 'info' },
+    CANCELLED: { label: 'Cancelled', tone: 'neutral' },
+  },
+  // A mailbox's stored status: only ACTIVE is a working connection (task 06B).
+  mailbox: {
+    ACTIVE: { label: 'Connected', tone: 'success' },
+    PAUSED: { label: 'Paused', tone: 'warning' },
+    PENDING: { label: 'Waiting for authorization', tone: 'info' },
+    ERROR: { label: 'Needs reconnecting', tone: 'danger' },
+  },
   integration: {
     not_connected: { label: 'Not connected', tone: 'neutral' },
     connecting: { label: 'Connecting', tone: 'info' },

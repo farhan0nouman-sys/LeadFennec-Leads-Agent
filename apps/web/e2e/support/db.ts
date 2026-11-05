@@ -214,6 +214,58 @@ export class E2eDatabase {
     );
   }
 
+  /**
+   * What a campaign may reference (task 06B), as later features will create it: an ideal
+   * customer profile, a lead list, a template and a mailbox still waiting for authorization.
+   * Fake data on example.com. Returns the ids.
+   */
+  async seedCampaignChoices(
+    workspaceId: string,
+    run: string,
+  ): Promise<{
+    icp: string;
+    leadList: string;
+    template: string;
+    mailbox: string;
+  }> {
+    const ids = {
+      icp: randomUUID(),
+      leadList: randomUUID(),
+      template: randomUUID(),
+      mailbox: randomUUID(),
+    };
+    await this.client.query(
+      `INSERT INTO icps (tenant_id, id, name, criteria, updated_at)
+       VALUES ($1, $2, 'Mid-market software', '{}', now())`,
+      [workspaceId, ids.icp],
+    );
+    await this.client.query(
+      `INSERT INTO lead_lists (tenant_id, id, name, updated_at)
+       VALUES ($1, $2, 'Autumn prospects', now())`,
+      [workspaceId, ids.leadList],
+    );
+    await this.client.query(
+      `INSERT INTO templates (tenant_id, id, name, subject, body, updated_at)
+       VALUES ($1, $2, 'First touch', 'Hello', 'Hello {{firstName}}', now())`,
+      [workspaceId, ids.template],
+    );
+    await this.client.query(
+      `INSERT INTO email_accounts (tenant_id, id, provider, email, normalized_email, status,
+                                   updated_at)
+       VALUES ($1, $2, 'GMAIL', $3, $3, 'PENDING', now())`,
+      [workspaceId, ids.mailbox, `sender.${run}@example.com`],
+    );
+    return ids;
+  }
+
+  /** Starts a campaign the way later tasks will (task 06B tests read-only campaigns). */
+  async markCampaignRunning(campaignId: string): Promise<void> {
+    await this.client.query(
+      `UPDATE campaigns SET status = 'ACTIVE', activated_at = now() WHERE id = $1`,
+      [campaignId],
+    );
+  }
+
   /** Lets the user's open sessions reach their idle timeout now (the next request gets 401). */
   async expireSessions(email: string): Promise<void> {
     const userId = await this.userId(email);

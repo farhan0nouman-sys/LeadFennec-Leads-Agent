@@ -143,7 +143,9 @@ filters, forms, dialogs and states on invented data. It calls no API and needs n
   scenarios (`apps/web/e2e/app-shell.spec.ts`, with axe accessibility checks) and the data
   client scenarios (`apps/web/e2e/data-client.spec.ts`) and the dashboard scenarios
   (`apps/web/e2e/dashboard.spec.ts`, which insert fake contacts and campaigns with
-  `E2eDatabase.seedDashboard` and drive polling with Playwright's clock) start the built API on port 3101 and
+  `E2eDatabase.seedDashboard` and drive polling with Playwright's clock) and the campaign
+  wizard scenarios (`apps/web/e2e/campaign-wizard.spec.ts`, with `E2eDatabase.seedCampaignChoices`)
+  start the built API on port 3101 and
   the web app on 3100, and need `E2E_DATABASE_URL`: a PostgreSQL URL
   whose database name ends in `_test`. Migrations are applied to it first
   (`prisma migrate deploy`), into its `public` schema. Without the variable the scenarios

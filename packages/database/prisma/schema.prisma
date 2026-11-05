@@ -426,6 +426,7 @@ model Icp {
 
   tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   leadLists LeadList[]
+  imports   Import[]
   research  Research[]
   scores    Score[]
   campaigns Campaign[]
@@ -564,6 +565,8 @@ model LeadListMember {
 enum ImportSource {
   CSV
   APOLLO
+  /// Companies found by an organization search for an ICP (task 07A).
+  ORGANIZATION_SEARCH
 
   @@map("import_source")
 }
@@ -579,28 +582,46 @@ enum ImportStatus {
 }
 
 model Import {
-  tenantId     String       @map("tenant_id") @db.Uuid
-  id           String       @default(uuid(7)) @db.Uuid
-  source       ImportSource
-  status       ImportStatus @default(PENDING)
-  fileName     String?      @map("file_name")
+  tenantId       String          @map("tenant_id") @db.Uuid
+  id             String          @default(uuid(7)) @db.Uuid
+  source         ImportSource
+  status         ImportStatus    @default(PENDING)
+  fileName       String?         @map("file_name")
   /// Lead list that receives the imported contacts.
-  leadListId   String?      @map("lead_list_id") @db.Uuid
-  totalRows    Int          @default(0) @map("total_rows")
-  importedRows Int          @default(0) @map("imported_rows")
-  skippedRows  Int          @default(0) @map("skipped_rows")
-  failedRows   Int          @default(0) @map("failed_rows")
-  startedAt    DateTime?    @map("started_at") @db.Timestamptz(3)
-  completedAt  DateTime?    @map("completed_at") @db.Timestamptz(3)
-  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  leadListId     String?         @map("lead_list_id") @db.Uuid
+  totalRows      Int             @default(0) @map("total_rows")
+  importedRows   Int             @default(0) @map("imported_rows")
+  skippedRows    Int             @default(0) @map("skipped_rows")
+  failedRows     Int             @default(0) @map("failed_rows")
+  startedAt      DateTime?       @map("started_at") @db.Timestamptz(3)
+  completedAt    DateTime?       @map("completed_at") @db.Timestamptz(3)
+  // Organization searches (task 07A); NULL for other imports (CHECK).
+  /// The ICP the search was made from.
+  icpId          String?         @map("icp_id") @db.Uuid
+  /// The provider that searches (FAKE in development and tests).
+  searchProvider SourceProvider? @map("search_provider")
+  /// The validated company filters, a snapshot of the ICP's criteria when asked.
+  searchFilters  Json?           @map("search_filters")
+  /// Most companies the search may return.
+  resultLimit    Int?            @map("result_limit")
+  /// SHA-256 of the canonical provider, filters and limit: the same search, the same hash.
+  querySha256    String?         @map("query_sha256") @db.Char(64)
+  /// What the provider declared when the search was asked for: attribution, capabilities.
+  sourceMetadata Json?           @map("source_metadata")
+  /// Machine-readable failure code (never a provider's message).
+  errorCode      String?         @map("error_code")
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   leadList      LeadList?      @relation(fields: [tenantId, leadListId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  /// An ICP cannot be deleted while searches made from it exist.
+  icp           Icp?           @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
   sourceRecords SourceRecord[]
 
   @@id([tenantId, id])
   @@index([tenantId, status])
+  @@index([tenantId, icpId])
   @@index([tenantId, createdAt(sort: Desc)])
   @@index([tenantId, leadListId])
   @@map("imports")
@@ -611,6 +632,8 @@ enum SourceProvider {
   CSV_IMPORT
   MANUAL
   WEBSITE
+  /// The deterministic fake of development and tests: synthetic data only (task 07A).
+  FAKE
 
   @@map("source_provider")
 }
@@ -914,33 +937,63 @@ enum CampaignStatus {
   @@map("campaign_status")
 }
 
+/// Who approves a campaign's drafts before they can be sent (task 06A).
+enum CampaignApprovalMode {
+  /// A member with drafts.approve approves every draft (the default).
+  HUMAN
+  /// Drafts that pass the application's checks need no member's approval. Allowed only where
+  /// the workspace doesn't require approval, and set only by a member with drafts.approve.
+  AUTOMATIC
+
+  @@map("campaign_approval_mode")
+}
+
 /// An outreach campaign: who is contacted (campaign leads), what is sent (sequences), from
-/// which mailbox, and when (a weekly send window in the campaign's IANA time zone).
+/// which mailbox, and when (a weekly send window in the campaign's IANA time zone). Its
+/// configuration is saved incrementally while it is a DRAFT (task 06A).
 model Campaign {
-  tenantId              String         @map("tenant_id") @db.Uuid
-  id                    String         @default(uuid(7)) @db.Uuid
+  tenantId              String               @map("tenant_id") @db.Uuid
+  id                    String               @default(uuid(7)) @db.Uuid
   name                  String
-  description           String?        @db.Text
-  status                CampaignStatus @default(DRAFT)
-  icpId                 String?        @map("icp_id") @db.Uuid
+  description           String?              @db.Text
+  status                CampaignStatus       @default(DRAFT)
+  /// Raised by every configuration save; a save names the version it started from, and a
+  /// stale one is refused (optimistic concurrency).
+  version               Int                  @default(1)
+  approvalMode          CampaignApprovalMode @default(HUMAN) @map("approval_mode")
+  /// Configuration sections, each validated by the application schema (shared campaigns
+  /// contract) before every write. Plain text, untrusted when rendered.
+  /// Who is sending: company name, website, description, value proposition.
+  businessProfile       Json?                @map("business_profile")
+  /// What is offered: name, description, call to action, proof points.
+  offer                 Json?
+  /// Narrows the audience beyond the ICP and lead list: countries, industries, titles, size.
+  audienceFilters       Json?                @map("audience_filters")
+  /// Domains, addresses and lead lists this campaign never contacts, on top of the workspace's
+  /// suppressions (which always apply).
+  exclusions            Json?
+  /// Most leads enrolled per day, and in total. NULL: not set yet (the draft is incomplete).
+  dailyNewLeadLimit     Int?                 @map("daily_new_lead_limit")
+  maxLeads              Int?                 @map("max_leads")
+  icpId                 String?              @map("icp_id") @db.Uuid
   /// Lead list the campaign's leads were selected from.
-  leadListId            String?        @map("lead_list_id") @db.Uuid
+  leadListId            String?              @map("lead_list_id") @db.Uuid
   /// Sending mailbox.
-  emailAccountId        String?        @map("email_account_id") @db.Uuid
+  emailAccountId        String?              @map("email_account_id") @db.Uuid
   /// IANA time zone of the send window (normalizeTimeZone), e.g. "America/New_York".
-  timezone              String         @default("UTC")
+  timezone              String               @default("UTC")
   /// ISO weekdays (1 = Monday … 7 = Sunday) on which messages may be sent.
-  sendWeekdays          Int[]          @default([1, 2, 3, 4, 5]) @map("send_weekdays")
+  sendWeekdays          Int[]                @default([1, 2, 3, 4, 5]) @map("send_weekdays")
   /// Daily send window in local minutes after midnight, [start, end). Default 09:00–17:00.
-  sendWindowStartMinute Int            @default(540) @map("send_window_start_minute")
-  sendWindowEndMinute   Int            @default(1020) @map("send_window_end_minute")
-  activatedAt           DateTime?      @map("activated_at") @db.Timestamptz(3)
+  sendWindowStartMinute Int                  @default(540) @map("send_window_start_minute")
+  sendWindowEndMinute   Int                  @default(1020) @map("send_window_end_minute")
+  activatedAt           DateTime?            @map("activated_at") @db.Timestamptz(3)
   /// Set while paused; cleared on resume.
-  pausedAt              DateTime?      @map("paused_at") @db.Timestamptz(3)
-  completedAt           DateTime?      @map("completed_at") @db.Timestamptz(3)
-  cancelledAt           DateTime?      @map("cancelled_at") @db.Timestamptz(3)
-  createdAt             DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt             DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  pausedAt              DateTime?            @map("paused_at") @db.Timestamptz(3)
+  completedAt           DateTime?            @map("completed_at") @db.Timestamptz(3)
+  cancelledAt           DateTime?            @map("cancelled_at") @db.Timestamptz(3)
+  createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   icp          Icp?           @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)

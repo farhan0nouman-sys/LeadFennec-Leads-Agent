@@ -215,6 +215,27 @@ if needed; next prompt ID.
   a made-up number. Live panels refresh with `useApiQuery(…, { poll })` and a policy from
   `apps/web/lib/polling.ts` (visible pages only, back-off, a stop after 30 minutes); never
   a bare `setInterval`.
+- **Campaigns** (`docs/decisions.md` D-06A-*): configure through `scope.campaigns`. Every save
+  names the version it started from (compare-and-set; `409 version_conflict` otherwise) and
+  changes DRAFT campaigns only. Check every referenced id against the workspace before
+  writing, even for an incomplete draft, and answer "Not found in this workspace." for
+  another workspace's record. New campaigns and copies start as DRAFT with HUMAN approval;
+  a copy never takes leads, drafts, approvals, sends or schedules.
+- **Campaign activation** (`docs/decisions.md` D-06C-*): a campaign starts only through
+  `scope.campaigns.activate` (version check, then every check of `evaluateActivation`). Add a
+  rule there, never in the page. A service that isn't built stays `false` in `BUILT_SERVICES`
+  and blocks with a reason; flip it only in the task that builds it.
+- **Lead discovery** (`docs/decisions.md` D-07A-*): an organization search is an `imports` row
+  (`ORGANIZATION_SEARCH`) created only through `scope.discovery.request`, which checks the ICP
+  with `planOrganizationSearch` against the provider's declared capabilities before writing
+  anything. Its inputs are immutable. Searches find companies only; people and contacts are
+  separate steps. Company identity comes only from `normalizeCompanyIdentity`. Providers sit
+  behind `OrganizationSearchProvider`; development and tests use the fake.
+- **Campaign wizard** (`docs/decisions.md` D-06B-*): a stage turns its form into the sections
+  of a save and checks them with `updateCampaignRequestSchema` (`apps/web/lib/campaign-wizard.ts`);
+  map every issue path, the page's or the API's, to a field of the stage, and never write a
+  second set of rules or messages in the page. Mark what isn't built ("Not available yet");
+  never show a connection, a send or a start that didn't happen.
 - **Screens** use the shared components (`docs/decisions.md` D-05B-04): `DataTable` with
   `CursorPagination`, `ListFilters` with `useListParams` (address-bar state, validated),
   `StatusLabel`, the form fields with `useFormSubmit`, `ConfirmButton` before anything

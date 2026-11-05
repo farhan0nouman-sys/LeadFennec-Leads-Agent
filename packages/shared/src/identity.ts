@@ -104,3 +104,99 @@ export function normalizeEmail(input: string): NormalizedEmail {
   const domain = keepsWww ? `www.${normalized}` : normalized;
   return { email: `${local}@${domain}`, domain };
 }
+
+/** Legal-form words dropped from the end of a company name key ("Acme Inc." ~ "ACME"). */
+const LEGAL_FORMS = new Set([
+  'inc',
+  'incorporated',
+  'llc',
+  'llp',
+  'ltd',
+  'limited',
+  'corp',
+  'corporation',
+  'co',
+  'company',
+  'plc',
+  'gmbh',
+  'ag',
+  'kg',
+  'sa',
+  'sas',
+  'sarl',
+  'srl',
+  'spa',
+  'bv',
+  'nv',
+  'ab',
+  'as',
+  'oy',
+  'pty',
+  'pte',
+  'kk',
+]);
+
+export interface CompanyIdentity {
+  /** The name as shown: trimmed, inner whitespace collapsed. */
+  readonly name: string;
+  /** Lower-case ASCII words without punctuation or a trailing legal form. */
+  readonly nameKey: string;
+  /** From the domain or website (normalizeDomain); null when missing or invalid. */
+  readonly domain: string | null;
+  /** The identity of the company: its domain when known, else its name key. */
+  readonly key: string;
+}
+
+/**
+ * Normalizes a company's identity (task 07A). The domain is the strong key; a company without a
+ * usable domain is identified by its name key, which ignores case, accents, punctuation and a
+ * trailing legal form ("Müller GmbH" and "MULLER" match). Inputs are untrusted provider or
+ * import data: an invalid domain is dropped, not an error; an empty name is an error.
+ */
+export function normalizeCompanyIdentity(input: {
+  readonly name: string;
+  readonly domain?: string | null;
+  readonly website?: string | null;
+}): CompanyIdentity {
+  const name = input.name.normalize('NFC').trim().replace(/\s+/g, ' ');
+  if (name === '') {
+    throw new IdentityNormalizationError('Company name is empty.');
+  }
+  if (name.length > 300) {
+    throw new IdentityNormalizationError('Company name is too long.');
+  }
+  const words = name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter((word) => word !== '');
+  while (words.length > 1 && LEGAL_FORMS.has(words.at(-1) ?? '')) {
+    words.pop();
+  }
+  const nameKey = words.join(' ');
+  if (nameKey === '') {
+    throw new IdentityNormalizationError(
+      'Company name has no letters or digits.',
+    );
+  }
+  let domain: string | null = null;
+  for (const candidate of [input.domain, input.website]) {
+    if (domain === null && candidate !== null && candidate !== undefined) {
+      try {
+        domain = normalizeDomain(candidate);
+      } catch {
+        domain = null;
+      }
+    }
+  }
+  return {
+    name,
+    nameKey,
+    domain,
+    key: domain === null ? `name:${nameKey}` : `domain:${domain}`,
+  };
+}

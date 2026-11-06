@@ -89,3 +89,11 @@ export const HEALTH_POLL: PollPolicy = Object.freeze({
   maxFailures: 3,
   maxBackoffMs: 10 * 60_000,
 });
+
+/** A running import or search (task 07C): every 5 seconds, for at most 30 minutes. */
+export const IMPORT_RUN_POLL: PollPolicy = Object.freeze({
+  intervalMs: 5_000,
+  maxPolls: 360,
+  maxFailures: 3,
+  maxBackoffMs: 60_000,
+});

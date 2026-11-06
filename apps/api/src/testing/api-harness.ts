@@ -21,6 +21,7 @@ import {
 } from '@lead-fennec-ai/shared';
 import { createLogger } from '@lead-fennec-ai/shared/logger';
 import type { INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { parseSetCookie } from 'cookie';
 import { Logger } from 'nestjs-pino';
@@ -35,6 +36,7 @@ import {
 } from '../auth/auth.policy.js';
 import { PRISMA_CLIENT } from '../database/database.module.js';
 import { apiEnvSchema } from '../env.js';
+import { configureApp } from '../http/configure-app.js';
 import { TRANSACTIONAL_MAIL } from '../mail/mail.module.js';
 import { CAMPAIGN_SERVICES } from '../workspaces/campaign-services.js';
 
@@ -120,7 +122,10 @@ export async function startApi(
       ...policy,
     })
     .compile();
-  const app = moduleRef.createNestApplication({ bufferLogs: true });
+  const app = moduleRef.createNestApplication<NestExpressApplication>({
+    bufferLogs: true,
+  });
+  configureApp(app);
   app.useLogger(app.get(Logger));
   await app.listen(0, '127.0.0.1');
   const baseUrl = (await app.getUrl()).replace('[::1]', '127.0.0.1');

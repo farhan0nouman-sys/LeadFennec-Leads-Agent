@@ -274,9 +274,26 @@ export const importRunSchema = z
       })
       .strict()
       .nullable(),
+    /** CSV imports only: the file's name as uploaded (untrusted text). */
+    fileName: z.string().nullable(),
+    /**
+     * found: records received (rows, or companies the provider returned); saved: kept in the
+     * workspace, of which created are new; excluded: on the suppression list; failed: not
+     * usable; repeated: the same company again within the run (found minus the others).
+     */
     counts: z
-      .object({ found: count, saved: count, skipped: count, failed: count })
+      .object({
+        found: count,
+        saved: count,
+        created: count,
+        excluded: count,
+        failed: count,
+        repeated: count,
+      })
       .strict(),
+    /** Pages fetched from the provider so far (searches). */
+    pagesFetched: count,
+    /** Machine-readable: why it failed, or the last error of a run being retried. */
     errorCode: z.string().nullable(),
     createdAt: iso,
     startedAt: iso.nullable(),

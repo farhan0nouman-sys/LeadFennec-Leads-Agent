@@ -13,7 +13,10 @@
   },
   "dependencies": {
     "@lead-fennec-ai/database": "workspace:*",
+    "@lead-fennec-ai/integrations": "workspace:*",
     "@lead-fennec-ai/shared": "workspace:*",
+    "bullmq": "catalog:",
+    "ioredis": "catalog:",
     "pino": "catalog:",
     "pino-http": "catalog:",
     "zod": "catalog:"

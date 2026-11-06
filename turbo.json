@@ -23,7 +23,11 @@
       "env": ["TEST_DATABASE_URL", "TEST_REDIS_URL"]
     },
     "test:e2e": {
-      "dependsOn": ["build", "@lead-fennec-ai/api#build"],
+      "dependsOn": [
+        "build",
+        "@lead-fennec-ai/api#build",
+        "@lead-fennec-ai/worker#build"
+      ],
       "cache": false,
       "passThroughEnv": ["CI", "PLAYWRIGHT_BROWSERS_PATH", "E2E_DATABASE_URL"]
     },
@@ -42,7 +46,8 @@
         "TRUST_PROXY_HOPS",
         "REDIS_URL",
         "WORKER_HEALTH_PORT",
-        "HEALTH_CHECK_TIMEOUT_MS"
+        "HEALTH_CHECK_TIMEOUT_MS",
+        "APOLLO_API_KEY"
       ]
     }
   }

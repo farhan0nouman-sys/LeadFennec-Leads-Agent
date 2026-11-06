@@ -56,6 +56,10 @@ each page's navigation permission to its API routes (`docs/decisions.md` D-05A-0
 | `POST /workspaces/:workspaceId/campaigns`, `PATCH …/campaigns/:campaignId`, `POST …/campaigns/:campaignId/duplicate` | Throttler, Origin, Session, CSRF, Workspace, Permission `campaigns.write` | `campaigns.create`, `update`, `duplicate`: `campaigns.write` (and `drafts.approve` for automatic approval); campaign and every referenced id in the workspace; version check | OK (06A) |
 | `POST /workspaces/:workspaceId/imports/discovery` | Throttler, Origin, Session, CSRF, Workspace, Permission `imports.create` | `discovery.request`: `imports.create` (members only); the ICP read by `(tenant_id, id)`, another workspace's is not found; the plan checked before anything is written; import, task and audit record in one transaction | OK (07A) |
 | `GET /workspaces/:workspaceId/imports/:importId` | Throttler, Session, Workspace, Permission `imports.create` | `discovery.get`: `imports.create`; id in the workspace (a malformed id is not found) | OK (07A) |
+| `POST /workspaces/:workspaceId/imports/csv` | Throttler, Origin, Session, CSRF, Workspace, Permission `imports.create` | `imports.csv` → `discovery.importCsv`: `imports.create` (members only); file parsed and mapped again on the server; companies saved in the workspace only (suppression checked); import, records and audit in one transaction | OK (07C) |
+| `GET /workspaces/:workspaceId/imports`, `/imports/options` | Throttler, Session, Workspace, Permission `imports.create` | `discovery.list`, `options`: `imports.create`; the workspace's runs and usable ICPs (names) only | OK (07C) |
+| `GET /workspaces/:workspaceId/imports/:importId/results` | Throttler, Session, Workspace, Permission `imports.create` | `discovery.results`: `imports.create`; the run read by `(tenant_id, id)`, its records filtered by the tenant | OK (07C) |
+| `POST /workspaces/:workspaceId/imports/:importId/cancel` | Throttler, Origin, Session, CSRF, Workspace, Permission `imports.create` | `discovery.cancel`: `imports.create` (members only); the run locked and read in the workspace; audited | OK (07C) |
 | `POST /invitations/preview`, `POST /invitations/accept` | Throttler, Origin, Session, CSRF | Bound to the signed-in user's normalized email; accept also to the confirmed workspace id | OK: the workspace comes from the invitation, never from the request alone |
 | `GET /platform/workspaces` | Throttler, Session (Origin, CSRF pass on GET) | `platformConsole`: platform admin, reason, audited | OK |
 | `POST /platform/workspaces/:workspaceId/access`, `/status` | Throttler, Origin, Session, CSRF | `platformAdminScope` / `platformConsole.setTenantStatus`: platform admin, reason, audited | OK |
@@ -91,6 +95,10 @@ requests.
 | `campaigns.activate` | `campaigns.write` (members only); automatic approval also `drafts.approve` | OK (06C) |
 | `discovery.request` | `imports.create` (members only; workers and platform admins refused) | OK (07A) |
 | `discovery.get` | `imports.create`, or a platform admin's audited scope | OK (07A) |
+| `discovery.list`, `results`, `options` | `imports.create`, or a platform admin's audited scope | OK (07C) |
+| `discovery.importCsv`, `cancel` | `imports.create` (members only; workers and platform admins refused) | OK (07C) |
+| `discovery.beginSearch`, `saveSearchPage`, `finishSearch`, `failSearch` | The system actor only (the search worker, through `claimJob`); members and platform admins refused | OK (07C) |
+| `dueJobTasks` (relay) | Lists active workspaces, then each one's due tasks through its own scoped client; returns task ids only | OK (07C) |
 | `campaigns.create`, `update`, `duplicate` | `campaigns.write` (members only); `update` to automatic approval also `drafts.approve` and a workspace that allows it | OK (06A) |
 | `dashboard.leadSummary`, `campaignSummary`, `activity`, `integrationHealth` | The section's permission (`contacts.read`, `campaigns.read`, `audit.read`, `settings.manage`), or a platform admin's audited scope; workers refused | OK (05C) |
 | `billing.currentSubscription`, `billing.effectiveLimits` | **Were any scope.** Now `billing.read`, the system actor or a platform admin | **Fixed** |

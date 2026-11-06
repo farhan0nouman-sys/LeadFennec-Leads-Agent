@@ -1,0 +1,8 @@
+{
+  "message": "Synthetic: platform-wide load.",
+  "error_details": {
+    "code": "USAGE.RATE_LIMIT.PLATFORM_RATE_LIMIT",
+    "message": "Synthetic: Apollo is under heavy load.",
+    "suggestions": [{ "label": "Retry later.", "retry_after_seconds": 60 }]
+  }
+}

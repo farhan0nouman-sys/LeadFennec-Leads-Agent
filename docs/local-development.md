@@ -108,7 +108,7 @@ schemas are in `apps/api/src/env.ts`, `apps/worker/src/env.ts` and `apps/web/env
 | `REDIS_PASSWORD` | compose | none (required) | |
 | `REDIS_PORT` | compose | `6379` | Host port |
 | `DATABASE_URL` | api, worker | none (required) | `postgres://` or `postgresql://` URL |
-| `REDIS_URL` | api, worker | none (required) | `redis://` or `rediss://` URL |
+| `REDIS_URL` | api, worker | none (required) | `redis://` or `rediss://` URL. The worker's job queue (BullMQ, task 07C) uses it; the API only checks it is reachable. |
 | `TRUST_PROXY_HOPS` | api | `0` | Integer 0–5: proxies in front of the API whose `X-Forwarded-For` entry is trusted (Express `trust proxy`). Per-address rate limits use the resulting client address. `1` when the browser goes through the web app's `/api` proxy (local development, browser tests). In a deployment, count the load balancer too, and make it overwrite `X-Forwarded-For` (O-24). |
 | `DATABASE_POOL_MAX` | api | `10` | Integer 1–100: the most PostgreSQL connections the API opens. The browser tests set `1` (PGlite serves one session). |
 | `API_PORT` | api | `3001` | Integer 1–65535 |
@@ -117,6 +117,7 @@ schemas are in `apps/api/src/env.ts`, `apps/worker/src/env.ts` and `apps/web/env
 | `LOG_LEVEL` | api, worker | `info` | `fatal` \| `error` \| `warn` \| `info` \| `debug` \| `trace` \| `silent` |
 | `API_BASE_URL` | web | none (required) | `http://` or `https://` URL. Server-side only. |
 | `WEB_APP_URL` | api | `http://localhost:3000` in development and test; required elsewhere | Origin of the web app, no path. `https://` outside development and test. Emailed account links point here, and the API refuses state-changing requests from any other origin. |
+| `APOLLO_API_KEY` | worker | none | Staging and production only: an Apollo API key scoped to `api/v1/mixed_companies/search` (organization search, task 07B). 8–200 printable characters, no spaces; empty counts as unset. Development and tests always use the fake provider, so leave it unset locally. Redacted from logs. |
 
 Turborepo runs in strict environment mode: the `dev` task only passes the variables listed in
 `turbo.json` (`passThroughEnv`). When an app gains a variable, add it there too.

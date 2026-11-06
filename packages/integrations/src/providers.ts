@@ -46,7 +46,11 @@ export interface OrganizationSearchProvider {
 export interface OrganizationSearchRequest {
   /** Only filters the provider declared it supports. */
   readonly filters: OrganizationSearchFilters;
-  /** At most capabilities.maxPageSize. */
+  /**
+   * At most capabilities.maxPageSize. A provider that pages by number keeps the first page's
+   * size for later pages (its token says so), so it may return more than asked: the caller
+   * takes what it needs.
+   */
   readonly pageSize: number;
   /** Null for the first page, else the previous page's nextPageToken (opaque). */
   readonly pageToken: string | null;
@@ -97,6 +101,8 @@ export const PROVIDER_ERROR_CODES = [
   'invalid_request',
   'unavailable',
   'timeout',
+  /** The answer was not in the documented shape (task 07B); not retried. */
+  'bad_response',
 ] as const;
 
 export type ProviderErrorCode = (typeof PROVIDER_ERROR_CODES)[number];
@@ -109,6 +115,7 @@ const PROVIDER_ERROR_TEXT: Readonly<Record<ProviderErrorCode, string>> = {
   invalid_request: 'The provider refused the request.',
   unavailable: 'The provider is not reachable.',
   timeout: 'The provider did not answer in time.',
+  bad_response: "The provider's answer could not be read.",
 };
 
 /** Retrying later can help; the others need a person (credentials, plan, request). */

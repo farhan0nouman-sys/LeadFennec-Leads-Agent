@@ -98,10 +98,11 @@ export const WORKSPACE_SECTIONS = [
     group: 'prospecting',
     path: 'imports',
     permission: 'imports.create',
-    status: 'unavailable',
+    status: 'available',
     description:
-      'Bring in companies and contacts from a file or a connected source.',
-    primaryAction: 'Import leads',
+      'Find companies for an ideal customer profile, or import them from a CSV file.',
+    primaryAction: 'Find companies',
+    detailLabel: 'Import results',
     apiResources: ['imports'],
   },
   {

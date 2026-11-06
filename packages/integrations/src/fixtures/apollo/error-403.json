@@ -1,0 +1,4 @@
+{
+  "error": "This endpoint is only available to Apollo users on paid plans.",
+  "error_code": "API_INACCESSIBLE"
+}

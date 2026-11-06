@@ -101,7 +101,8 @@ describe.runIf(testDatabaseUrl !== undefined)(
           });
         }
         expect(await prisma.billingPlan.count()).toBe(3);
-        expect(await prisma.planLimit.count()).toBe(12);
+        // Three plans, five metrics each (ORGANIZATION_SEARCH_CREDITS since 07C).
+        expect(await prisma.planLimit.count()).toBe(15);
       });
 
       it('is idempotent', async () => {

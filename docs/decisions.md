@@ -2571,6 +2571,334 @@ provider-specific detail is implemented: the only provider is the fake, and Apol
 | API | `workspaces/discovery.integration.test.ts` (3) | `202` with run id and status URL; the status URL answers the run; one task, no companies or contacts written; refusals with a reason each; `404` for non-members and other workspaces' runs, `403` without `imports.create`, `401`, CSRF and origin checks |
 | API review | `http/route-guards.test.ts`, `http/api-contract.test.ts` | The two routes are reviewed, guarded and match the endpoint list |
 
+## 07B: Apollo organization search adapter (2026-11-06)
+
+**Basis.** The plan is still missing (O-01); this follows the 07B prompt ("check current
+official Apollo documentation and the authorized account's capabilities"; "only permitted
+organization search with explicit field mapping, pagination, rate limits, bounded retries and
+cost/credit metadata"; "people search and enrichment separate"; "environment-injected
+credentials and sanitized provider errors"; "captured or synthetic contract fixtures"). It
+implements the 07A `OrganizationSearchProvider` interface; nothing else changes shape.
+
+### D-07B-01: Sources, version and account check
+
+**Official documentation, checked 2026-11-06:**
+
+| Page | What it settled |
+|---|---|
+| https://docs.apollo.io/reference/organization-search (updated 2026-09-29; OpenAPI `info.version` 1.0; API `/api/v1`) | The endpoint, its query parameters, page and display limits, credit cost, the response's documented fields, 401/403/429 answers |
+| https://docs.apollo.io/reference/authentication | The key goes in the `x-api-key` header |
+| https://docs.apollo.io/docs/create-api-key | Scoped keys (only the chosen endpoints; others answer 403) and master keys; scoped keys recommended |
+| https://docs.apollo.io/reference/rate-limits | Per-team, per-endpoint windows (minute, hour, day); the `x-*-requests-left` and `retry-after` headers; `API_RATE_LIMIT_EXCEEDED` and `PLATFORM_RATE_LIMIT` |
+| https://docs.apollo.io/reference/status-codes | Status codes and the `error_details` shape (`code`, `message`, `suggestions`, `context`); legacy root fields removed on 2027-02-16 |
+| https://docs.apollo.io/reference/view-api-usage-stats | Usage stats per endpoint and window, 0 credits (not called by the adapter) |
+
+No SDK: Apollo documents a REST API, called with the runtime's `fetch`. No package was added.
+
+**Account check (the user approved read-only lookups through the Apollo connector,
+2026-11-06):**
+- **Credits:** the team's lead credits for the cycle ending 2026-11-08 were 147 left of 200.
+  Personal details from the profile are not recorded.
+- **Not known:**
+  - which Apollo plan the account is on;
+  - whether a REST API key with organization search access exists (the docs say the endpoint
+    answers 403 to plans without API access, and a scoped key must include it).
+- **Not done:** no search was run (each page costs 1 credit), and no key was created or seen.
+  The connector's answers are not the REST API's, so they say nothing about rate-limit headers
+  (the docs note MCP responses don't carry them).
+
+### D-07B-02: Explicit field mapping
+
+**Request.** `POST https://api.apollo.io/api/v1/mixed_companies/search`. Every parameter is a
+query parameter (the documented operation has no body).
+
+| ICP company filter | Apollo parameter | Value sent |
+|---|---|---|
+| `industries` | `organization_industries[]` | Lower-cased. Apollo matches exact industry names only (for example "information technology & services"), so a profile must use Apollo's names. |
+| `countries` | `organization_locations[]` | The English country name, lower-cased (`DE` → "germany"). ISO user-assigned codes and EU/UN groupings are refused before any request. |
+| `employees` | `organization_num_employees_ranges[]` | `min,max`; a missing bound becomes 1 or 10,000,000 (the ICP schema's own cap) |
+| `keywords` | `q_organization_keyword_tags[]` | As written |
+| `technologies` | `currently_using_any_of_technology_uids[]` | Lower-cased; spaces and periods become underscores, as documented (`google_analytics`, `wordpress_org`) |
+| `annualRevenue` | `revenue_range[min]`, `revenue_range[max]` | Whole US dollars; only the bounds set |
+| (paging) | `page`, `per_page` | See D-07B-03 |
+
+People criteria (titles, seniorities) are never sent; they stay `ignoredCriteria` (D-07A-01).
+
+**Response.** Only `pagination` (`page`, `per_page`, `total_entries`, `total_pages`) and
+`organizations` are read:
+
+| Apollo field | ProviderOrganization |
+|---|---|
+| `id` | `externalId` |
+| `name` | `name` |
+| `primary_domain` | `domain` |
+| `website_url` | `websiteUrl` |
+| (not documented) | `industry`, `employeeCount`, `countryCode`: always `null` |
+
+- **Not guessed:** the documented response has no industry, employee count or country, so
+  those stay empty rather than read from undocumented keys.
+- **`raw`** keeps only the four fields above; phone numbers, social links, logos and the rest
+  are dropped.
+- **No email data:** the adapter reads no person or email field.
+- **`accounts`** (companies the team already saved in Apollo, undocumented beyond its name) is
+  ignored (O-32).
+- **Checked here:** the response's shape; a record that isn't usable still reaches
+  LeadDiscoveryService, which validates and counts it (D-07A-03).
+
+### D-07B-03: Pagination, cost and quota
+
+- **Page size:** 1–100 (documented maximum). The first page uses the size asked for. Its token
+  (`apollo:v1:<page>:<per_page>`, opaque to callers) keeps that size, so later pages stay
+  aligned with Apollo's page numbers even when the caller asks for fewer; the caller takes
+  what it needs.
+- **Limits:** no token past page 500 or 50,000 records (both documented); a forged or
+  out-of-range token is refused before any request. The declared `maxResultsPerSearch` is
+  50,000; Lead Fennec's own cap stays 1,000 per search (D-07A-01).
+- **Cost:** `creditsUsed` is 1 per page, as documented ("1 Apollo credit per page"). Apollo
+  documents no per-response credit count, so this is the documented rate, not a measured one.
+- **Quota:** `remaining` is the smallest of `x-minute-requests-left`, `x-hourly-requests-left`
+  and `x-24-hour-requests-left`. `resetAt` is null: the windows open with the first request
+  and aren't aligned to the clock.
+
+### D-07B-04: Errors, retries and timeouts
+
+| Apollo answer | ProviderError | Retried |
+|---|---|---|
+| 401 | `unauthorized` | No |
+| 403 (plan without API access, or a key not scoped to the endpoint) | `forbidden` | No |
+| 429 `API_RATE_LIMIT_EXCEEDED`, window `minute` or `hour` | `rate_limited`, `retryAfterSeconds` from `retry-after` | Yes |
+| 429 `API_RATE_LIMIT_EXCEEDED`, window `day` | `quota_exceeded`, `retryAfterSeconds` from `retry-after` | No |
+| 429 `PLATFORM_RATE_LIMIT` | `rate_limited`, `retry_after_seconds` from the suggestion (60 when absent, as documented) | Yes |
+| 5xx | `unavailable` | Yes |
+| Other 4xx (422 validation, 404) | `invalid_request` | No |
+| Network failure | `unavailable` | Yes |
+| No answer within the timeout (15 s per attempt, reading included) | `timeout` | Yes |
+| 200 that isn't the documented JSON | `bad_response` (new code) | No |
+
+- **Bounded retries:** at most 3 attempts per page (configurable, 5 at most). The wait is the
+  error's `retryAfterSeconds`, else 1 s then 2 s. A wait over 30 s isn't slept on: the error
+  goes back with `retryAfterSeconds`, for the job to reschedule (07C).
+- **A retried timeout may cost a credit twice** if Apollo processed the first attempt;
+  retries are bounded for that reason.
+- **Sanitized:** messages are Lead Fennec's fixed sentences. Apollo's message and body, the
+  URL and the cause of a network error are dropped.
+- **Redirects** are refused (`redirect: 'error'`), so the key can't follow one to another
+  host.
+
+### D-07B-05: Credentials and environments
+
+- **`APOLLO_API_KEY`** is read only by the worker (`apps/worker/src/env.ts`), the process that
+  will run searches (07C). It is optional and validated without echoing it (8–200 printable
+  characters, no spaces; empty is unset), redacted in logs (`REDACTED_PATHS`), passed through
+  by `turbo.json` and documented in `docs/local-development.md`. `.env.example` holds only a
+  commented placeholder.
+- **`createOrganizationSearchProvider(appEnv, { apolloApiKey })`** (`packages/integrations`):
+  - development and test: always the fake, even if a key is set;
+  - staging and production: Apollo, or `LiveProvidersUnavailableError` without a key.
+  - The key reaches the adapter only through its constructor, which checks it (a malformed
+    key could also inject a header) and keeps it in a private field. It is sent only in
+    `x-api-key`.
+- **The API never holds the key.** It checks and stores requests, so it gets
+  `organizationSearchDeclaration(appEnv)` (source and capabilities): `FAKE` in development
+  and test, `APOLLO` in staging and production. Since 07B the API no longer refuses to start
+  in staging and production over organization search (D-07A-04); it still does over
+  transactional mail (O-19).
+- **Recommended key:** a scoped key with only `api/v1/mixed_companies/search` (D-07B-01).
+- **Separate:** people search (`LeadDataProvider`) and enrichment remain fake-only
+  interfaces; 07B adds no person, email or enrichment call.
+
+### D-07B-06: Tests
+
+| File | What it shows |
+|---|---|
+| `packages/integrations/src/apollo-organization-search.test.ts` (14) | The parameter for every filter, open-ended size bounds, country names, and non-countries refused; only the documented URL, `POST`, the key only in `x-api-key`, redirects refused; out-of-range page sizes, forged tokens and malformed keys refused before any request; **pagination** across two pages with the first page's size kept, the 500-page stop, documented fields only, cost 1 per page and quota from the headers; **empty results**; companies for an ICP through LeadDiscoveryService with no person or email parameter; **authentication failure** (401, once, no retry) and 403; a short rate limit waited out; **quota limits** (daily: `quota_exceeded`, no retry; long waits given back; platform load); retries bounded at 3; **timeouts** with back-off, a fetch that ignores the abort, and recovery; 5xx, network errors, unreadable answers and 422; the fake in development and test, Apollo with a key elsewhere |
+| `src/fixtures/apollo/*` | Synthetic fixtures in the documented shapes (`README.md` there): no real company, key or personal data |
+| `apps/worker/src/env.test.ts` (2) | The key from the environment, empty as unset, malformed keys refused without echoing them |
+| `packages/shared/src/logger.test.ts` | `APOLLO_API_KEY` is censored in log lines |
+
+Every test uses a scripted `fetch`: nothing leaves the process, and the network guard stays
+on.
+
+## 07C: Search jobs, organization upserts, CSV import, discovery screens (2026-11-06)
+
+**Basis.** The plan is still missing (O-01); this follows the 07C prompt ("connect search jobs
+to tenant-scoped organization upserts, exclusion checks, progress counts and source
+attribution"; "a validated CSV import path with column mapping, row limits, error report and
+safe normalization"; "protect exported cells against spreadsheet formula injection"; "the
+discovery form and results view with cancellation and failure status"). It builds on the 07A
+requests, the 07B provider interface, the 04B job context and the 05B screens.
+
+### D-07C-01: Jobs: durable tasks, a relay, BullMQ
+
+- **The database is the source of truth.** A search request writes its `job_tasks` row in the
+  request's transaction (07A).
+- **Relay** (`apps/worker/src/queue.ts`): every 5 seconds the worker finds due PENDING tasks
+  of its types, in every active workspace (`dueJobTasks`, through each workspace's scoped
+  client), and publishes `{ v: 1, taskId }` to BullMQ.
+  - The task id is the BullMQ job id, so a task is queued once however often the relay runs.
+  - Jobs are removed when done, so a task that becomes due again (a retry) can be queued
+    again.
+  - The API doesn't talk to Redis.
+- **Consumer:** a BullMQ worker, one job at a time, hands each message to `runDiscoveryTask`.
+  `claimJob` authorizes it (04B): unknown, forged, wrong-type and suspended-workspace messages
+  are dropped and logged by reason only.
+- **Retries are task rows becoming due again** (`ctx.fail({ retryAt })`), not BullMQ retries.
+- **BullMQ 6.7.0** (published 2026-11-04, MIT; 6.7.1 was under a day old, below pnpm's
+  `minimumReleaseAge`). Docs checked 2026-11-06:
+  - https://docs.bullmq.io/guide/connections: ioredis connection; `maxRetriesPerRequest: null`
+    on worker connections;
+  - https://docs.bullmq.io/guide/jobs/job-ids: a duplicate `jobId` is ignored; no colons, not
+    digits only.
+  - Its peers (`pg`, `redis`, `ioredis`, `bullmq-otel`) are all optional. ioredis is the
+    existing 6.0.0.
+  - `msgpackr-extract` (an optional native speed-up of msgpackr) keeps its install script
+    disabled (`allowBuilds`); msgpackr works without it.
+- **`run-task`** (`apps/worker/dist/run-task.js <taskId>`): runs one task without Redis, in
+  development and test only; anywhere else it refuses. The browser tests use it, since the
+  test machines have no Redis.
+
+### D-07C-02: Running a search, saving companies
+
+- **`runDiscoveryTask`** (`apps/worker/src/jobs/lead-discovery.ts`):
+  1. `beginSearch`: PENDING becomes PROCESSING (or a PROCESSING run resumes); cancelled,
+     finished and non-search imports are skipped;
+  2. pages through LeadDiscoveryService from the saved token;
+  3. each page goes through `saveSearchPage`;
+  4. `finishSearch` marks it COMPLETED.
+  - A search asked of one provider never runs on another (`provider_mismatch`).
+- **One page, one transaction** (`saveSearchPage`):
+  - the import row is locked; a cancelled run drops the page;
+  - companies go through `saveOrganizations`;
+  - one `source_records` row per received record, with its outcome;
+  - the counts, the page count and the next page token are updated.
+  - **Resume:** a crash before the commit leaves nothing, and the next attempt refetches that
+    page from the saved token. A crash after it resumes at the next page. The run's saved
+    identities are passed back, so a resumed run doesn't count them twice.
+- **`saveOrganizations`** (`packages/database/src/tenancy/organization-store.ts`), used by
+  searches and CSV imports:
+  - **Excluded:** the domain, or a parent domain (`eu.rival.example` under `rival.example`), is
+    on the workspace's suppression list. Not saved, with the reason.
+  - **Matched:** the workspace already has the company: the same domain (the existing unique
+    `(tenant_id, normalized_domain)`), or, without a domain, the same name key among
+    companies without one (new column `organizations.name_key`). Only missing details are
+    filled in; nothing someone saved is overwritten.
+  - **Created:** otherwise.
+  - Writes to a workspace's organizations take a transaction advisory lock, so two runs can't
+    create the same company twice.
+- **Source attribution:** each record keeps the provider, its external id, when it was
+  received and what was received (`payload.received`, plain JSON). The run keeps the
+  provider's attribution (07A). `source_records` lost its unique `(tenant_id, provider,
+  external_id)`: a record is received once per run, so the same id recurs across runs (now an
+  index).
+- **Errors:**
+  - retryable provider errors with attempts left: the run stays PROCESSING with the error
+    code, and the task is due again after `retryAfterSeconds` (else 60 s);
+  - the rest: FAILED with the code (`unauthorized`, `quota_exceeded`, `timeout`, …);
+  - an unexpected error: FAILED `internal_error`, logged.
+- **Budget (paid work reserves first):**
+  - a paid provider's page reserves one `ORGANIZATION_SEARCH_CREDITS` credit before the
+    request (new usage metric), and commits or releases it after;
+  - no plan credit gives FAILED `usage_limit_reached`, and no entitled plan gives
+    `no_entitled_plan`, before any request;
+  - the fake costs nothing and reserves nothing;
+  - fixture plans include the metric (50, 500, 10,000).
+- **Cancellation:** `POST …/imports/:importId/cancel` (members, `imports.create`) marks a
+  queued or running search CANCELLED. The next page save sees it, and companies already saved
+  stay. Repeating it is harmless; a finished import answers `409 import_not_cancellable`.
+
+### D-07C-03: CSV import
+
+- **Request:** `POST …/imports/csv` with `{ fileName, content, mapping }`. The browser reads
+  the file; the API parses it again and is the authority.
+- **Parser:** `parseCsv` (`@lead-fennec-ai/shared`, no dependency): RFC 4180 with LF/CRLF, a
+  byte-order mark and blank lines.
+  - Limits: 256 KB of text, 1000 data rows, 30 columns, 1000 characters a cell.
+  - Refused by name and line: unclosed or stray quotes, extra cells, blank or duplicate
+    headers.
+- **Mapping:** each field to a header (case-insensitive), each column once. Only `name` is
+  required. A header that isn't in the file is refused by field. Unmapped columns are not
+  stored.
+- **Safe normalization** (`normalizeImportRow`):
+  - control characters and bidirectional overrides removed, spaces collapsed;
+  - identity from `normalizeCompanyIdentity`;
+  - the domain must be a domain (or comes from the website);
+  - the website must be http(s);
+  - employees a whole number (thousands separators allowed);
+  - the country a two-letter code.
+  - Every problem of a row is reported by field. Nothing in a cell is evaluated.
+- **Processing:** in the request, in one transaction: the import (CSV, COMPLETED), one source
+  record per row (its line in the file, its outcome and issues), companies through
+  `saveOrganizations`, and an audit record. A repeated file matches; it doesn't duplicate.
+
+### D-07C-04: API
+
+| Route | Answer |
+|---|---|
+| `GET …/imports` | Runs, newest first (keyset) |
+| `GET …/imports/options` | Usable ICPs (not archived, up to 200), the provider (source, filters, limits, attribution), the CSV limits |
+| `POST …/imports/csv` | `201` and the run; `400 validation_failed` ("The file can't be imported as it is.") with `content` or `mapping.<field>` issues |
+| `GET …/imports/:importId/results` | What happened to each record, in order; `outcome` filter; keyset pages |
+| `POST …/imports/:importId/cancel` | `200` and the run; `409 import_not_cancellable` |
+
+- All need `imports.create`; changes need Origin, session and CSRF. Cache resources:
+  `importRuns`, `importOptions`, `importResults`.
+- **The run's counts** changed shape (07A had `skipped`):
+  - `found`: records received;
+  - `saved`: created or matched, of which `created` are new;
+  - `excluded`;
+  - `failed`;
+  - `repeated`: the same company again within a run.
+  The run also gained `fileName` and `pagesFetched`. Created counts are read from the source
+  records, never stored.
+- **JSON bodies up to 1 MB** for every route (`configureApp`, shared by `main.ts` and the
+  test harness): a CSV import carries its file. Larger bodies get `413`.
+- A malformed page cursor is now `400` (it was unmapped).
+
+### D-07C-05: Spreadsheet formula injection
+
+- **`csvCell` / `toCsv`** (`@lead-fennec-ai/shared`) write every exported cell. A cell a
+  spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`, a tab or a carriage
+  return, also after spaces) gets a leading apostrophe (OWASP CSV injection guidance).
+  Commas, quotes and line ends are quoted.
+- **The error report** (excluded and failed records, one line per reason) is the only export
+  so far. It is built in the browser from the API's results, through `toCsv`.
+- **Imported values are kept as text.** A company named `=1+2` is stored and shown as
+  written, escaped in the page; it is protected wherever it is exported.
+
+### D-07C-06: Screens
+
+- **Imports** (`/workspaces/:workspaceId/imports`, the section is now available):
+  - "Find companies": the ICP and how many;
+  - "Import a CSV file": the file, then a mapping guessed from the headers;
+  - the runs so far.
+  - Both forms validate with the shared request schemas. Criteria the provider can't search
+    are listed with the API's words.
+- **A run** (`…/imports/:importId`, a real 404 for another workspace's):
+  - its status and a sentence for it, the counts from the API, and why it failed;
+  - "Cancel search" (with confirmation) while queued or running;
+  - the results with an outcome filter in the address bar;
+  - "Download error report".
+  - It refreshes every 5 seconds while queued or running, for at most 30 minutes, visible
+    pages only (`IMPORT_RUN_POLL`).
+- Built from the shared components (DataTable, CursorPagination, ListFilters with
+  useListParams, StatusLabel, ConfirmButton, the form fields, RetryState); checked with axe
+  and at 390 px.
+
+### D-07C-07: Tests
+
+| Level | File | What it shows |
+|---|---|---|
+| Shared | `csv.test.ts` (6) | Parsing (quotes, CRLF, BOM, blank lines, lines), every refusal with its line, formula-safe cells and round trip, row normalization and its issues, the mapping and request rules |
+| Integrations | `lead-discovery.test.ts` | Rejected provider records are handed over for reporting |
+| Database | `organization-import.integration.test.ts` (4) | A CSV with created, matched (twice in the file, and already saved), excluded (parent domain) and failed rows, in file order with reasons; cleaned values; unmapped columns not kept; a repeat creates nothing; unreadable files, missing columns, no rows, too many rows, too large; tenancy, permissions, workers and platform admins; options |
+| Database | `schema`, `billing-schema`, `discovery` suites | The receipt uniqueness `(import, row)`; 15 plan limits; the new counts |
+| Worker | `jobs/lead-discovery.integration.test.ts` (7) | A search saved with sources, counts and audit; repeats matched, a suppressed domain excluded; an interrupted run resumed at its token with the same results as an uninterrupted one; cancellation mid-run and before start; refusals, exhausted retries and provider mismatch; paid pages reserved first (none, then one credit); the relay publishes only due tasks of active workspaces, forged messages dropped |
+| Worker | `env.test.ts` | (07B) |
+| API | `workspaces/imports.integration.test.ts` (4) | A CSV over 100 KB imported over HTTP, results in pages, the failed row, a forged cursor, a repeat; options, list, cancel twice, `409`, strict body; mapping and file errors, 256 KB and 1 MB limits; `403`, `404`, CSRF |
+| API review | `route-guards.test.ts`, `api-contract.test.ts` | Five new routes reviewed and matching the endpoint list (43) |
+| Web units | `lib/imports.test.ts` (2), `lib/polling.test.ts` | Mapping guesses; the error report keeps formulas as text; the new poll stops within 30 minutes |
+| Browser | `e2e/imports.spec.ts` (5) | A search run by the worker code and followed live; a repeat matched and a suppressed domain excluded; a CSV with a guessed mapping, failed rows and the downloaded report (formulas as text, no unmapped column); a repeat import; cancel with confirmation, a failed run's reason, an unsearchable profile; axe; 390 px |
+
 ## Open choices (need a decision from the user)
 
 | ID | Choice | Current state | Options |
@@ -2605,4 +2933,6 @@ provider-specific detail is implemented: the only provider is the fake, and Apol
 | O-28 | Campaign configuration (06A) | The sections, their fields and bounds, the readiness rules and the approval modes were chosen without the plan (D-06A-01 to D-06A-05). The business profile is stored per campaign. Only DRAFT campaigns can be configured; there is no activation, pausing or deletion yet. `AUTOMATIC` approval is stored but unused, and blocked while the workspace requires approval (the default). | Confirm or adjust the fields, bounds and readiness. Decide whether the business profile belongs to the workspace, and when (if ever) automatic approval is allowed. Add activation, pausing, editing of running campaigns and deletion in later tasks. |
 | O-29 | Campaign wizard (06B) | The stage contents, wording and order of fields were written without the plan (D-06B-01). Leaving through the sidebar or breadcrumbs with unsaved changes doesn't ask (only closing or reloading the tab does). Approval mode can't be changed in the wizard. ICPs, lead lists, templates and mailboxes can't be created yet, so in a new workspace the pickers are empty. Checked with axe, not a screen reader. | Confirm the stages and copy against the plan. Decide whether in-app navigation should ask before leaving unsaved changes. Add the approval choice when automatic approval is allowed. Test with a screen reader. |
 | O-30 | Readiness rules (06C) | The 13 checks and their wording were chosen without the plan (D-06C-01). Leads come only from a lead list; each step needs a template; a campaign's new leads per day may not exceed its mailbox's daily limit; a workspace needs an entitled plan with email and sending turned on (off by default, and nobody can turn it on from the app yet). Activation is always refused in production until the eligibility, drafting and sending services exist (D-06C-02). Activation only changes the status; nothing is enrolled or scheduled yet. | Confirm the checks against the plan. Decide who turns on sending for a workspace (a platform-admin route?). Flip each service flag in the task that builds it. |
-| O-31 | Lead discovery (07A) | The ICP criteria vocabulary, the company identity rules, the limits (1000 per search, 100 by default) and the run fields were chosen without the plan (D-07A-01 to D-07A-04). Only the fake provider exists; staging and production refuse to start until a live adapter does (07B). Requests are stored with a job task, but no queue message is published and no worker runs them yet (07C), so runs stay PENDING. Company identity uses the domain when there is one, else the normalized name: two companies with the same name and no domain are treated as one. | Confirm the vocabulary, identity rules and limits against the plan. Build the Apollo adapter (07B, official docs first) and the worker, upserts and screens (07C). Decide whether a same-name company without a domain needs another tie-breaker (country, provider id). |
+| O-31 | Lead discovery (07A) | The ICP criteria vocabulary, the company identity rules, the limits (1000 per search, 100 by default) and the run fields were chosen without the plan (D-07A-01 to D-07A-04). Development and tests use the fake; since 07B staging and production use Apollo (O-32). Requests are stored with a job task; since 07C the worker runs them (O-33). Company identity uses the domain when there is one, else the normalized name: two companies with the same name and no domain are treated as one. | Confirm the vocabulary, identity rules and limits against the plan. Build the Apollo adapter (07B, official docs first) and the worker, upserts and screens (07C). Decide whether a same-name company without a domain needs another tie-breaker (country, provider id). |
+| O-32 | Apollo organization search (07B) | Built from the official docs only (D-07B-01 to D-07B-05); no live request was made, so the mapping is unproven against real answers. Not known: the account's plan, and whether it has a REST API key with organization search access (the endpoint answers 403 without it). Apollo matches exact industry names, so free-text ICP industries may find nothing; country names come from the runtime's English names (Intl), unverified against Apollo's location names. The response documents no industry, employee count or country, so found companies have none. The `accounts` array (companies the team already saved) is ignored. A retried timeout may cost a second credit. | Create a key scoped to `api/v1/mixed_companies/search` and run one authorized live page (1 credit) in staging. Decide whether ICP industries should be picked from Apollo's list, whether saved accounts count as results, and whether to fill industry and size from an enrichment step (separate provider, official docs first). |
+| O-33 | Search jobs and CSV imports (07C) | Chosen without the plan (D-07C-01 to D-07C-06): the 5-second relay, one job at a time, 3 provider attempts per task (5 task attempts), the suppression rule (a parent domain excludes subdomains), matching without a domain by name key only among companies without a domain, fill-in of missing details only, CSV limits (256 KB, 1000 rows) and fields, and the error report columns. The BullMQ transport has run only against its documentation: there is no Redis on this machine, so the queue and the worker process were not started; the job itself ran through run-task. Organizations saved before 07C have no name key, so a domainless one can be matched only after it gets one. Contacts are not imported (companies only). | Run the worker against Redis (CI or Docker) before relying on it. Confirm the rules and limits against the plan. Decide whether imports should also bring in contacts (08A), whether name matching should consider the country, and whether old organizations need their name keys backfilled. |

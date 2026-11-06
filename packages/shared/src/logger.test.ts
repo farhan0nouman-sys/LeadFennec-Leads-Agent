@@ -35,12 +35,20 @@ describe('createLogger', () => {
       {
         password: 'pw-1',
         provider: { apiKey: 'key-1', token: 'tok-1' },
+        env: { APOLLO_API_KEY: 'apollo-1' },
         req: { headers: { authorization: 'Bearer abc', cookie: 'sid=1' } },
       },
       'secrets',
     );
     const line = JSON.stringify(lines[0]);
-    for (const secret of ['pw-1', 'key-1', 'tok-1', 'Bearer abc', 'sid=1']) {
+    for (const secret of [
+      'pw-1',
+      'key-1',
+      'tok-1',
+      'apollo-1',
+      'Bearer abc',
+      'sid=1',
+    ]) {
       expect(line).not.toContain(secret);
     }
     expect(line).toContain('[REDACTED]');

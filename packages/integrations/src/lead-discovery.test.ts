@@ -228,6 +228,18 @@ describe('LeadDiscoveryService (task 07A)', () => {
     expect(result.duplicates).toBe(1);
     expect(result.invalid).toBe(1);
     expect(byId.has('fake-broken')).toBe(false);
+    // The broken record is reported, so a run can list it as failed (task 07C).
+    const rejected = [];
+    for await (const page of new LeadDiscoveryService(
+      new FakeOrganizationSearchProvider({
+        now: () => NOW,
+        directory: [...untidy, broken],
+      }),
+    ).pages(discovery.plan({ keywords: ['a', 'e', 'i', 'o', 'u'] }, 100))) {
+      rejected.push(...page.rejected);
+    }
+    expect(rejected.map((r) => r.externalId)).toEqual(['fake-broken']);
+    expect(rejected[0]?.raw).toEqual(broken.raw);
   });
 
   it('stops at the requested number and can resume an interrupted run', async () => {

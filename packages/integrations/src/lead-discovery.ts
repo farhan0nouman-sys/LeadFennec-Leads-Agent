@@ -47,6 +47,12 @@ export interface DiscoveredOrganization {
   readonly raw: Readonly<Record<string, unknown>>;
 }
 
+/** A provider record that couldn't be used: its id if it had one, and what was received. */
+export interface RejectedRecord {
+  readonly externalId: string | null;
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
 export interface DiscoveryPage {
   /** 1-based. */
   readonly number: number;
@@ -57,6 +63,8 @@ export interface DiscoveryPage {
   readonly duplicates: number;
   /** Records that failed validation or had no usable name. */
   readonly invalid: number;
+  /** Those records, so they can be reported (untrusted; never executed). */
+  readonly rejected: readonly RejectedRecord[];
   /** Where the next page starts; null when the search is done. Saved to resume. */
   readonly nextPageToken: string | null;
   readonly retrievedAt: Date;
@@ -94,6 +102,26 @@ const providerOrganizationSchema = z
     raw: z.record(z.string(), z.unknown()),
   })
   .strict();
+
+/** What can be kept of a record that failed validation. */
+function rejectedOf(record: unknown): RejectedRecord {
+  const value =
+    typeof record === 'object' && record !== null
+      ? (record as Record<string, unknown>)
+      : {};
+  const externalId = value['externalId'];
+  const raw = value['raw'];
+  return {
+    externalId:
+      typeof externalId === 'string' && externalId.trim() !== ''
+        ? externalId.slice(0, 200)
+        : null,
+    raw:
+      typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : {},
+  };
+}
 
 const safeWebsite = (value: string | null): string | null => {
   if (value === null) {
@@ -156,12 +184,14 @@ export class LeadDiscoveryService {
         pageToken,
       });
       const organizations: DiscoveredOrganization[] = [];
+      const rejected: RejectedRecord[] = [];
       let duplicates = 0;
       let invalid = 0;
       for (const record of page.organizations) {
         const discovered = this.normalize(record, page.retrievedAt, source);
         if (discovered === null) {
           invalid += 1;
+          rejected.push(rejectedOf(record));
         } else if (seen.has(discovered.identity.key)) {
           duplicates += 1;
         } else if (found < plan.maxResults) {
@@ -177,6 +207,7 @@ export class LeadDiscoveryService {
         received: page.organizations.length,
         duplicates,
         invalid,
+        rejected,
         nextPageToken: found < plan.maxResults ? pageToken : null,
         retrievedAt: page.retrievedAt,
         quota: page.quota,

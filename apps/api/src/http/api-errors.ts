@@ -9,7 +9,10 @@ import {
   CampaignNotEditableError,
   CampaignNotReadyError,
   CampaignVersionConflictError,
+  CsvImportError,
   DiscoveryRequestError,
+  ImportNotCancellableError,
+  InvalidCursorError,
   InvitationError,
   LastAdminError,
   PermissionDeniedError,
@@ -235,6 +238,34 @@ export function toApiException(error: unknown): ApiHttpException | null {
       { issues: error.issues },
     );
   }
+  if (error instanceof CsvImportError) {
+    // The file (content) or the mapping (mapping.<field>): one issue per reason.
+    return new ApiHttpException(
+      400,
+      'validation_failed',
+      "The file can't be imported as it is.",
+      { issues: error.issues },
+    );
+  }
+  if (error instanceof ImportNotCancellableError) {
+    return new ApiHttpException(
+      409,
+      'import_not_cancellable',
+      'This import already finished, so it can no longer be cancelled.',
+    );
+  }
+  if (error instanceof InvalidCursorError) {
+    return new ApiHttpException(
+      400,
+      'validation_failed',
+      'The request is invalid.',
+      {
+        issues: [
+          { path: 'cursor', message: 'Start again from the first page.' },
+        ],
+      },
+    );
+  }
   if (error instanceof ZodError) {
     return validationFailed(error);
   }
@@ -274,6 +305,9 @@ function send(
   CampaignNotReadyError,
   CampaignConfigurationError,
   DiscoveryRequestError,
+  CsvImportError,
+  ImportNotCancellableError,
+  InvalidCursorError,
   ZodError,
 )
 export class ApiExceptionFilter implements ExceptionFilter {

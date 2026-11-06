@@ -36,6 +36,7 @@ export const REDACTED_PATHS = [
     'REDIS_URL',
     'TEST_DATABASE_URL',
     'TEST_REDIS_URL',
+    'APOLLO_API_KEY',
   ].flatMap((key) => [key, `*.${key}`]),
 ];
 

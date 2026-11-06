@@ -1,14 +1,20 @@
-// Lead discovery (task 07A, docs/api/discovery.md). A request queues an organization search
-// from one of the workspace's ICPs and answers 202 with the run id and its status URL; the
-// search itself runs in a worker (task 07C). Both routes need imports.create, which the
-// repository checks again. Only the provider's declared capabilities are used here: nothing
-// is requested from it while the API answers.
+// Lead discovery and imports (tasks 07A and 07C, docs/api/discovery.md). A search request
+// queues an organization search from one of the workspace's ICPs and answers 202 with the run
+// id and its status URL; the worker runs it. A CSV import is processed in the request (it is
+// bounded) and answers 201 with its counts. Every route needs imports.create, which the
+// repository checks again. Only the provider's declaration is used here (D-07B-05): the API
+// holds no provider credentials and requests nothing from a provider. Static paths
+// (`discovery`, `csv`, `options`) are declared before `:importId`.
+import type { DiscoveryProviderInfo } from '@lead-fennec-ai/database';
 import {
   DISCOVERY_ROUTES,
+  cancelImportRequestSchema,
+  csvImportRequestSchema,
   discoveryRequestSchema,
+  importResultsQuerySchema,
+  pageQuerySchema,
   type DiscoveryAccepted,
 } from '@lead-fennec-ai/shared';
-import type { OrganizationSearchProvider } from '@lead-fennec-ai/integrations';
 import {
   Body,
   Controller,
@@ -17,6 +23,7 @@ import {
   HttpCode,
   Inject,
   Post,
+  Query,
   Req,
   UseFilters,
   UseGuards,
@@ -34,13 +41,16 @@ import {
   type WorkspaceRequest,
 } from './workspace-guards.js';
 
+const importIdOf = (request: WorkspaceRequest) =>
+  request.params?.['importId'] ?? '';
+
 @Controller('workspaces')
 @UseFilters(ApiExceptionFilter)
 @UseGuards(ThrottlerGuard)
 export class DiscoveryController {
   constructor(
     @Inject(ORGANIZATION_SEARCH)
-    private readonly provider: OrganizationSearchProvider,
+    private readonly provider: DiscoveryProviderInfo,
   ) {}
 
   /** A PENDING run with a queued task; 400 with one issue per reason it can't run. */
@@ -61,15 +71,54 @@ export class DiscoveryController {
     body: z.output<typeof discoveryRequestSchema>,
   ): Promise<DiscoveryAccepted> {
     const scope = requireWorkspace(request);
-    const run = await scope.discovery.request(body, {
-      source: this.provider.source,
-      capabilities: this.provider.capabilities,
-    });
+    const run = await scope.discovery.request(body, this.provider);
     return {
       runId: run.id,
       status: run.status,
       statusUrl: DISCOVERY_ROUTES.run(scope.tenantId, run.id),
     };
+  }
+
+  /** Every row saved, matched, excluded or reported as failed; 400 for a file it can't read. */
+  @Post(':workspaceId/imports/csv')
+  @HttpCode(201)
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(
+    OriginGuard,
+    SessionGuard,
+    CsrfGuard,
+    WorkspaceGuard,
+    PermissionGuard,
+  )
+  @RequirePermissions('imports.create')
+  importCsv(
+    @Req() request: WorkspaceRequest,
+    @Body(new ZodPipe(csvImportRequestSchema))
+    body: z.output<typeof csvImportRequestSchema>,
+  ) {
+    return requireWorkspace(request).discovery.importCsv(body);
+  }
+
+  @Get(':workspaceId/imports')
+  @SkipThrottle()
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(SessionGuard, WorkspaceGuard, PermissionGuard)
+  @RequirePermissions('imports.create')
+  list(
+    @Req() request: WorkspaceRequest,
+    @Query(new ZodPipe(pageQuerySchema))
+    query: z.output<typeof pageQuerySchema>,
+  ) {
+    return requireWorkspace(request).discovery.list(query);
+  }
+
+  @Get(':workspaceId/imports/options')
+  @SkipThrottle()
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(SessionGuard, WorkspaceGuard, PermissionGuard)
+  @RequirePermissions('imports.create')
+  options(@Req() request: WorkspaceRequest) {
+    return requireWorkspace(request).discovery.options(this.provider);
   }
 
   @Get(':workspaceId/imports/:importId')
@@ -78,8 +127,45 @@ export class DiscoveryController {
   @UseGuards(SessionGuard, WorkspaceGuard, PermissionGuard)
   @RequirePermissions('imports.create')
   get(@Req() request: WorkspaceRequest) {
-    return requireWorkspace(request).discovery.get(
-      request.params?.['importId'] ?? '',
+    return requireWorkspace(request).discovery.get(importIdOf(request));
+  }
+
+  @Get(':workspaceId/imports/:importId/results')
+  @SkipThrottle()
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(SessionGuard, WorkspaceGuard, PermissionGuard)
+  @RequirePermissions('imports.create')
+  results(
+    @Req() request: WorkspaceRequest,
+    @Query(new ZodPipe(importResultsQuerySchema))
+    query: z.output<typeof importResultsQuerySchema>,
+  ) {
+    return requireWorkspace(request).discovery.results(
+      importIdOf(request),
+      query,
+    );
+  }
+
+  /** Stops a queued or running search; 409 import_not_cancellable once it finished. */
+  @Post(':workspaceId/imports/:importId/cancel')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(
+    OriginGuard,
+    SessionGuard,
+    CsrfGuard,
+    WorkspaceGuard,
+    PermissionGuard,
+  )
+  @RequirePermissions('imports.create')
+  cancel(
+    @Req() request: WorkspaceRequest,
+    @Body(new ZodPipe(cancelImportRequestSchema))
+    body: z.output<typeof cancelImportRequestSchema>,
+  ) {
+    return requireWorkspace(request).discovery.cancel(
+      importIdOf(request),
+      body,
     );
   }
 }

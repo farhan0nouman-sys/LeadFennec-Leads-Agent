@@ -3,6 +3,7 @@ import {
   ACTIVITY_POLL,
   afterPoll,
   HEALTH_POLL,
+  IMPORT_RUN_POLL,
   nextPollDelay,
   POLL_RESUME,
   POLL_START,
@@ -40,7 +41,7 @@ describe('bounded polling (task 05C)', () => {
   });
 
   it('stops after 30 minutes of automatic refreshes', () => {
-    for (const policy of [ACTIVITY_POLL, HEALTH_POLL]) {
+    for (const policy of [ACTIVITY_POLL, HEALTH_POLL, IMPORT_RUN_POLL]) {
       expect(policy.intervalMs * policy.maxPolls).toBe(30 * 60_000);
       const almost = run(Array<boolean>(policy.maxPolls - 1).fill(true));
       expect(pollStop(policy, almost)).toBeNull();

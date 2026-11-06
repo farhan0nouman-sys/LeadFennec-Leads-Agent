@@ -248,7 +248,7 @@ describe.runIf(testDatabaseUrl !== undefined)(
         [
           'source record by provider id',
           `SELECT id FROM source_records WHERE tenant_id = ${t} AND provider = 'APOLLO' AND external_id = 'apollo-person-0001'`,
-          'source_records_tenant_id_provider_external_id_key',
+          'source_records_tenant_id_provider_external_id_idx',
         ],
         [
           'research history of a contact',
@@ -357,10 +357,11 @@ describe.runIf(testDatabaseUrl !== undefined)(
           [alpha.tenant, newId()],
           unique,
         );
+        // A record is received once per run (task 07C): the same import row twice is refused.
         await expectSqlState(
-          `INSERT INTO source_records (tenant_id, id, provider, external_id, payload, payload_sha256)
-         VALUES ($1, $2, 'APOLLO', 'apollo-person-0001', '{}', repeat('0', 64))`,
-          [alpha.tenant, newId()],
+          `INSERT INTO source_records (tenant_id, id, provider, import_id, import_row_number, payload, payload_sha256)
+         VALUES ($1, $2, 'CSV_IMPORT', $3, 1, '{}', repeat('0', 64))`,
+          [alpha.tenant, newId(), alpha.import],
           unique,
         );
         // alpha-only.test exists only in Alpha, so Beta may use it.

@@ -4,6 +4,285 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## GIT-11: Commit 07B–07C (2026-11-06)
+
+**Status: Done (local commit only).** The request was `git commit`.
+
+| Step | Actual result |
+|---|---|
+| Branch and author | `feat/05a-app-shell` (on top of `2655d7b`); author `LeadFennec-Leads-Agent` with the GitHub `noreply` address |
+| Content | One commit for 07B (Apollo organization search adapter) and 07C (search jobs, organization upserts, CSV import, discovery screens), with the GIT-10 and this log entry |
+| Checks before committing | The 07C regression (see the 07C entry), which ran on the whole working tree and so covers 07B; format check exit 0; a scan of the staged changes for credentials, the personal emails and the Apollo account id found nothing |
+| Commit | The commit that contains this entry (`git log`) |
+
+- **Not pushed:** CI hasn't run on 07B–07C. The workflow runs on pushes to `main`, pull
+  requests and manual dispatch.
+
+---
+
+## 07C: Search jobs, organization upserts, CSV import, discovery screens (2026-11-06)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **The BullMQ queue never ran:** there is no Redis on this machine. The relay and consumer
+  code typecheck and their logic is tested, but the worker process with Redis was not started.
+  The job itself ran for real through `run-task`, in the worker tests and in the browser.
+- **Real PostgreSQL / CI:** the regression ran on PGlite only.
+- **Plan:** the matching rules, limits and screens could not be checked against the missing
+  plan (O-01, O-33).
+- **Not committed:** on branch `feat/05a-app-shell`, with 07B, on top of `2655d7b`.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `csv.ts` (new): `parseCsv` (bounded RFC 4180, lines), `csvCell` / `toCsv` (formula-safe). `contracts/organization-import.ts` (new): `IMPORT_ROUTES`, CSV limits and fields, `importMappingSchema`, `csvImportRequestSchema`, `normalizeImportRow`, result, run page, options and cancel schemas, `import_not_cancellable`. `contracts/lead-discovery.ts`: run counts `{ found, saved, created, excluded, failed, repeated }`, `fileName`, `pagesFetched`. `contracts/endpoints.ts`: `imports.list`, `options`, `csv`, `results`, `cancel` (43 endpoints), cache resources. `contracts/workspaces.ts` (error codes), `navigation.ts` (Imports available, detail breadcrumb), `index.ts`. Tests: `csv.test.ts` (new, 6), `endpoints.test.ts`, `navigation.test.ts`. |
+| Database | `prisma/schema.prisma`: `SourceRecordOutcome`, `source_records.outcome` / `issues`, the external-id unique replaced by an index, `organizations.name_key`, `imports.cursor` / `pages_fetched`, usage metric `ORGANIZATION_SEARCH_CREDITS`. Migrations `20261106000000_discovery_results` (generated) and `20261106000100_discovery_results_checks`. `tenancy/organization-store.ts` (new): `saveOrganizations`. `tenancy/discovery.ts`: list, results, options, cancel, `importCsv`, and the worker's `beginSearch`, `saveSearchPage`, `finishSearch`, `failSearch`; errors `CsvImportError`, `ImportNotCancellableError`. `tenancy/worker-context.ts`: `dueJobTasks`. `tenancy/access.ts`, `index.ts`, `fixtures/fixture-data.ts` (plan credits). Tests: `organization-import.integration.test.ts` (new, 4); `schema`, `billing-schema`, `discovery` suites updated. |
+| Integrations | `lead-discovery.ts`: pages hand over rejected records; test. |
+| Worker | `jobs/lead-discovery.ts` (new): `runDiscoveryTask`. `queue.ts` (new): relay, BullMQ queue and worker. `run-task.ts` (new, development and test only). `main.ts`: provider check, queue, relay, shutdown. `package.json` (bullmq, ioredis, integrations), `vitest.config.mjs`. Test: `jobs/lead-discovery.integration.test.ts` (new, 7). |
+| API | `http/configure-app.ts` (new): 1 MB JSON bodies, used by `main.ts` and the test harness. `workspaces/discovery.controller.ts`: five routes. `http/api-errors.ts`: CSV, cancel and cursor errors. `testing/api-harness.ts`. Tests: `workspaces/imports.integration.test.ts` (new, 4), `route-guards.test.ts`, discovery test (counts). |
+| Web | `app/workspaces/[workspaceId]/imports/` (new): page, `imports-home.tsx`, `[importId]/page.tsx`. `components/imports/` (new): `import-forms.tsx`, `run-list.tsx`, `run-view.tsx`. `lib/imports.ts` (new), `lib/polling.ts` (`IMPORT_RUN_POLL`), `components/data/status-label.tsx`. `e2e/imports.spec.ts` (new, 5), `e2e/support/db.ts`, `e2e/support/worker.ts` (new), `e2e/app-shell.spec.ts` (Leads is now the unbuilt example). Tests: `lib/imports.test.ts` (new, 2), `lib/polling.test.ts`. |
+| Root | `pnpm-workspace.yaml` (bullmq 6.7.0; `msgpackr-extract` build disabled), `pnpm-lock.yaml`, `turbo.json` (`test:e2e` builds the worker), `docs/api/openapi.json`. |
+| Docs | `docs/decisions.md` D-07C-01 to 07 and O-33 (O-31 updated); `docs/api/discovery.md`; `docs/security/authorization-review.md`; `docs/local-development.md`; README; `CLAUDE.md`. This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end; ports 54329, 3100 and 3101 are free.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached (run again after the last spec fix: same) |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 10/10 tasks, 0 cached: shared **191**, integrations **35**, database **46 passed, 332 skipped**, web **33**, worker **6 passed, 7 skipped**, api **31 passed, 61 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 10/10 tasks, 0 cached: shared **191**, integrations **35**, database **376 passed, 2 skipped** (the PGlite concurrency skips), web **33**, worker **13**, api **92** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 19 migrations (2 new); up to date; exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | First run: **40 passed, 1 failed, 6 did not run** (`app-shell.spec.ts`, see below). After the fix: **47 passed** (5 new imports scenarios, axe included) |
+| `pnpm test:e2e` without it | **9 passed, 38 skipped** |
+| Reference repos / credential and personal-data scan of the 85 files changed since `2655d7b` (07B and 07C) | 0 changes in each of the 9 / no key, email address or account id (one old placeholder, `'secret-value'` in `endpoints.test.ts`) |
+
+**Earlier failures in this task (logged honestly):**
+1. **Regressions caused by 07C, fixed:**
+   - `billing-schema` expected 12 fixture plan limits; the new metric makes 15;
+   - `schema.integration` checked the old `(provider, external_id)` uniqueness, which 07C
+     removes on purpose; it now checks one record per import row;
+   - the browser test `app-shell.spec.ts` used Imports as its example of an unbuilt page,
+     which failed it and skipped the 6 scenarios after it. Leads is the example now.
+2. **Mistakes in the new tests, fixed:** the generated CSV was under 100 KB (it now has 480
+   rows); it had unquoted commas, which the parser rightly refused; a failed row's domain was
+   expected where the file had none; the destructive confirmation is an `alertdialog`.
+3. **Tooling:** pnpm refused to install BullMQ until `msgpackr-extract`'s build script was
+   reviewed (disabled). Three inline edits lost text in backticks to the shell (a template
+   string in the report download, SQL in `e2e/support/db.ts`), and were redone with the editor.
+   Lint: unused or meaningless checks, and an unused route body (now validated by the
+   repository).
+
+### What 07C proves (local)
+
+- **Repeating a search or import does not duplicate organizations:**
+  - worker test: a second search matches all 30 companies (0 new);
+  - database test: a second CSV import creates nothing;
+  - API test: 480 rows imported twice, still 480 organizations;
+  - browser: the second search and the second CSV both show 0 new, and the organization
+    count is unchanged.
+- **Interrupted pages resume safely:** the provider times out on page 2 and the run waits to
+  retry (status, token `p:25`, error code, task due later). The resumed run asks only for
+  `p:25` and ends with the same 40 companies, in the same order, as an uninterrupted run, with
+  no duplicates. Each page is one transaction, so an interruption mid-page saves nothing of it.
+- **The interface reports saved, excluded and failed accurately:**
+  - the counts are the API's (from the stored rows), and the results list shows each record's
+    outcome and reasons;
+  - browser: 30 saved; then 29 saved, 0 new, 1 excluded (the suppressed domain, with its
+    reason); a CSV with 2 saved and 2 failed, each failure listed by field;
+  - the downloaded report lists the failures with the formula cell as text.
+- **Search jobs:**
+  - companies are saved per workspace, never in another;
+  - each record keeps its provider, external id, time and payload;
+  - progress counts and pages are updated per page;
+  - a suppressed domain or a parent domain is excluded;
+  - paid providers reserve a credit per page before asking (none: refused before any request;
+    one: one page, then stopped with what it saved);
+  - cancellation mid-run and before start;
+  - provider refusals and exhausted retries fail with their code;
+  - the relay publishes only due tasks of active workspaces;
+  - forged messages are dropped.
+- **CSV import:**
+  - mapping guessed and changeable; missing columns refused by field;
+  - limits (256 KB, 1000 rows, 1 MB bodies);
+  - every row created, matched, excluded or failed with its line;
+  - values cleaned; formulas kept as text;
+  - unmapped columns (possibly personal data) not stored.
+- **Formula injection:** cells starting with `=`, `+`, `-`, `@`, a tab or a carriage return
+  get an apostrophe in every export (unit tests, and the downloaded file in the browser).
+- **Screens:** discovery form; CSV form with mapping; runs list; run page with live status,
+  counts, failure reason, cancellation with confirmation, outcome filter and report; axe on
+  every new screen; 390 px without sideways scrolling.
+
+### Incomplete live checks (not passed)
+
+- The worker with Redis (BullMQ relay and consumer) end to end; CI has Redis but doesn't run
+  on this branch.
+- Real PostgreSQL and CI.
+- A live Apollo search through the job (O-32).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker or Redis (O-06).
+3. Open: O-19 to O-33.
+
+### Manual check
+
+With Redis and PostgreSQL running (`pnpm dev`): on Imports, find companies for an ICP. The run
+page should go from Queued to Finished by itself within a few seconds (the worker's relay runs
+every 5 seconds). Then import a small CSV and download the error report.
+
+### Next prompt
+
+08A (sent earlier and waiting): contact enrichment contracts and providers.
+
+---
+
+## 07B: Apollo organization search adapter (2026-11-06)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **No live Apollo request:** the adapter is proven against Apollo's documentation and
+  synthetic fixtures only. No API key exists for it yet, and a live page costs 1 credit.
+- **Account capabilities:** only partly known (below).
+- **Real PostgreSQL / CI:** the regression ran on PGlite only.
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `2655d7b`.
+
+### Official documentation and account check
+
+- **Docs checked 2026-11-06** (URLs and API version in `docs/decisions.md` D-07B-01):
+  organization search (API v1, page updated 2026-09-29), authentication, API keys, rate
+  limits, status codes, usage stats.
+- **Account (read-only, through the Apollo connector, approved by the user):**
+  - lead credits: 147 left of 200 for the cycle ending 2026-11-08;
+  - no search run, no key created or seen;
+  - not known: the plan, and whether a REST key with organization search access exists (the
+    endpoint answers 403 without it).
+  - No personal details from the profile are recorded.
+- **Fixtures:** synthetic, as the user chose (no captured page).
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Integrations | `apollo-organization-search.ts` (new): `ApolloOrganizationSearchProvider` (documented endpoint only; explicit filter and field mapping; page tokens keeping the first page's size; 500-page and 50,000-record limits; cost 1 credit per page; quota from the rate-limit headers; bounded retries; per-attempt timeout; redirects refused; sanitized errors; key checked and sent only in `x-api-key`), `APOLLO_ORGANIZATION_SEARCH_CAPABILITIES`, `apolloSearchQuery`, `mapApolloOrganization`, `apolloCountryName`, `apolloTechnologyUid`. `providers.ts`: error code `bad_response`; page-size note. `registry.ts`: `createOrganizationSearchProvider` (fake in development and test; Apollo with a key elsewhere), `organizationSearchDeclaration`. `index.ts`. `fixtures/apollo/` (new): 8 synthetic fixtures and their README. `apollo-organization-search.test.ts` (new, 14). |
+| API | `workspaces/discovery-provider.ts`: provides the declaration (source and capabilities), never credentials; `APOLLO` in staging and production. `workspaces/discovery.controller.ts`: uses it. |
+| Worker | `env.ts`: `APOLLO_API_KEY` (optional, validated without echoing it, empty is unset). `env.test.ts` (new, 2). |
+| Shared | `logger.ts`: `APOLLO_API_KEY` redacted; `logger.test.ts`. |
+| Root | `.env.example` (commented placeholder), `turbo.json` (`dev` passes `APOLLO_API_KEY`). |
+| Docs | `docs/decisions.md` D-07B-01 to 06 and O-32 (O-31 updated); `docs/api/discovery.md` (providers); `docs/local-development.md` (`APOLLO_API_KEY`); README; `CLAUDE.md` (Apollo rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end; ports 54329, 3100 and 3101 are free.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues (no dependency added: Apollo is called with the runtime's `fetch`) |
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 10/10 tasks, 0 cached: shared **185**, integrations **35**, database **46 passed, 328 skipped**, web **31**, worker **6**, api **31 passed, 57 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 10/10 tasks, 0 cached: shared **185**, integrations **35**, database **372 passed, 2 skipped** (the concurrency tests that skip on PGlite), web **31**, worker **6**, api **88** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 17 migrations (none new); up to date; exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date (no route changed) |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **42 passed** (no new browser scenarios: 07B has no screen) |
+| `pnpm test:e2e` without it | **9 passed, 33 skipped** |
+| Reference repos / credential and personal-data scan of the 28 files changed by 07B | 0 changes in each of the 9 / no key, email address, Apollo account id or name (the only matches were the public GitHub repository name) |
+
+**Earlier failures in this task (logged honestly):**
+1. **Country codes:** the first mapping used the runtime's region names alone, which name
+   non-countries too (`ZZ` is "Unknown Region"). ISO user-assigned codes and EU/UN groupings
+   are now refused explicitly, with a test.
+2. **A fixture's legacy message** imitated Apollo's wording; it is now marked "Synthetic"
+   like the others.
+
+### What 07B proves (local, mocked)
+
+- **Pagination:** two pages through opaque tokens. Later pages keep the first page's size, so
+  pages stay aligned with offsets. The documented 500-page limit stops paging. Forged or
+  out-of-range tokens and page sizes over 100 are refused before any request.
+- **Empty results:** no companies, no next page, 1 credit, through LeadDiscoveryService.
+- **Authentication failure:** 401 gives `unauthorized` after one request, with no retry and
+  none of Apollo's words or the key in the error; 403 gives `forbidden`.
+- **Quota limits:**
+  - a daily limit gives `quota_exceeded` with the `retry-after` seconds, and isn't retried;
+  - an hourly limit with a long wait is handed back, not slept on;
+  - a short per-minute limit is waited out, then answered;
+  - platform load uses the suggested 60 s;
+  - retries stop after 3 attempts.
+- **Provider timeouts:** retried with back-off (1 s, 2 s), then `timeout`. A fetch that
+  ignores the abort still ends at the deadline, and one timeout followed by an answer
+  recovers.
+- **No undocumented endpoint:** every request goes to `POST
+  https://api.apollo.io/api/v1/mixed_companies/search`, with only documented parameters.
+- **No guessed data:**
+  - only the documented `id`, `name`, `primary_domain` and `website_url` are read;
+  - industry, size and country stay empty;
+  - phones, links and the rest are dropped;
+  - no person, title or email parameter or field is used.
+- **Credentials:**
+  - read from the worker's environment, refused if malformed without being echoed, and
+    redacted in logs;
+  - never in a URL or an error;
+  - redirects are refused;
+  - the API holds no key.
+
+### Incomplete live checks (not passed)
+
+- One authorized live page with a key scoped to `api/v1/mixed_companies/search` (1 credit),
+  to confirm the mapping, the headers and the error shapes against real answers (O-32).
+- Real PostgreSQL and CI.
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker (O-06).
+3. Apollo access for the REST API is unconfirmed (O-32); open: O-19 to O-32.
+
+### Manual check
+
+None needed now. Before relying on Apollo in staging: create a scoped API key in Apollo
+(Settings → Integrations → API Keys, endpoint `api/v1/mixed_companies/search`), set it as
+`APOLLO_API_KEY` for the worker only, and authorize one live page.
+
+### Next prompt
+
+07C (sent and waiting): search jobs, organization upserts, CSV import, discovery screens.
+
+---
+
+## GIT-10: Push `feat/05a-app-shell` (2026-11-05)
+
+**Status: Done.** The request was `git push`.
+
+| Step | Actual result |
+|---|---|
+| Pushed | `feat/05a-app-shell` → `origin/feat/05a-app-shell`, `06b34b2..2655d7b` (06A–07A); the remote head is `2655d7b` (checked with `git ls-remote`) |
+| Remote | `github.com/farhan0nouman-sys/LeadFennec-Leads-Agent` (**public**); `main` unchanged at `7fc44f2`; `feat/04a-auth` unchanged at `3e0b418` |
+
+- **CI has not run:** the workflow runs on pushes to `main`, on pull requests and on manual
+  dispatch, not on pushes to other branches. A pull request into `main` (or a manual run)
+  would give the first real-PostgreSQL results for 03A–07A. That is the user's decision.
+- This entry is not in the pushed commit; it is a local change to the log.
+
+---
+
 ## GIT-09: Commit 06A–07A (2026-11-05)
 
 **Status: Done (local commit only).** The request was `git commit`.

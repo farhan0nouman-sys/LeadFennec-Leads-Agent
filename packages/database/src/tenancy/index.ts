@@ -7,6 +7,7 @@ export * from './billing.js';
 export * from './campaigns.js';
 export * from './dashboard.js';
 export * from './discovery.js';
+export * from './organization-store.js';
 export * from './invitations.js';
 export * from './members.js';
 export * from './notifications.js';

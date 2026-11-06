@@ -230,7 +230,15 @@ if needed; next prompt ID.
   with `planOrganizationSearch` against the provider's declared capabilities before writing
   anything. Its inputs are immutable. Searches find companies only; people and contacts are
   separate steps. Company identity comes only from `normalizeCompanyIdentity`. Providers sit
-  behind `OrganizationSearchProvider`; development and tests use the fake.
+  behind `OrganizationSearchProvider`; development and tests use the fake. The Apollo
+  adapter (`docs/decisions.md` D-07B-*) maps only documented parameters and fields; add one
+  only after checking Apollo's docs. Provider keys stay with the process that calls the
+  provider (the worker); the API uses `organizationSearchDeclaration` only. Companies are
+  saved only through `saveOrganizations` (suppression check, identity match, no duplicates),
+  and every received record gets a `source_records` row with its outcome. A search saves one
+  page per transaction (`saveSearchPage`). Paid provider pages reserve
+  `ORGANIZATION_SEARCH_CREDITS` first. Every exported CSV cell goes through `csvCell` /
+  `toCsv` (formula injection, D-07C-05).
 - **Campaign wizard** (`docs/decisions.md` D-06B-*): a stage turns its form into the sections
   of a save and checks them with `updateCampaignRequestSchema` (`apps/web/lib/campaign-wizard.ts`);
   map every issue path, the page's or the API's, to a field of the stage, and never write a

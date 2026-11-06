@@ -89,7 +89,7 @@ function buildScope(
     billing: createBillingRepository(prisma, tenantId, actor),
     campaigns: createCampaignRepository(prisma, tenantId, actor, now),
     dashboard: createDashboardRepository(prisma, tenantId, actor, now),
-    discovery: createDiscoveryRepository(prisma, tenantId, actor),
+    discovery: createDiscoveryRepository(prisma, tenantId, actor, now),
     invitations: createInvitationRepository(prisma, tenantId, actor, now),
     members: createMemberRepository(prisma, tenantId, actor),
     notifications: createNotificationRepository(prisma, tenantId, actor, now),

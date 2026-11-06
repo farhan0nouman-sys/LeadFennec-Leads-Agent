@@ -303,4 +303,59 @@ export class E2eDatabase {
     );
     return JSON.stringify([tenant.rows, platform.rows]);
   }
+
+  /** An active ideal customer profile with these criteria (task 07C). */
+  async seedIcp(
+    workspaceId: string,
+    name: string,
+    criteria: object,
+  ): Promise<string> {
+    const id = randomUUID();
+    await this.client.query(
+      `INSERT INTO icps (tenant_id, id, name, criteria, status, updated_at)
+       VALUES ($1, $2, $3, $4, 'ACTIVE', now())`,
+      [workspaceId, id, name, JSON.stringify(criteria)],
+    );
+    return id;
+  }
+
+  /** A domain the workspace must never contact (task 07C). */
+  async seedSuppressedDomain(workspaceId: string, domain: string) {
+    await this.client.query(
+      `INSERT INTO suppressions (tenant_id, id, normalized_domain, reason, source)
+       VALUES ($1, $2, $3, 'MANUAL', 'MANUAL')`,
+      [workspaceId, randomUUID(), domain],
+    );
+  }
+
+  /** The queued job task of a search (task 07C). */
+  async searchTaskId(workspaceId: string, importId: string): Promise<string> {
+    const { rows } = await this.client.query<{ id: string }>(
+      `SELECT id FROM job_tasks
+       WHERE tenant_id = $1 AND task_type = 'lead_discovery.search' AND idempotency_key = $2`,
+      [workspaceId, `import:${importId}`],
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) {
+      throw new Error('No task for this search');
+    }
+    return id;
+  }
+
+  async organizationCount(workspaceId: string): Promise<number> {
+    const { rows } = await this.client.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM organizations WHERE tenant_id = $1',
+      [workspaceId],
+    );
+    return rows[0]?.n ?? 0;
+  }
+
+  /** Marks a run as failed the way the worker does (task 07C). */
+  async failRun(workspaceId: string, importId: string, errorCode: string) {
+    await this.client.query(
+      `UPDATE imports SET status = 'FAILED', error_code = $3, started_at = now(), completed_at = now()
+       WHERE tenant_id = $1 AND id = $2`,
+      [workspaceId, importId, errorCode],
+    );
+  }
 }

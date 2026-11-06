@@ -66,6 +66,21 @@ export const STATUS_LABELS = {
     PENDING: { label: 'Waiting for authorization', tone: 'info' },
     ERROR: { label: 'Needs reconnecting', tone: 'danger' },
   },
+  // An import or a company search (task 07C).
+  importRun: {
+    PENDING: { label: 'Queued', tone: 'info' },
+    PROCESSING: { label: 'Running', tone: 'info' },
+    COMPLETED: { label: 'Completed', tone: 'success' },
+    FAILED: { label: 'Failed', tone: 'danger' },
+    CANCELLED: { label: 'Cancelled', tone: 'neutral' },
+  },
+  // What happened to one record of a run.
+  importResult: {
+    CREATED: { label: 'Saved (new)', tone: 'success' },
+    MATCHED: { label: 'Already saved', tone: 'info' },
+    EXCLUDED: { label: 'Excluded', tone: 'warning' },
+    FAILED: { label: 'Failed', tone: 'danger' },
+  },
   integration: {
     not_connected: { label: 'Not connected', tone: 'neutral' },
     connecting: { label: 'Connecting', tone: 'info' },

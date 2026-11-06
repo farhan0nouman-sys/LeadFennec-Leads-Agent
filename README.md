@@ -95,7 +95,8 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
     `apps/api/src/workspaces/workspaces.integration.test.ts`,
     `apps/api/src/workspaces/dashboard.integration.test.ts`,
     `apps/api/src/workspaces/campaigns.integration.test.ts`,
-    `apps/api/src/workspaces/discovery.integration.test.ts`) need `TEST_DATABASE_URL` and are
+    `apps/api/src/workspaces/discovery.integration.test.ts`,
+    `apps/api/src/workspaces/imports.integration.test.ts`) need `TEST_DATABASE_URL` and are
     reported as skipped without it. They share a harness (`apps/api/src/testing`) and run one
     file at a time. They use their own migrated schema, the fake mail
     provider and a controllable clock, and run every account flow over HTTP. They check each
@@ -104,10 +105,10 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
 - **Database integration tests:** `packages/database/src/*.integration.test.ts` run against
   real PostgreSQL and Redis **only** when `TEST_DATABASE_URL` and `TEST_REDIS_URL` are set.
   Otherwise those suites are reported as _skipped_. CI always sets them.
-  - There are eleven suites: core data; outreach and jobs; billing, usage, audit and
+  - There are twelve suites: core data; outreach and jobs; billing, usage, audit and
     notifications; authentication; workspaces, invitations and the worker context; dashboard
-    aggregates; campaign configuration; campaign activation; lead discovery requests; catalog
-    structure; and tenant access. Each creates its own schema in the
+    aggregates; campaign configuration; campaign activation; lead discovery requests; CSV
+    imports of companies; catalog structure; and tenant access. Each creates its own schema in the
     `_test` database, applies every migration and drops the schema afterwards.
   - Together they check:
     - no drift between the migrations and `schema.prisma`;
@@ -123,6 +124,10 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
   - One test (concurrent usage reservations) needs real PostgreSQL. It skips itself on PGlite
     and runs in CI.
   - The database package runs its test files one at a time.
+- **Worker job tests:** `apps/worker/src/jobs/lead-discovery.integration.test.ts` runs the
+  organization search job against real PostgreSQL with the fake provider (saving, exclusions,
+  repeats, resuming, cancellation, failures, budgets, the relay); it needs `TEST_DATABASE_URL`
+  and is reported as skipped without it. Nothing there needs Redis.
 - **Browser tests** (Playwright, Chromium) run against the production builds. Install the
   browser once with `pnpm --filter @lead-fennec-ai/web exec playwright install chromium --only-shell`.
   - `apps/web/e2e/smoke.spec.ts` and `apps/web/e2e/ui-components.spec.ts` (8 scenarios on the
@@ -135,7 +140,10 @@ infra/postgres/initdb  Creates the isolated test database on first PostgreSQL st
     database, panels by role, bounded polling with Playwright's clock, error recovery, narrow
     screens) and `apps/web/e2e/campaign-wizard.spec.ts` (7 scenarios, readiness checks included: saving and reopening a
     half-done campaign, the page and the API refusing the same values, honest notices,
-    conflicts, read-only campaigns, narrow screens) also start the built API on `127.0.0.1:3101`. They need `E2E_DATABASE_URL` (a `*_test` database;
+    conflicts, read-only campaigns, narrow screens) and `apps/web/e2e/imports.spec.ts` (5
+    scenarios: a search run by the worker code through `run-task` and followed live, repeats
+    matched, a suppressed domain, a CSV import with mapping and a formula-safe error report,
+    cancellation, a failed run, narrow screens) also start the built API on `127.0.0.1:3101`. They need `E2E_DATABASE_URL` (a `*_test` database;
     migrations are applied first) and are reported as skipped without it. See
     `docs/local-development.md` → Browser tests.
 
@@ -331,8 +339,10 @@ decisions: `docs/decisions.md` D-04B-*.
 
 A member with `imports.create` asks for an organization search from one of the workspace's
 ICPs (`POST /workspaces/:workspaceId/imports/discovery`) and gets `202` with a run id and a
-status URL. Contract: **[docs/api/discovery.md](docs/api/discovery.md)**; decisions:
-`docs/decisions.md` D-07A-*.
+status URL; the worker runs it. Companies also come from CSV files
+(`POST /workspaces/:workspaceId/imports/csv`). Contract:
+**[docs/api/discovery.md](docs/api/discovery.md)**; decisions: `docs/decisions.md` D-07A-* to
+D-07C-*.
 
 - **Checked first:** the ICP's criteria (`icpCriteriaSchema`), at least one company filter,
   only filters the provider supports, and the limit (at most 1000, and at most the provider's
@@ -340,12 +350,32 @@ status URL. Contract: **[docs/api/discovery.md](docs/api/discovery.md)**; decisi
 - **Stored:** an `imports` row (`ORGANIZATION_SEARCH`) with the filters, limit, provider,
   attribution and a query hash, all immutable, plus a queued job task and an audit record.
 - **Companies only:** people criteria (titles, seniorities) are kept for contact discovery;
-  nothing creates contacts. Running the search and saving companies are task 07C.
+  nothing creates contacts.
 - **Providers** sit behind `OrganizationSearchProvider` (`packages/integrations`).
   `LeadDiscoveryService` pages through one, validates each record, normalizes company
   identities (`normalizeCompanyIdentity`), drops duplicates and keeps each company's source.
   Development and tests use `FakeOrganizationSearchProvider`: 240 synthetic companies, the
   same results every time.
+- **Apollo** (D-07B-*): `ApolloOrganizationSearchProvider` calls only Apollo's documented
+  organization search, with explicit field mapping, page tokens, rate-limit and quota
+  handling, bounded retries, timeouts and errors that never carry Apollo's words or the key.
+  It is used only in staging and production, by the worker, with `APOLLO_API_KEY`; the API
+  sees only its declaration. Its contract tests use synthetic fixtures
+  (`packages/integrations/src/fixtures/apollo`) and a scripted `fetch`.
+- **Search jobs** (D-07C-01, D-07C-02): the worker's relay publishes due job tasks to BullMQ
+  (Redis); the worker runs each search page by page. Each page is saved in one transaction
+  (companies, a result per record, counts, the resume token), so an interrupted search resumes
+  without duplicates. Paid providers reserve a search credit per page first. A queued or
+  running search can be cancelled.
+- **Saving companies** (`saveOrganizations`): a domain (or parent domain) on the suppression
+  list is excluded; a company already in the workspace is matched, never added twice;
+  otherwise it is created. Every received record keeps its outcome and source.
+- **CSV imports** (D-07C-03): at most 256 KB and 1000 rows; columns mapped to fields; every
+  row saved, matched, excluded or reported as failed with its reasons; values cleaned and never
+  evaluated.
+- **Screens** (D-07C-06): the Imports page (find companies, import a CSV, the runs so far)
+  and a page per run with its status, counts, failure reason, cancellation, results by outcome
+  and an error report whose cells can't run as spreadsheet formulas (`toCsv`, D-07C-05).
 
 ## Screens
 

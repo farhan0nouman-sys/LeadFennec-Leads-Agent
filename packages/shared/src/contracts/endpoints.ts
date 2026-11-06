@@ -44,6 +44,15 @@ import {
   importRunSchema,
 } from './lead-discovery.js';
 import {
+  IMPORT_ROUTES,
+  cancelImportRequestSchema,
+  csvImportRequestSchema,
+  importOptionsSchema,
+  importResultPageSchema,
+  importResultsQuerySchema,
+  importRunPageSchema,
+} from './organization-import.js';
+import {
   ACCESS_REASON_HEADER,
   WORKSPACE_ROUTES,
   acceptInvitationRequestSchema,
@@ -134,6 +143,9 @@ export const CACHE_RESOURCES = {
   campaignOptions: 'workspace',
   campaignReadiness: 'workspace',
   importRun: 'workspace',
+  importRuns: 'workspace',
+  importOptions: 'workspace',
+  importResults: 'workspace',
 } as const;
 
 export type CacheResource = keyof typeof CACHE_RESOURCES;
@@ -655,7 +667,7 @@ export const API = {
       body: discoveryRequestSchema,
       status: 202,
       response: discoveryAcceptedSchema,
-      invalidates: ['importRun', 'activity'],
+      invalidates: ['importRun', 'importRuns', 'activity'],
     }),
     get: endpoint({
       id: 'discovery.get',
@@ -670,6 +682,83 @@ export const API = {
       status: 200,
       response: importRunSchema,
       cache: 'importRun',
+    }),
+  },
+  imports: {
+    list: endpoint({
+      id: 'imports.list',
+      method: 'GET',
+      path: IMPORT_ROUTES.imports(':workspaceId'),
+      tag: 'imports',
+      summary:
+        "The workspace's imports and searches, newest first, with their status and counts.",
+      access: 'workspace',
+      permission: 'imports.create',
+      params: workspaceParams,
+      query: pageQuerySchema,
+      status: 200,
+      response: importRunPageSchema,
+      cache: 'importRuns',
+    }),
+    options: endpoint({
+      id: 'imports.options',
+      method: 'GET',
+      path: IMPORT_ROUTES.options(':workspaceId'),
+      tag: 'imports',
+      summary:
+        'What the import screens offer: the ICPs a search can use, the search provider and its limits, and the CSV limits.',
+      access: 'workspace',
+      permission: 'imports.create',
+      params: workspaceParams,
+      status: 200,
+      response: importOptionsSchema,
+      cache: 'importOptions',
+    }),
+    csv: endpoint({
+      id: 'imports.csv',
+      method: 'POST',
+      path: IMPORT_ROUTES.csv(':workspaceId'),
+      tag: 'imports',
+      summary:
+        'Imports companies from a CSV file with a column mapping: each row is saved, matched to a company already in the workspace, excluded or reported as failed.',
+      access: 'workspace',
+      permission: 'imports.create',
+      params: workspaceParams,
+      body: csvImportRequestSchema,
+      status: 201,
+      response: importRunSchema,
+      invalidates: ['importRuns', 'leadSummary', 'activity'],
+    }),
+    results: endpoint({
+      id: 'imports.results',
+      method: 'GET',
+      path: IMPORT_ROUTES.results(':workspaceId', ':importId'),
+      tag: 'imports',
+      summary:
+        'What happened to each record of a run, in order: created, matched, excluded or failed, with the reasons.',
+      access: 'workspace',
+      permission: 'imports.create',
+      params: importParams,
+      query: importResultsQuerySchema,
+      status: 200,
+      response: importResultPageSchema,
+      cache: 'importResults',
+    }),
+    cancel: endpoint({
+      id: 'imports.cancel',
+      method: 'POST',
+      path: IMPORT_ROUTES.cancel(':workspaceId', ':importId'),
+      tag: 'imports',
+      summary:
+        'Stops a queued or running search; what was saved stays. Repeating it changes nothing.',
+      access: 'workspace',
+      permission: 'imports.create',
+      params: importParams,
+      body: cancelImportRequestSchema,
+      status: 200,
+      response: importRunSchema,
+      errors: ['import_not_cancellable'],
+      invalidates: ['importRun', 'importRuns', 'importResults', 'activity'],
     }),
   },
   dashboard: {
@@ -800,6 +889,7 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
   campaign_not_editable: 409,
   campaign_name_taken: 409,
   campaign_not_ready: 409,
+  import_not_cancellable: 409,
 };
 
 /** Mutations need the session's CSRF token (and every non-GET route checks the origin). */

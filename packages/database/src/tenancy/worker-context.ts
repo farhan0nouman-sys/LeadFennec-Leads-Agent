@@ -209,3 +209,46 @@ export async function claimJob(
     },
   };
 }
+
+/**
+ * Due tasks for a relay to publish (task 07C, docs/decisions.md D-07C-01): every active
+ * workspace, then that workspace's PENDING tasks of `taskTypes` whose time has come, oldest
+ * first, through the workspace's scoped client. Only queue envelopes come back.
+ */
+export async function dueJobTasks(
+  prisma: PrismaClient,
+  input: {
+    readonly worker: WorkerDefinition;
+    readonly now: Date;
+    readonly limit: number;
+  },
+): Promise<JobEnvelope[]> {
+  const limit = z.number().int().min(1).max(1000).parse(input.limit);
+  const tenants = await prisma.tenant.findMany({
+    where: { status: 'ACTIVE' },
+    orderBy: { id: 'asc' },
+    select: { id: true },
+  });
+  const due: JobEnvelope[] = [];
+  for (const { id } of tenants) {
+    if (due.length >= limit) {
+      break;
+    }
+    const scope = systemScope(prisma, {
+      tenantId: id,
+      name: input.worker.name,
+    });
+    const tasks = await scope.db.jobTask.findMany({
+      where: {
+        status: 'PENDING',
+        taskType: { in: [...input.worker.taskTypes] },
+        availableAt: { lte: input.now },
+      },
+      orderBy: [{ availableAt: 'asc' }, { id: 'asc' }],
+      take: limit - due.length,
+      select: { id: true },
+    });
+    due.push(...tasks.map((task) => ({ v: 1 as const, taskId: task.id })));
+  }
+  return due;
+}

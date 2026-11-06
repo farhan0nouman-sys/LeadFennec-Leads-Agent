@@ -3,6 +3,7 @@ export * from './authorization.js';
 export * from './contracts/auth.js';
 export * from './contracts/campaign-activation.js';
 export * from './contracts/campaigns.js';
+export * from './contracts/contact-enrichment.js';
 export * from './contracts/dashboard.js';
 export * from './contracts/lead-discovery.js';
 export * from './contracts/organization-import.js';

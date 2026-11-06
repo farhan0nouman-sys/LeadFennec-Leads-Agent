@@ -377,6 +377,25 @@ D-07C-*.
   and a page per run with its status, counts, failure reason, cancellation, results by outcome
   and an error report whose cells can't run as spreadsheet formulas (`toCsv`, D-07C-05).
 
+## Contact enrichment (contracts)
+
+Task 08A defines how people are found for a company and when an address may be used
+(`docs/decisions.md` D-08A-*). Nothing is stored yet; later tasks use these.
+
+- **Three providers, kept apart** (`packages/integrations`): `PeopleSearchProvider` (people,
+  never addresses), `ContactEnrichmentProvider` (a work address and the provider's own,
+  untrusted claim) and `EmailVerificationProvider` (the status of an address). Development
+  and tests use deterministic synthetic fakes.
+- **ContactEnrichmentAgent:** finds people for the roles an ICP targets, ranks them by role
+  relevance (`rankRoleRelevance`, application code), looks up addresses for the chosen few,
+  and checks its answer with `parseContactEnrichmentOutput`: malformed or unattributed
+  contacts are refused, addresses at another domain dropped.
+- **Contact identity:** `normalizeContactIdentity` (email, else LinkedIn profile, else company
+  domain and name).
+- **Sending:** an address is never "verified" by its shape or by a provider's claim. Only a
+  fresh `verified` check makes it automatically eligible (`emailSendEligibility`); `risky` and
+  `unknown` always need a person.
+
 ## Screens
 
 The web app has the account and team screens (`docs/decisions.md` D-04C-*): sign-in,

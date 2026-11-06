@@ -1,0 +1,64 @@
+{
+  "6a1f0000000000000000b001": {
+    "id": "6a1f0000000000000000b001",
+    "first_name": "Ada",
+    "last_name": "Lovelace",
+    "name": "Ada Lovelace",
+    "title": "VP Sales",
+    "headline": "Synthetic headline",
+    "seniority": "vp",
+    "linkedin_url": null,
+    "photo_url": "https://images.example/ada.png",
+    "email": "Ada.Lovelace@Northwind-Analytics.example",
+    "email_status": "verified",
+    "extrapolated_email_confidence": null,
+    "match_confidence": "high",
+    "city": "Synthetic City",
+    "country": "Synthetic Country",
+    "organization_id": "6a1f0000000000000000a001",
+    "organization": {
+      "id": "6a1f0000000000000000a001",
+      "name": "Northwind Analytics",
+      "primary_domain": "northwind-analytics.example"
+    },
+    "departments": ["master_sales"]
+  },
+  "6a1f0000000000000000b002": {
+    "id": "6a1f0000000000000000b002",
+    "first_name": "Grace",
+    "last_name": "Hopper",
+    "name": "Grace Hopper",
+    "title": "Head of Revenue",
+    "seniority": "head",
+    "linkedin_url": null,
+    "email": null,
+    "email_status": null,
+    "extrapolated_email_confidence": null,
+    "match_confidence": "medium",
+    "organization_id": "6a1f0000000000000000a001",
+    "organization": { "primary_domain": "northwind-analytics.example" }
+  },
+  "6a1f0000000000000000b004": {
+    "id": "6a1f0000000000000000b004",
+    "first_name": "Katherine",
+    "last_name": "Johnson",
+    "title": "Director of Marketing",
+    "seniority": "director",
+    "email": "katherine.johnson@northwind-analytics.example",
+    "email_status": "unverified",
+    "extrapolated_email_confidence": 0.72,
+    "organization": { "primary_domain": "northwind-analytics.example" }
+  },
+  "6a1f0000000000000000b005": {
+    "id": "6a1f0000000000000000b005",
+    "first_name": "Linus",
+    "last_name": "Torvalds",
+    "title": "Chief Technology Officer",
+    "seniority": "c_suite",
+    "email": "not an address",
+    "email_status": "verified",
+    "extrapolated_email_confidence": null,
+    "organization": { "primary_domain": "northwind-analytics.example" }
+  },
+  "6a1f0000000000000000b006": null
+}

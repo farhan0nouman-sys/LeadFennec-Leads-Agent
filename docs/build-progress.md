@@ -4,6 +4,180 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## GIT-13: Commit 08A and 08B in progress (2026-11-06)
+
+**Status: Done (local commit only).** The request was `git commit`.
+
+| Step | Actual result |
+|---|---|
+| Branch and author | `feat/05a-app-shell` (on top of `20d0b38`); author `LeadFennec-Leads-Agent` with the GitHub `noreply` address |
+| Content | 08A (contact enrichment contracts and fakes, complete), 08B **in progress** (Apollo people lookup and enrichment adapters, batched enrichment, usage, fail-closed factories; its regression and docs are not finished), and the GIT-12 and this log entry |
+| Checks before committing | 08A: its full regression (see the 08A entry). For this commit, run on the whole tree with Turborepo's cache: `pnpm format:check` exit 0 (after formatting the fixtures README); `pnpm typecheck` exit 0, 14/14; `turbo run lint` exit 0, 14/14; `pnpm test` without `TEST_*` exit 0: shared 202, integrations 48, database 46 passed and 332 skipped, web 33, worker 6 passed and 7 skipped, api 31 passed and 61 skipped. **Not run for 08B:** the database, API and worker suites against PGlite, the build, migrations and the browser tests. A scan of the staged changes for credentials, the personal emails and the Apollo account id found nothing. |
+| Commit | The commit that contains this entry (`git log`) |
+
+- **Not pushed.** 08B stays "in progress" until its regression passes.
+
+---
+
+## 08B: Apollo people lookup and contact enrichment (2026-11-06)
+
+**Status: In progress (stopped at the usage limit). Not passed.**
+
+### Done so far
+
+- **Docs checked 2026-11-06:** Apollo People API Search (`POST /api/v1/mixed_people/api_search`,
+  0 credits, partial records, no addresses), People Enrichment and Bulk People Enrichment
+  (`POST /api/v1/people/bulk_match`, up to 10 people, `credits_consumed`, `null` for no match).
+- **Integrations:** `apollo-client.ts` (the shared Apollo HTTP client, moved out of 07B's
+  adapter); `apollo-people.ts` (`ApolloPeopleSearchProvider`, `ApolloContactEnrichmentProvider`:
+  documented fields only, guessed and malformed addresses dropped, Apollo's email status kept as
+  an untrusted claim, repeated provider ids sent once, credits as reported); batched
+  `ContactEnrichmentProvider` and partial `ProviderPerson` records in `providers.ts`; fakes
+  (partial records, repeated ids, guessed addresses, enrichment and verification failures);
+  `ContactEnrichmentAgent` reports usage (requests, credits, repeated ids, skipped, unmatched,
+  dropped); `checkContactEmails` records failed checks as retryable or permanent;
+  `createContactDataProviders` / `createEmailVerificationProvider` (fakes locally; Apollo with a
+  key elsewhere; fail closed without a key, and always for verification).
+- **Verification service:** none chosen (the user's answer): the fake stays, live use fails
+  closed. Live integration blocker (to record as O-35).
+- **Checks run:** `packages/integrations` typecheck and lint clean; its tests **48 passed**
+  (07B's 14 Apollo organization search tests unchanged after the refactor).
+
+### Not done yet
+
+- The full cache-free regression (other packages' typecheck, lint and tests; database, API,
+  worker; build; browser tests), the credential scan, and the decisions (D-08B-*, O-35), README
+  and CLAUDE.md updates.
+
+### Next prompt
+
+Finish 08B (above), then 08C (sent and waiting).
+
+---
+
+## 08A: Contact enrichment contracts and providers (2026-11-06)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **No live provider:** contracts and deterministic fakes only. No people-search,
+  enrichment or verification provider is chosen or called (O-34).
+- **Real PostgreSQL / CI:** the regression ran on PGlite only (08A changes no table).
+- **Plan:** the ranking weights, freshness and identity rules could not be checked against the
+  missing plan (O-01, O-34).
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `20d0b38`.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `identity.ts`: `normalizeContactIdentity`, `normalizeLinkedinUrl`, `ContactIdentity`. `contracts/contact-enrichment.ts` (new): seniority levels, `normalizeTitle`, `inferSeniority`, `parseSeniority`, `rankRoleRelevance`; provenance; the agent's input and output schemas and `parseContactEnrichmentOutput`; `EMAIL_VERIFICATION_STATUSES`, `emailCheckSchema`, `emailSendEligibility`. `index.ts`. Test: `contracts/contact-enrichment.test.ts` (new, 11). |
+| Integrations | `providers.ts`: `PeopleSearchProvider`, `ContactEnrichmentProvider`, `EmailVerificationProvider` (replacing `LeadDataProvider` and the old verification interface); provider set keys `peopleSearch`, `contactEnrichment`, `emailVerification`. `fake-contacts.ts` (new): the three deterministic fakes. `contact-enrichment.ts` (new): `ContactEnrichmentAgent`, `checkContactEmails`. `fakes.ts`, `index.ts`. Tests: `contact-enrichment.test.ts` (new, 6); `fakes.test.ts` (the old people and verification tests removed, keys updated). |
+| Docs | `docs/decisions.md` D-08A-01 to 06 and O-34; README (contact enrichment); `CLAUDE.md` (contacts rule). This entry. |
+
+No route, table, migration, environment variable or screen changed.
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end; ports 54329, 3100 and 3101 are free.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 10/10 tasks, 0 cached: shared **202**, integrations **39**, database **46 passed, 332 skipped**, web **33**, worker **6 passed, 7 skipped**, api **31 passed, 61 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 10/10 tasks, 0 cached: shared **202**, integrations **39**, database **376 passed, 2 skipped** (the PGlite concurrency skips), web **33**, worker **13**, api **92** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 19 migrations (none new); up to date; exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date (no route changed) |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **47 passed** (no new scenario: 08A has no screen) |
+| `pnpm test:e2e` without it | **9 passed, 38 skipped** |
+| Reference repos / credential and personal-data scan of the 15 changed files | 0 changes in each of the 9 / no matches |
+
+**Earlier failures in this task (logged honestly):**
+1. **Fake data:** every new integrations test failed at first ("empty list"). A hash product
+   could be negative, so a list index went below zero. The index now wraps; all pass.
+2. **The provider key test** listed the new keys out of order (the test sorts them); fixed.
+3. **Lint:** an unused destructured variable, a regex instead of `endsWith`, an optional chain,
+   and an `async` without `await` in a test double. One inline edit failed on escaping and
+   wrote nothing; it was redone with the editor.
+
+### What 08A proves (local)
+
+- **Contracts reject malformed or unattributed contacts:**
+  - a contact without provenance, or with empty attribution, is refused, as is an address
+    without its own provenance;
+  - each refusal has its path and reason, and so do:
+    - a field out of shape (empty name, unknown seniority);
+    - an address that isn't one;
+    - a LinkedIn URL on another host or not a profile;
+    - a person with nothing to identify them by;
+    - a duplicate.
+  - The whole answer is refused when it isn't the schema or has more contacts than asked for.
+  - The agent's own provider records go through the same check (an empty attribution is
+    refused).
+- **Unknown and risky statuses cannot become automatically send-eligible:**
+  - `risky` and `unknown` are `needs_review` at any age, never automatic;
+  - only a fresh `verified` check of the same address is automatic;
+  - with every check risky, nothing is automatic, though the enrichment provider claimed some
+    addresses verified.
+- **No schema equates an email-shaped string with verified status:**
+  - an address, a bare "verified", a status without provider or time, another address's
+    check, a future check and an unknown provider are all `unverified`;
+  - the agent's output refuses a status, a "verified" flag, a verification or an eligibility
+    field.
+- **Deterministic fakes with provenance and timestamps:**
+  - the same synthetic staff and addresses every time;
+  - all four statuses across the fake companies, the same on every run;
+  - every person, address and check carries its provider and the injected clock's time.
+- **Role relevance and identity:**
+  - the same title ranks above similar ones and the right seniority higher, deterministically;
+  - identities are keyed by email, else LinkedIn, else company domain and name, with accents,
+    case and punctuation normalized.
+
+### Incomplete live checks (not passed)
+
+- A live people-search, enrichment or verification provider (none chosen; official docs
+  first, O-34).
+- Real PostgreSQL and CI.
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker or Redis (O-06).
+3. Open: O-19 to O-34.
+
+### Manual check
+
+None: 08A has no screen or route.
+
+### Next prompt
+
+Not known: the plan is missing (O-01). The user sends the next prompt.
+
+---
+
+## GIT-12: Push `feat/05a-app-shell` (2026-11-06)
+
+**Status: Done.** The request was `git push`.
+
+| Step | Actual result |
+|---|---|
+| Pushed | `feat/05a-app-shell` → `origin/feat/05a-app-shell`, `2655d7b..20d0b38` (07B–07C); the remote head is `20d0b38` (checked with `git ls-remote`) |
+| Remote | `github.com/farhan0nouman-sys/LeadFennec-Leads-Agent` (**public**); `main` unchanged at `7fc44f2`; `feat/04a-auth` unchanged at `3e0b418` |
+
+- **CI has not run:** the workflow runs on pushes to `main`, on pull requests and on manual
+  dispatch, not on pushes to other branches. A pull request into `main` (or a manual run)
+  would give the first real-PostgreSQL and Redis results for 03A–07C. That is the user's
+  decision.
+- This entry is not in the pushed commit; it is a local change to the log.
+
+---
+
 ## GIT-11: Commit 07B–07C (2026-11-06)
 
 **Status: Done (local commit only).** The request was `git commit`.

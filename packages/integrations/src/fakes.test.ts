@@ -3,13 +3,11 @@ import {
   FakeAiProvider,
   FakeBillingProvider,
   FakeCrmProvider,
-  FakeEmailVerificationProvider,
-  FakeLeadDataProvider,
   FakeMailboxProvider,
   FakeTransactionalMailProvider,
   createFakeProviders,
 } from './fakes.js';
-import type { LeadRecord, OutboundEmail } from './providers.js';
+import type { OutboundEmail } from './providers.js';
 
 const message: OutboundEmail = {
   from: 'sender@example.test',
@@ -52,50 +50,7 @@ describe('FakeAiProvider', () => {
   });
 });
 
-describe('FakeLeadDataProvider', () => {
-  const person = (id: string, title: string): LeadRecord => ({
-    externalId: id,
-    firstName: 'Ada',
-    lastName: id,
-    title,
-    companyName: 'Example Co',
-    companyDomain: 'example.test',
-  });
-  const provider = new FakeLeadDataProvider([
-    person('1', 'Head of Sales'),
-    person('2', 'CTO'),
-    person('3', 'VP Sales'),
-  ]);
-
-  it('filters by title and pages results', async () => {
-    const first = await provider.searchPeople({
-      titles: ['sales'],
-      page: 1,
-      perPage: 1,
-    });
-    expect(first.people.map((p) => p.externalId)).toEqual(['1']);
-    expect(first.hasMore).toBe(true);
-    const second = await provider.searchPeople({
-      titles: ['sales'],
-      page: 2,
-      perPage: 1,
-    });
-    expect(second.people.map((p) => p.externalId)).toEqual(['3']);
-    expect(second.hasMore).toBe(false);
-  });
-});
-
 describe('other fakes', () => {
-  it('verification returns configured statuses, unknown otherwise', async () => {
-    const verifier = new FakeEmailVerificationProvider({
-      'ok@example.test': 'valid',
-    });
-    expect((await verifier.verify('OK@example.test')).status).toBe('valid');
-    expect((await verifier.verify('other@example.test')).status).toBe(
-      'unknown',
-    );
-  });
-
   it('CRM upserts by email', async () => {
     const crm = new FakeCrmProvider();
     const contact = {
@@ -144,13 +99,14 @@ describe('other fakes', () => {
     expect(Object.keys(providers).sort()).toEqual([
       'ai',
       'billing',
+      'contactEnrichment',
       'crm',
       'emailVerification',
       'gmail',
-      'leadData',
       'mail',
       'microsoftGraph',
       'organizationSearch',
+      'peopleSearch',
     ]);
     expect(createFakeProviders().gmail).not.toBe(providers.gmail);
   });

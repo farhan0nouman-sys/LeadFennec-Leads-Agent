@@ -5,15 +5,8 @@ import type {
   BillingProvider,
   CrmContact,
   CrmProvider,
-  EmailVerificationProvider,
-  EmailVerificationResult,
-  EmailVerificationStatus,
-  LeadDataProvider,
-  LeadRecord,
   MailboxProvider,
   OutboundEmail,
-  PeopleSearchPage,
-  PeopleSearchQuery,
   ProviderSet,
   SendReceipt,
   TransactionalEmail,
@@ -21,9 +14,19 @@ import type {
   TransactionalSendReceipt,
   UsageRecord,
 } from './providers.js';
+import {
+  FakeContactEnrichmentProvider,
+  FakeEmailVerificationProvider,
+  FakePeopleSearchProvider,
+} from './fake-contacts.js';
 import { FakeOrganizationSearchProvider } from './fake-organization-search.js';
 
-export { FakeOrganizationSearchProvider };
+export {
+  FakeContactEnrichmentProvider,
+  FakeEmailVerificationProvider,
+  FakeOrganizationSearchProvider,
+  FakePeopleSearchProvider,
+};
 
 // In-memory fakes: deterministic, inspectable, and they never open a network connection.
 
@@ -54,47 +57,6 @@ export class FakeAiProvider implements AiProvider {
         ),
         outputTokens: Math.ceil(JSON.stringify(output ?? null).length / 4),
       },
-    });
-  }
-}
-
-/** Searches a fixed list by case-insensitive title match, with page/perPage paging. */
-export class FakeLeadDataProvider implements LeadDataProvider {
-  readonly queries: PeopleSearchQuery[] = [];
-
-  constructor(private readonly people: readonly LeadRecord[] = []) {}
-
-  searchPeople(query: PeopleSearchQuery): Promise<PeopleSearchPage> {
-    this.queries.push(query);
-    const titles = query.titles.map((title) => title.toLowerCase());
-    const matches = this.people.filter(
-      (person) =>
-        titles.length === 0 ||
-        titles.some((title) => person.title?.toLowerCase().includes(title)),
-    );
-    const start = (query.page - 1) * query.perPage;
-    return Promise.resolve({
-      people: matches.slice(start, start + query.perPage),
-      hasMore: start + query.perPage < matches.length,
-    });
-  }
-}
-
-/** Returns the configured status per address; anything else is "unknown". */
-export class FakeEmailVerificationProvider implements EmailVerificationProvider {
-  readonly checked: string[] = [];
-
-  constructor(
-    private readonly statuses: Readonly<
-      Record<string, EmailVerificationStatus>
-    > = {},
-  ) {}
-
-  verify(email: string): Promise<EmailVerificationResult> {
-    this.checked.push(email);
-    return Promise.resolve({
-      email,
-      status: this.statuses[email.toLowerCase()] ?? 'unknown',
     });
   }
 }
@@ -170,7 +132,8 @@ export class FakeTransactionalMailProvider implements TransactionalMailProvider 
 
 export interface FakeProviderSet extends ProviderSet {
   readonly ai: FakeAiProvider;
-  readonly leadData: FakeLeadDataProvider;
+  readonly peopleSearch: FakePeopleSearchProvider;
+  readonly contactEnrichment: FakeContactEnrichmentProvider;
   readonly organizationSearch: FakeOrganizationSearchProvider;
   readonly emailVerification: FakeEmailVerificationProvider;
   readonly gmail: FakeMailboxProvider;
@@ -183,7 +146,8 @@ export interface FakeProviderSet extends ProviderSet {
 export function createFakeProviders(): FakeProviderSet {
   return {
     ai: new FakeAiProvider(),
-    leadData: new FakeLeadDataProvider(),
+    peopleSearch: new FakePeopleSearchProvider(),
+    contactEnrichment: new FakeContactEnrichmentProvider(),
     organizationSearch: new FakeOrganizationSearchProvider(),
     emailVerification: new FakeEmailVerificationProvider(),
     gmail: new FakeMailboxProvider('gmail'),

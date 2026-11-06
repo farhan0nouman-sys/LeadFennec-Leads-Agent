@@ -239,6 +239,13 @@ if needed; next prompt ID.
   page per transaction (`saveSearchPage`). Paid provider pages reserve
   `ORGANIZATION_SEARCH_CREDITS` first. Every exported CSV cell goes through `csvCell` /
   `toCsv` (formula injection, D-07C-05).
+- **Contacts** (`docs/decisions.md` D-08A-*): people search, contact enrichment and email
+  verification are separate providers. Contact identity comes only from
+  `normalizeContactIdentity`. An agent's or provider's answer is checked with
+  `parseContactEnrichmentOutput` (provenance required) before use. An address's status comes
+  only from an email check; never add a "verified" field or treat a provider's claim as one.
+  Automatic sending needs `emailSendEligibility(...).automatic`: `risky` and `unknown` never
+  qualify.
 - **Campaign wizard** (`docs/decisions.md` D-06B-*): a stage turns its form into the sections
   of a save and checks them with `updateCampaignRequestSchema` (`apps/web/lib/campaign-wizard.ts`);
   map every issue path, the page's or the API's, to a field of the stage, and never write a

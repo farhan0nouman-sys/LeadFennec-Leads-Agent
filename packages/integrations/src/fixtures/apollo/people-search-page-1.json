@@ -1,0 +1,41 @@
+{
+  "total_entries": 4,
+  "people": [
+    {
+      "id": "6a1f0000000000000000b001",
+      "first_name": "Ada",
+      "last_name_obfuscated": "Lo***e",
+      "title": "VP Sales",
+      "last_refreshed_at": "2026-10-01T00:00:00.000Z",
+      "has_email": true,
+      "has_city": true,
+      "has_state": false,
+      "has_country": true,
+      "has_direct_phone": "Yes",
+      "organization": {
+        "name": "Northwind Analytics",
+        "has_industry": true,
+        "has_phone": true,
+        "has_city": true,
+        "has_state": false,
+        "has_country": true,
+        "has_zip_code": false,
+        "has_revenue": false,
+        "has_employee_count": true
+      }
+    },
+    {
+      "id": "6a1f0000000000000000b002",
+      "first_name": "Grace",
+      "last_name_obfuscated": "Ho***r",
+      "title": "Head of Revenue",
+      "last_refreshed_at": "2026-10-02T00:00:00.000Z",
+      "has_email": true,
+      "has_city": false,
+      "has_state": false,
+      "has_country": true,
+      "has_direct_phone": "Maybe: please request direct dial via people/bulk_match",
+      "organization": { "name": "Northwind Analytics" }
+    }
+  ]
+}

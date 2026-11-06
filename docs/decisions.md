@@ -2899,6 +2899,145 @@ requests, the 07B provider interface, the 04B job context and the 05B screens.
 | Web units | `lib/imports.test.ts` (2), `lib/polling.test.ts` | Mapping guesses; the error report keeps formulas as text; the new poll stops within 30 minutes |
 | Browser | `e2e/imports.spec.ts` (5) | A search run by the worker code and followed live; a repeat matched and a suppressed domain excluded; a CSV with a guessed mapping, failed rows and the downloaded report (formulas as text, no unmapped column); a repeat import; cancel with confirmation, a failed run's reason, an unsearchable profile; axe; 390 px |
 
+## 08A: Contact enrichment contracts and providers (2026-11-06)
+
+**Basis.** The plan is still missing (O-01); this follows the 08A prompt ("ContactEnrichmentAgent
+input/output schemas and separate PeopleSearchProvider, ContactEnrichmentProvider and
+EmailVerificationProvider interfaces"; "deterministic fake implementations returning verified,
+risky, unknown and invalid results with provenance and retrieval timestamps"; "role relevance
+ranking and contact identity normalization"; "no schema equates an email-shaped string with
+verified status"). It replaces the provisional `LeadDataProvider` and the old verification
+interface (D-02C-05), which only their fakes and tests used. No live provider, route, table or
+migration: contracts and fakes only. No provider-specific detail was implemented.
+
+### D-08A-01: Contact identity
+
+`normalizeContactIdentity({ firstName, lastName, email?, linkedinUrl?, organizationDomain? })`
+(`@lead-fennec-ai/shared`, next to the email, domain and company helpers):
+
+- **Names:** NFC, trimmed, spaces collapsed, at most 100 characters each. `nameKey` is "first
+  last" in lower-case ASCII without accents or punctuation ("José O'Brien-Núñez" →
+  "jose o brien nunez").
+- **Email:** `normalizeEmail`. **LinkedIn:** `normalizeLinkedinUrl` keeps only http(s)
+  `linkedin.com` hosts with an `/in/<slug>` path, as `https://www.linkedin.com/in/<slug>`.
+  **Company domain:** `normalizeDomain`.
+- **Malformed is an error, not dropped:** a given email, profile or domain that doesn't
+  normalize refuses the contact, so nothing half-valid is saved.
+- **Key:**
+  - `email:<address>` when there is an address;
+  - else `linkedin:<slug>`;
+  - else `name:<company domain>:<name key>`;
+  - else the person can't be identified (an error).
+
+### D-08A-02: The ContactEnrichmentAgent's contract
+
+`packages/shared/src/contracts/contact-enrichment.ts`:
+
+- **Input** (`contactEnrichmentInputSchema`, strict): one organization (`id`, `name`, `domain`
+  or null), the targeting (up to 30 titles, 10 seniorities, as an ICP writes them) and
+  `maxContacts` (1–25). Nothing else reaches the agent.
+- **Output** (`contactEnrichmentOutputSchema`, then `enrichedContactSchema` per contact, both
+  strict):
+  - names, title, seniority (one of 11 levels, or null), LinkedIn URL;
+  - an `email` of `{ address, provenance }` or null;
+  - `provenance` (`provider`, `externalId`, `retrievedAt`, `attribution`), required on the
+    contact and on its address.
+- **`parseContactEnrichmentOutput(raw, input)`** treats the answer as untrusted:
+  - **The whole answer is refused** when it isn't the schema or has more contacts than asked
+    for.
+  - **Each contact is accepted or refused on its own, with its reasons by path:**
+    - malformed fields (including an extra key such as a status or a flag);
+    - missing or empty provenance;
+    - an address that isn't one;
+    - an identity that can't be normalized;
+    - the same person twice.
+  - **An address at another domain** than the company's (or its subdomains) is dropped with a
+    warning: it may be a personal address.
+  - **Ranking** is done by application code (D-08A-03), most relevant first; ties by
+    seniority, then name.
+
+### D-08A-03: Role relevance
+
+- **`normalizeTitle`** spells out abbreviations ("Sr. VP, Sales" → "senior vice president
+  sales").
+- **Seniority:**
+  - `inferSeniority` reads a level from a title ("Chief Revenue Officer" → `c_suite`, "Vice
+    President" → `vp`, not `c_suite`);
+  - `parseSeniority` reads an ICP's words ("Directors", "C-level");
+  - levels: owner, founder, c_suite, partner, vp, head, director, manager, senior, entry,
+    intern.
+- **`rankRoleRelevance(person, targeting)`**, 0–100, deterministic:
+  - title: the same title 70, every word of a target title 55, otherwise the share of shared
+    words, up to 40;
+  - seniority: a target level 30, a level next to one 15;
+  - with no targets, seniority alone orders people (more senior first, at most 10).
+  - It returns the matched title, the seniority and short reasons.
+- The weights are a starting point chosen without the plan (O-34).
+
+### D-08A-04: Email checks and send eligibility
+
+- **Statuses:** `verified`, `risky`, `unknown`, `invalid` (stored later as the existing
+  `verification_status` values `VALID`, `RISKY`, `UNKNOWN`, `INVALID`).
+- **An email check** (`emailCheckSchema`, strict): the address, the status, a short reason
+  code, the verification provider and `checkedAt`. It is the only place a status exists.
+- **No schema equates an address with "verified":**
+  - the agent's output has no status field, and strict schemas refuse one;
+  - an enrichment provider's own claim (`provider_verified`) is kept as an untrusted claim on
+    its result and never becomes a status;
+  - there is no boolean "verified" anywhere.
+- **`emailSendEligibility(address, check, now)`** parses the check itself:
+  - `eligible` (automatic) only for a well-formed `verified` check of that same address, from
+    the last 30 days and not from the future;
+  - `risky` and `unknown`: `needs_review`, never automatic, whatever their age;
+  - `invalid`: `blocked`;
+  - verified but older than 30 days: `stale` (check again);
+  - anything else (no check, an email-shaped string, a bare status, another address's check,
+    an unknown provider, a malformed time): `unverified`.
+- This is the rule later tasks call before an address may be used automatically; it decides,
+  never a model.
+
+### D-08A-05: Provider interfaces, fakes and the agent
+
+- **`PeopleSearchProvider`**: people at a company for titles and seniorities, paged by
+  opaque token. Names, titles, seniority and profile, **never email addresses**. Source,
+  attribution, page size, `retrievedAt`, credits.
+- **`ContactEnrichmentProvider`**: a work address for one person, with the provider's claim
+  (untrusted), `retrievedAt` and credits.
+- **`EmailVerificationProvider`**: the status of one address, with a reason and `checkedAt`.
+- The three are separate; the provider set has `peopleSearch`, `contactEnrichment` and
+  `emailVerification` (the old `leadData` is gone).
+- **Fakes** (`packages/integrations/src/fake-contacts.ts`), deterministic, synthetic:
+  - **People:** 8 people per company, picked from fixed name and role lists by a stable hash
+    of the domain. No profile URLs, `raw.synthetic`. Filtered by a shared title word or a
+    seniority asked for.
+  - **Addresses:** `first.last@<company domain>` for five in six people, none for the rest.
+    The claim alternates.
+  - **Checks:**
+    - bad syntax and the reserved `.invalid` domain are invalid; `catchall` in the local part
+      is risky; overrides are allowed;
+    - otherwise a stable hash makes about half verified, a fifth risky (`catch_all`), a fifth
+      unknown (`timeout`) and a tenth invalid (`no_mailbox`);
+    - every result carries the injected clock's time.
+- **`ContactEnrichmentAgent`** (`contact-enrichment.ts`), deterministic, no model:
+  1. people search (up to 3 pages);
+  2. ranking by role relevance (people who match nothing are left out when there are
+     targets);
+  3. addresses for the top `maxContacts` only, when the company has a domain;
+  4. the answer, with provenance from each provider, goes through
+     `parseContactEnrichmentOutput`.
+  - **`checkContactEmails`** verifies each address and attaches `emailSendEligibility`.
+  - Persisting contacts, budgets for paid lookups and a live provider are later tasks.
+- **Verification provider:** none is chosen. `EMAIL_VERIFICATION_PROVIDERS` lists only `FAKE`
+  until one is, after its official docs are checked (O-34).
+
+### D-08A-06: Tests
+
+| File | What it shows |
+|---|---|
+| `packages/shared/src/contracts/contact-enrichment.test.ts` (11) | Identity keys (email, LinkedIn, company and name) and refusals (empty or unusable names, bad email, non-LinkedIn or non-profile URL, nothing to identify); title and seniority reading; ranking (same title above similar, seniority and its neighbours, no targets); accepted contacts ranked; malformed and unattributed contacts refused with paths; no answer can claim a status, a verification or eligibility; addresses at other domains dropped, subdomains kept; answers too long or not answers refused; only a fresh verified check of the same address is automatic; risky and unknown never are; anything but a real check is unverified |
+| `packages/integrations/src/contact-enrichment.test.ts` (6) | Fixed synthetic staff with no addresses or profiles, paged; addresses on the company domain only, with both claims; all four statuses, the same every time, and the rules; the agent's ranked, attributed answer, addresses only for the chosen people, the same twice; no domain gives no lookups; unattributed provider records refused; eligibility follows the check, not the provider's claim |
+| `packages/integrations/src/fakes.test.ts` | The provider set's new keys |
+
 ## Open choices (need a decision from the user)
 
 | ID | Choice | Current state | Options |
@@ -2936,3 +3075,4 @@ requests, the 07B provider interface, the 04B job context and the 05B screens.
 | O-31 | Lead discovery (07A) | The ICP criteria vocabulary, the company identity rules, the limits (1000 per search, 100 by default) and the run fields were chosen without the plan (D-07A-01 to D-07A-04). Development and tests use the fake; since 07B staging and production use Apollo (O-32). Requests are stored with a job task; since 07C the worker runs them (O-33). Company identity uses the domain when there is one, else the normalized name: two companies with the same name and no domain are treated as one. | Confirm the vocabulary, identity rules and limits against the plan. Build the Apollo adapter (07B, official docs first) and the worker, upserts and screens (07C). Decide whether a same-name company without a domain needs another tie-breaker (country, provider id). |
 | O-32 | Apollo organization search (07B) | Built from the official docs only (D-07B-01 to D-07B-05); no live request was made, so the mapping is unproven against real answers. Not known: the account's plan, and whether it has a REST API key with organization search access (the endpoint answers 403 without it). Apollo matches exact industry names, so free-text ICP industries may find nothing; country names come from the runtime's English names (Intl), unverified against Apollo's location names. The response documents no industry, employee count or country, so found companies have none. The `accounts` array (companies the team already saved) is ignored. A retried timeout may cost a second credit. | Create a key scoped to `api/v1/mixed_companies/search` and run one authorized live page (1 credit) in staging. Decide whether ICP industries should be picked from Apollo's list, whether saved accounts count as results, and whether to fill industry and size from an enrichment step (separate provider, official docs first). |
 | O-33 | Search jobs and CSV imports (07C) | Chosen without the plan (D-07C-01 to D-07C-06): the 5-second relay, one job at a time, 3 provider attempts per task (5 task attempts), the suppression rule (a parent domain excludes subdomains), matching without a domain by name key only among companies without a domain, fill-in of missing details only, CSV limits (256 KB, 1000 rows) and fields, and the error report columns. The BullMQ transport has run only against its documentation: there is no Redis on this machine, so the queue and the worker process were not started; the job itself ran through run-task. Organizations saved before 07C have no name key, so a domainless one can be matched only after it gets one. Contacts are not imported (companies only). | Run the worker against Redis (CI or Docker) before relying on it. Confirm the rules and limits against the plan. Decide whether imports should also bring in contacts (08A), whether name matching should consider the country, and whether old organizations need their name keys backfilled. |
+| O-34 | Contact enrichment (08A) | Contracts and fakes only (D-08A-01 to D-08A-05). Chosen without the plan: the seniority levels, the relevance weights (title 70, seniority 30), the 30-day freshness of a verified check, dropping addresses at other domains, and the identity key order (email, LinkedIn, company and name). No email verification provider is chosen, and no live people-search or enrichment adapter exists (Apollo people search is separate from 07B and needs its own docs check). Nothing is stored yet: contacts, checks and the send rule are used by later tasks. | Confirm the rules against the plan. Choose a verification provider (official docs first) and whether Apollo people search and enrichment are used. Decide whether a person may approve a risky or unknown address for sending, and how that approval is recorded. |

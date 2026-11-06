@@ -3,9 +3,13 @@
 // specific details (endpoints, auth, scopes, rate limits) belong in live adapters and
 // require checking the provider's current official docs first.
 import type {
+  ContactDataProvider,
   DiscoveryProvider,
+  EmailVerificationProviderName,
+  EmailVerificationStatus,
   OrganizationSearchCapabilities,
   OrganizationSearchFilters,
+  SeniorityLevel,
 } from '@lead-fennec-ai/shared';
 
 /** OpenAI. `output` is untrusted: callers must validate it against their own schema. */
@@ -31,7 +35,7 @@ export interface AiGenerateResult {
 /**
  * Searching companies (task 07A, docs/decisions.md D-07A-02). Provider-neutral: a live adapter
  * maps its own fields to these, declares what it supports, and reports quota and cost when the
- * provider does. Separate from people search (LeadDataProvider) and from enrichment.
+ * provider does. Separate from people search (PeopleSearchProvider) and from enrichment.
  */
 export interface OrganizationSearchProvider {
   /** Recorded with every result as its source. */
@@ -138,41 +142,129 @@ export class ProviderError extends Error {
   }
 }
 
-/** Apollo. */
-export interface LeadDataProvider {
-  searchPeople(query: PeopleSearchQuery): Promise<PeopleSearchPage>;
+/**
+ * Finding people at a company (task 08A, docs/decisions.md D-08A-05): names, titles and
+ * profiles, never email addresses. Separate from enrichment and from verification.
+ */
+export interface PeopleSearchProvider {
+  readonly source: ContactDataProvider;
+  /** Shown with every person, as the provider requires. */
+  readonly attribution: string;
+  readonly maxPageSize: number;
+  /** Throws ProviderError; never a provider's own message or response. */
+  searchPeople(request: PeopleSearchRequest): Promise<PeopleSearchPage>;
 }
 
-export interface PeopleSearchQuery {
+export interface PeopleSearchRequest {
+  readonly organization: {
+    readonly name: string;
+    readonly domain: string | null;
+  };
   readonly titles: readonly string[];
-  readonly page: number;
-  readonly perPage: number;
+  readonly seniorities: readonly SeniorityLevel[];
+  /** At most maxPageSize. */
+  readonly pageSize: number;
+  /** Null for the first page, else the previous page's nextPageToken (opaque). */
+  readonly pageToken: string | null;
 }
 
-export interface LeadRecord {
+/**
+ * A person as the provider returned them. Every field is untrusted until validated. A search
+ * record can be partial (Apollo withholds the last name until enrichment, D-08B-02).
+ */
+export interface ProviderPerson {
   readonly externalId: string;
   readonly firstName: string;
-  readonly lastName: string;
+  /** Null when the provider doesn't give it (yet). */
+  readonly lastName: string | null;
   readonly title: string | null;
-  readonly companyName: string | null;
-  readonly companyDomain: string | null;
+  readonly seniority: SeniorityLevel | null;
+  readonly linkedinUrl: string | null;
+  readonly organizationDomain: string | null;
+  /** Whether the provider says it has an address for the person; null when it doesn't say. */
+  readonly hasEmail: boolean | null;
+  /** The record as received, kept as provenance. Never executed. */
+  readonly raw: Readonly<Record<string, unknown>>;
 }
 
 export interface PeopleSearchPage {
-  readonly people: readonly LeadRecord[];
-  readonly hasMore: boolean;
+  readonly people: readonly ProviderPerson[];
+  readonly nextPageToken: string | null;
+  readonly retrievedAt: Date;
+  readonly creditsUsed: number | null;
 }
 
-/** Email verification. */
-export type EmailVerificationStatus = 'valid' | 'invalid' | 'risky' | 'unknown';
+/**
+ * Finding people's work addresses (tasks 08A and 08B, D-08A-05, D-08B-03), in batches. It
+ * returns what the provider knows about each person, an address and the provider's own claim
+ * about it. The claim is kept as an untrusted claim and never becomes a verification status:
+ * only an EmailVerificationProvider check does. A guessed address is never returned.
+ */
+export interface ContactEnrichmentProvider {
+  readonly source: ContactDataProvider;
+  readonly attribution: string;
+  /** People per call. */
+  readonly maxBatchSize: number;
+  /** Throws ProviderError; never a provider's own message or response. */
+  enrichContacts(
+    requests: readonly ContactEnrichmentRequest[],
+  ): Promise<ContactEnrichmentBatch>;
+}
 
+export interface ContactEnrichmentRequest {
+  /** The provider's id for the person, from its people search. */
+  readonly externalId: string | null;
+  readonly firstName: string;
+  readonly lastName: string | null;
+  readonly organizationName: string | null;
+  readonly organizationDomain: string;
+}
+
+/** What the provider knows about one person. Every field is untrusted until validated. */
+export interface EnrichedPerson {
+  readonly externalId: string | null;
+  readonly firstName: string | null;
+  readonly lastName: string | null;
+  readonly title: string | null;
+  readonly seniority: SeniorityLevel | null;
+  readonly linkedinUrl: string | null;
+  readonly organizationDomain: string | null;
+  /** Null when the provider has no address, or only one that wasn't kept (emailDropped). */
+  readonly email: string | null;
+  /** What the provider says about its address. Untrusted; not a verification. */
+  readonly providerClaim: 'provider_verified' | 'provider_unverified' | null;
+  /** Why an address the provider sent was not kept: a guess, or not an address. */
+  readonly emailDropped: 'guessed' | 'malformed' | null;
+  /** The documented fields as received, kept as provenance. Never executed. */
+  readonly raw: Readonly<Record<string, unknown>>;
+}
+
+export interface ContactEnrichmentBatch {
+  /** In the order of the requests; null for a person the provider couldn't match. */
+  readonly results: readonly (EnrichedPerson | null)[];
+  readonly retrievedAt: Date;
+  /** As the provider reports it (it can be fractional); null when it doesn't. */
+  readonly creditsUsed: number | null;
+}
+
+/**
+ * Checking whether an address accepts email (task 08A, D-08A-04): the only source of an
+ * address's status. The status alone never makes an address send-eligible; see
+ * emailSendEligibility in @lead-fennec-ai/shared.
+ */
 export interface EmailVerificationProvider {
-  verify(email: string): Promise<EmailVerificationResult>;
+  readonly source: EmailVerificationProviderName;
+  /** Throws ProviderError for a failed check; an inconclusive one is status "unknown". */
+  verify(address: string): Promise<EmailCheckResult>;
 }
 
-export interface EmailVerificationResult {
-  readonly email: string;
+export interface EmailCheckResult {
+  /** The address checked, normalized. */
+  readonly address: string;
   readonly status: EmailVerificationStatus;
+  /** A short machine-readable reason (e.g. "catch_all"), or null. */
+  readonly reason: string | null;
+  readonly checkedAt: Date;
 }
 
 /** Gmail and Microsoft Graph. */
@@ -240,7 +332,8 @@ export interface TransactionalSendReceipt {
 
 export interface ProviderSet {
   readonly ai: AiProvider;
-  readonly leadData: LeadDataProvider;
+  readonly peopleSearch: PeopleSearchProvider;
+  readonly contactEnrichment: ContactEnrichmentProvider;
   readonly organizationSearch: OrganizationSearchProvider;
   readonly emailVerification: EmailVerificationProvider;
   readonly gmail: MailboxProvider;

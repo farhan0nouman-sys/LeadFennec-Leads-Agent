@@ -3,9 +3,19 @@ import {
   APOLLO_ORGANIZATION_SEARCH_CAPABILITIES,
   ApolloOrganizationSearchProvider,
 } from './apollo-organization-search.js';
+import {
+  ApolloContactEnrichmentProvider,
+  ApolloPeopleSearchProvider,
+} from './apollo-people.js';
 import { FAKE_ORGANIZATION_SEARCH_CAPABILITIES } from './fake-organization-search.js';
 import { createFakeProviders } from './fakes.js';
-import type { OrganizationSearchProvider, ProviderSet } from './providers.js';
+import type {
+  ContactEnrichmentProvider,
+  EmailVerificationProvider,
+  OrganizationSearchProvider,
+  PeopleSearchProvider,
+  ProviderSet,
+} from './providers.js';
 
 export type ProviderMode = 'fake' | 'live';
 
@@ -84,4 +94,50 @@ export function organizationSearchDeclaration(appEnv: AppEnv) {
         source: 'APOLLO',
         capabilities: APOLLO_ORGANIZATION_SEARCH_CAPABILITIES,
       } as const);
+}
+
+/**
+ * The people lookup and enrichment providers for this environment (task 08B, D-08B-05): the
+ * deterministic fakes in development and test, whatever the configuration; Apollo in staging
+ * and production, which needs APOLLO_API_KEY (unconfigured fails closed).
+ */
+export function createContactDataProviders(
+  appEnv: AppEnv,
+  config: OrganizationSearchConfig,
+): {
+  readonly peopleSearch: PeopleSearchProvider;
+  readonly contactEnrichment: ContactEnrichmentProvider;
+} {
+  if (isLocal(appEnv)) {
+    const fakes = createFakeProviders();
+    return {
+      peopleSearch: fakes.peopleSearch,
+      contactEnrichment: fakes.contactEnrichment,
+    };
+  }
+  if (config.apolloApiKey === undefined || config.apolloApiKey === '') {
+    throw new LiveProvidersUnavailableError(
+      'APOLLO_API_KEY is not set, so people lookup and enrichment have no provider.',
+    );
+  }
+  const options = { apiKey: config.apolloApiKey };
+  return {
+    peopleSearch: new ApolloPeopleSearchProvider(options),
+    contactEnrichment: new ApolloContactEnrichmentProvider(options),
+  };
+}
+
+/**
+ * The email verification provider (task 08B, D-08B-06): the fake in development and test. No
+ * live verification service is chosen yet, so staging and production fail closed (O-35).
+ */
+export function createEmailVerificationProvider(
+  appEnv: AppEnv,
+): EmailVerificationProvider {
+  if (isLocal(appEnv)) {
+    return createFakeProviders().emailVerification;
+  }
+  throw new LiveProvidersUnavailableError(
+    'No email verification service is selected, so addresses cannot be checked (docs/decisions.md O-35).',
+  );
 }

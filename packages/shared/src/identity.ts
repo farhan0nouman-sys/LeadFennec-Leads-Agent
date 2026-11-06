@@ -200,3 +200,129 @@ export function normalizeCompanyIdentity(input: {
     key: domain === null ? `name:${nameKey}` : `domain:${domain}`,
   };
 }
+
+export interface ContactIdentity {
+  /** As shown: NFC, trimmed, inner whitespace collapsed. */
+  readonly firstName: string;
+  readonly lastName: string;
+  /** "first last" in lower-case ASCII without accents or punctuation. */
+  readonly nameKey: string;
+  /** normalizeEmail's address; null without one. Never a verification status. */
+  readonly email: string | null;
+  /** The canonical profile URL (https://www.linkedin.com/in/<slug>); null without one. */
+  readonly linkedinUrl: string | null;
+  /** The company's domain (normalizeDomain); null when unknown. */
+  readonly organizationDomain: string | null;
+  /**
+   * The identity of the person: the email address when known, else the LinkedIn profile, else
+   * the company's domain with the name key.
+   */
+  readonly key: string;
+}
+
+const personName = (value: string, label: string): string => {
+  const name = value.normalize('NFC').trim().replace(/\s+/g, ' ');
+  if (name === '') {
+    throw new IdentityNormalizationError(`${label} is empty.`);
+  }
+  if (name.length > 100) {
+    throw new IdentityNormalizationError(`${label} is too long.`);
+  }
+  return name;
+};
+
+const asciiWords = (value: string): string =>
+  value
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+/**
+ * A LinkedIn profile URL (task 08A) → https://www.linkedin.com/in/<slug>, or an
+ * IdentityNormalizationError. Only https or http, a linkedin.com host and an /in/ path.
+ */
+export function normalizeLinkedinUrl(input: string): string {
+  let url: URL;
+  try {
+    url = new URL(input.trim());
+  } catch {
+    throw new IdentityNormalizationError('LinkedIn URL is not a URL.');
+  }
+  const host = url.hostname.toLowerCase();
+  const match = /^\/in\/([^/]+)\/?$/.exec(url.pathname);
+  if (
+    (url.protocol !== 'https:' && url.protocol !== 'http:') ||
+    (host !== 'linkedin.com' && !host.endsWith('.linkedin.com')) ||
+    match?.[1] === undefined
+  ) {
+    throw new IdentityNormalizationError(
+      'LinkedIn URL is not a profile (https://www.linkedin.com/in/…).',
+    );
+  }
+  let slug: string;
+  try {
+    slug = decodeURIComponent(match[1]).toLowerCase();
+  } catch {
+    throw new IdentityNormalizationError('LinkedIn URL is not a profile.');
+  }
+  if (!/^[\p{L}\p{N}_-]{3,100}$/u.test(slug)) {
+    throw new IdentityNormalizationError('LinkedIn URL is not a profile.');
+  }
+  return `https://www.linkedin.com/in/${encodeURIComponent(slug)}`;
+}
+
+/**
+ * Normalizes a person's identity (task 08A). Inputs are untrusted provider, import or AI data:
+ * an email, LinkedIn URL or domain that is given but malformed is an error, not dropped, so a
+ * malformed contact is refused rather than half-saved. Someone with no email, no profile and
+ * no company domain can't be identified and is an error too.
+ */
+export function normalizeContactIdentity(input: {
+  readonly firstName: string;
+  readonly lastName: string;
+  readonly email?: string | null;
+  readonly linkedinUrl?: string | null;
+  readonly organizationDomain?: string | null;
+}): ContactIdentity {
+  const firstName = personName(input.firstName, 'First name');
+  const lastName = personName(input.lastName, 'Last name');
+  const nameKey = asciiWords(`${firstName} ${lastName}`).replace(/\s+/g, ' ');
+  if (nameKey === '') {
+    throw new IdentityNormalizationError('Name has no letters or digits.');
+  }
+  const email =
+    input.email === null || input.email === undefined
+      ? null
+      : normalizeEmail(input.email).email;
+  const linkedinUrl =
+    input.linkedinUrl === null || input.linkedinUrl === undefined
+      ? null
+      : normalizeLinkedinUrl(input.linkedinUrl);
+  const organizationDomain =
+    input.organizationDomain === null || input.organizationDomain === undefined
+      ? null
+      : normalizeDomain(input.organizationDomain);
+  let key: string;
+  if (email !== null) {
+    key = `email:${email}`;
+  } else if (linkedinUrl !== null) {
+    key = `linkedin:${linkedinUrl.slice('https://www.linkedin.com/in/'.length)}`;
+  } else if (organizationDomain !== null) {
+    key = `name:${organizationDomain}:${nameKey}`;
+  } else {
+    throw new IdentityNormalizationError(
+      'A contact needs an email address, a LinkedIn profile or a company domain.',
+    );
+  }
+  return {
+    firstName,
+    lastName,
+    nameKey,
+    email,
+    linkedinUrl,
+    organizationDomain,
+    key,
+  };
+}

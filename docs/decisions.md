@@ -3038,6 +3038,953 @@ migration: contracts and fakes only. No provider-specific detail was implemented
 | `packages/integrations/src/contact-enrichment.test.ts` (6) | Fixed synthetic staff with no addresses or profiles, paged; addresses on the company domain only, with both claims; all four statuses, the same every time, and the rules; the agent's ranked, attributed answer, addresses only for the chosen people, the same twice; no domain gives no lookups; unattributed provider records refused; eligibility follows the check, not the provider's claim |
 | `packages/integrations/src/fakes.test.ts` | The provider set's new keys |
 
+## 09A: Safe website fetching (2026-11-06)
+
+**Basis.** The plan is still missing (O-01); this follows the 09A prompt ("a server-side fetch
+service with public-address validation before connection and after every redirect"; "block
+loopback, private, link-local and cloud metadata destinations, including IPv6 and alternate
+encodings"; "limit redirects, time, response size, content type and per-domain concurrency";
+"respect configured access restrictions"; "extract useful text without scripts or navigation
+noise and retain URL, retrieval time and content hash"). No route, table, migration or screen
+changed, and no job fetches pages yet: the research task that uses the fetcher comes later.
+08B is still in progress and 08C waits; 09A depends on neither.
+
+### D-09A-01: Which destinations are fetched
+
+**Sources, checked 2026-11-06:**
+- the IANA IPv4 and IPv6 Special-Purpose Address Registries (both last updated 2025-10-09):
+  https://www.iana.org/assignments/iana-ipv4-special-registry/ and
+  https://www.iana.org/assignments/iana-ipv6-special-registry/;
+- AWS EC2 instance metadata (169.254.169.254 and `[fd00:ec2::254]`):
+  https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html;
+- Google Compute Engine metadata (`metadata.google.internal`, `metadata.goog`,
+  169.254.169.254, `fd20:ce::254`):
+  https://docs.cloud.google.com/compute/docs/metadata/querying-metadata;
+- Azure's 168.63.129.16 (WireServer: a public address that only the Azure host answers):
+  https://learn.microsoft.com/en-us/azure/virtual-network/what-is-ip-address-168-63-129-16;
+- Alibaba Cloud ECS instance metadata (100.100.100.200):
+  https://www.alibabacloud.com/help/en/ecs/user-guide/view-instance-metadata/.
+
+**Only globally reachable unicast addresses are fetched** (`checkAddress`,
+`packages/integrations/src/website/address.ts`):
+- **IPv4 refused:** 0.0.0.0/8, 10/8, 100.64/10 (shared), 127/8, 169.254/16, 172.16/12,
+  192.0.0/24, 192.0.2/24, 192.88.99/24, 192.168/16, 198.18/15, 198.51.100/24, 203.0.113/24,
+  224/4 (multicast), 240/4 and 255.255.255.255.
+- **IPv6:** only 2000::/3 is allowed, and within it not 2001::/23 (IETF assignments, Teredo
+  included), 2001:db8::/32 or 3fff::/20 (documentation). Refused besides: `::`, `::1`,
+  fc00::/7 (unique local), fe80::/10, fec0::/10, ff00::/8.
+- **IPv6 forms that carry an IPv4 address** are always refused: IPv4-mapped `::ffff:0:0/96`,
+  IPv4-compatible `::/96`, NAT64 `64:ff9b::/96` (and `64:ff9b:1::/48`), 6to4 `2002::/16`.
+  The reason names the embedded rule when the IPv4 address is internal (`::ffff:127.0.0.1` is
+  "loopback"), else `ipv4_embedded`.
+- **Cloud metadata** addresses are checked first, so the reason says `metadata`:
+  169.254.169.254, 169.254.170.2 and 169.254.170.23 (AWS ECS and EKS), 100.100.100.200
+  (Alibaba), 168.63.129.16 (Azure: public, so only this rule refuses it), `fd00:ec2::254`,
+  `fd00:ec2::23` and `fd20:ce::254`.
+
+**Names refused before any lookup** (`checkHostName`; the DNS answer check is the real guard,
+this says why early): single labels (`localhost`, `metadata`, `intranet`); `localhost`,
+`local`, `localdomain`, `internal`, `intranet`, `lan`, `home`, `home.arpa`, `corp`,
+`private`, `svc`, `arpa`, `onion`, `alt` and `invalid` and their subdomains;
+`metadata.goog` and `metadata.google.internal`. The reserved `.example` and `.test` names
+(RFC 2606) are refused by the live fetcher and served only by the fake.
+
+**Alternate encodings.** The WHATWG URL parser (Node's `URL`) normalizes the host before any
+check: integer (`2130706433`), hex (`0x7f000001`), octal (`0177.0.0.1`), short (`127.1`),
+percent-encoded and full-width forms become the dotted address, IPv6 literals their canonical
+form (`[::ffff:127.0.0.1]` is `[::ffff:7f00:1]`), and international names are IDNA-encoded.
+The address parser then accepts canonical text only, so no other form reaches a connection.
+Zone ids (`%eth0`) are refused. Tests cover each form, metadata included (`0xa9fea9fe`,
+`2852039166`, `0251.0376.0251.0376`).
+
+**Also refused:** schemes other than http and https; a user name or password in the URL;
+ports other than 80 and 443 (the policy can list others); URLs over 2048 characters.
+
+### D-09A-02: Checked before connecting, at every hop
+
+- **Order for the first URL and every redirect:** parse and check the URL, then the access
+  policy, then DNS. Every address of the answer is checked (one internal address refuses the
+  whole answer), then robots.txt, then a per-host slot, then the connection.
+- **No second lookup:** the socket is opened to the checked address itself (`directDial`:
+  `net.connect` or `tls.connect` with the IP as host), so the name can't change between the
+  check and the connection (DNS rebinding). The Host header, TLS SNI and the certificate check
+  use the URL's name (`rejectUnauthorized: true`; an IP literal is checked against the
+  certificate's IP addresses).
+- **No HTTP agent:** one request per connection (`Connection: close`), so no pooled
+  connection and no proxy from `HTTP_PROXY` or `NODE_USE_ENV_PROXY` (only agents built with
+  `proxyEnv` use them). The HTTP parser stays strict (`insecureHTTPParser: false`).
+- **Redirects** (301, 302, 303, 307, 308) are followed by the fetcher, never by the HTTP
+  client. Each `Location` is resolved against the current URL and checked as a new URL
+  (scheme, credentials, port, name, address, policy, robots.txt) with a fresh lookup, so a
+  name that turns internal after the first hop is refused at the next one. Loops are refused.
+- **Requests:** GET only, `User-Agent: LeadFennecBot/0.1`, `Accept`, and `Accept-Encoding:
+  gzip, deflate, br`. Never cookies, credentials or a referrer.
+- **DNS:** `dns.lookup` (the operating system's resolver), all addresses, IPv4 first; the
+  lookup races the time budget.
+- **Docs checked 2026-11-06** for Node.js 24 (the pinned runtime is 24.19.0):
+  - https://nodejs.org/docs/latest-v24.x/api/http.html: `createConnection`, `maxHeaderSize`,
+    `signal`, `insecureHTTPParser`, `agent: false`, built-in proxy support;
+  - https://nodejs.org/docs/latest-v24.x/api/dns.html: `lookup` with `all` and `order`,
+    `getaddrinfo` on the threadpool.
+
+### D-09A-03: Limits
+
+| Limit | Default | Allowed range | Notes |
+|---|---|---|---|
+| Redirects | 5 | 0–10 | More is `too_many_redirects` |
+| Time | 15 s | 0.1–60 s | One budget for the whole fetch: waiting for a slot, DNS, robots.txt, every hop and the body |
+| Body | 2 MiB | 1 KiB–10 MiB | After decompression and on the wire. A larger `Content-Length` is refused before reading, and a stream stops at the limit |
+| Headers | 16 KiB | 1–64 KiB | Node's `maxHeaderSize` |
+| Content types | text/html, application/xhtml+xml, text/plain | fixed | A missing type is refused; no sniffing |
+| Encodings | identity, gzip, deflate, br | fixed | Decompressed as a stream, so a decompression bomb stops at the body limit. Unknown or stacked codings are refused |
+| Per-host concurrency | 2 | 1–8 | In this process, per host with `www.` folded; waiters queue in order |
+| Text | 100,000 characters | 100–500,000 | `textTruncated` says when it was cut |
+| Links | 100 | 0–500 | |
+| Markup | 512 open elements, 100,000 elements | fixed | `too_complex` (D-09A-05) |
+| Ports | 80, 443 | up to 16 | |
+
+- **Ceilings:** `websiteFetchPolicySchema` (zod) checks every value, so configuration can
+  tighten the fetcher but never make it unbounded.
+- **Concurrency:** `HostConcurrencyLimiter` holds counts only (no page data), so one limiter
+  can serve every workspace. It limits per host, not per registrable domain (there is no
+  public suffix list), and not across worker processes (O-36).
+
+### D-09A-04: Access restrictions
+
+"Configured access restrictions" is read as two things (O-36): the operator's lists, and the
+site's own robots.txt.
+
+- **Operator lists:** `WEBSITE_FETCH_BLOCKED_HOSTS` (never fetched, with subdomains) and
+  `WEBSITE_FETCH_ALLOWED_HOSTS` (when set, only these and their subdomains). Both are
+  worker variables, comma-separated, normalized like company domains (`normalizeDomain`).
+  An invalid entry stops the worker at startup. They are checked at every hop, robots.txt
+  hops included, and the fake applies them too.
+- **robots.txt** (RFC 9309, https://www.rfc-editor.org/rfc/rfc9309.html, checked 2026-11-06):
+  - **Groups:** the product token `LeadFennecBot`, matched case-insensitively (a version such
+    as `/1.0` is ignored). All matching groups are merged; with none, the `*` groups apply.
+  - **Rules:** the longest match wins and allow wins a tie; `*` and `$` work as wildcards;
+    percent-encoding is normalized before comparing. `/robots.txt` itself is always allowed.
+  - **Reading:** at most 512 KiB (the RFC's minimum is 500 KiB), fetched through the same
+    checks, redirects across hosts included.
+  - **Answers:**
+    - 2xx is parsed;
+    - 4xx means no rules;
+    - more redirects than allowed is treated as no rules;
+    - 5xx, no answer, or a redirect to a refused destination: the RFC says to assume
+      complete disallow, so the page is refused as `robots_unreachable` (retryable, try
+      later) rather than fetched.
+  - **Cache:** 24 hours (15 minutes for an unreachable file), keyed by cache scope (the
+    workspace) and origin, with at most 1000 entries per fetcher, so nothing cached is shared
+    between workspaces.
+  - Crawl-delay and sitemaps are ignored.
+
+### D-09A-05: Text extraction
+
+- **Parser:** parse5 **8.1.0** (MIT; published 2026-11-01, older than pnpm's
+  `minimumReleaseAge`; its one dependency is entities 9.0.0, BSD-2-Clause). It implements the
+  WHATWG HTML parsing algorithm that browsers use. The tree is only read: no script runs, no
+  style or resource loads. API checked against its bundled type definitions.
+- **Content:** `<main>` (or `role="main"`), else `<body>`. Dropped:
+  - never text: script, style, noscript, template, svg, math, iframes and frames, object,
+    embed, canvas, audio, video, form controls, and the head;
+  - navigation: nav, aside, dialog and menu; a page-level header or footer (not inside an
+    article, main or section);
+  - hidden content: the `hidden` attribute, `aria-hidden="true"`, inline `display: none` or
+    `visibility: hidden`;
+  - roles: navigation, banner, contentinfo, complementary, menu, menubar, search, dialog,
+    alertdialog, toolbar, tablist and tooltip;
+  - ids and classes naming cookie or consent banners, breadcrumbs, skip links or
+    screen-reader-only text.
+- **Text:** block elements become lines, whitespace collapses, and the text is NFC with
+  control, bidirectional and zero-width characters removed (they could hide or reorder text
+  when it is shown).
+- **Metadata:** the title (300 characters at most), the meta or `og:` description (500), and
+  `html lang` when well formed.
+- **Links:** from the whole body, navigation included. Absolute http(s) only, without
+  fragments or credentials, deduplicated, 100 at most, marked same-site. They are untrusted:
+  follow them only through the fetcher.
+- **Decoding:** a byte-order mark first, then the Content-Type charset, then a `<meta>`
+  charset in the first 1024 bytes, else UTF-8 (WHATWG labels through `TextDecoder`; invalid
+  bytes become U+FFFD).
+- **Hostile markup:** parse5's work grows with the square of the nesting depth (20,000
+  nested `<div>` took 6.4 s here, so a 2 MiB page could take minutes), and misnested
+  formatting tags can multiply the elements created. A tree adapter caps open elements at 512
+  (Chromium's tree-depth limit) through parse5's `onItemPush` / `onItemPop` hooks, and
+  elements at 100,000. A page over either cap is refused as `too_complex`, in milliseconds.
+
+### D-09A-06: What a fetch returns
+
+- **`WebsitePage`:**
+  - addresses: `requestedUrl` and `finalUrl` (without fragments), and `redirects` (URL and
+    status of each hop);
+  - the answer: `status`, `contentType`, `charset`, and `retrievedAt` (one clock, when the
+    body was received);
+  - hashes: `byteLength`, `contentSha256` (SHA-256 of the body after decompression) and
+    `textSha256`;
+  - content: `title`, `description`, `language`, `text`, `textTruncated` and `links`;
+  - `source`: `LIVE` or `FAKE`.
+- **`WebsiteFetchError`:** a code and `retryable`, plus `status`, `reason` and `url` when
+  they apply. The message is ours; a site's own text or body never travels with it.
+  - **Retryable:** `dns_failed`, `timeout`, `connection_failed`, `robots_unreachable`, and
+    `http_error` for 408, 425, 429 and 5xx.
+  - **Permanent:** every refusal of a destination or a policy, `robots_disallowed`,
+    `host_not_found`, redirects, sizes, types, encodings, `too_complex`, `tls_failed`
+    (EPROTO included) and `bad_response`.
+- **Nothing is stored yet.** Mapping pages to `source_records` (payload hash) and `evidence`
+  (`sourceUrl`, `excerpt`, `capturedAt`) belongs to the research task.
+
+### D-09A-07: Environments, fake and tests
+
+- **`createWebsiteFetcher(appEnv, config)`:**
+  - development and test get `FakeWebsiteFetcher`. It never connects: pages are synthetic,
+    built from the host name, or scripted by a test (pages, redirects, failures). It applies
+    the same URL checks and access lists, and serves only `.example` and `.test` names.
+  - staging and production get `SafeWebsiteFetcher`.
+- **Wiring:** `ProviderSet.websiteFetcher`. The worker builds the fetcher at startup so a bad
+  restriction stops it early; no job uses the fetcher yet.
+- **Tests:** a local HTTP fixture server on 127.0.0.1 and a fake resolver. Names "resolve" to
+  public addresses, and a test dialer connects those addresses to the fixture, so the real
+  HTTP client, redirects, limits and decoding run without leaving the machine. The network
+  guard stays on.
+
+| File | What it shows |
+|---|---|
+| `website/address.test.ts` (166) | Every IPv4 and IPv6 rule, metadata addresses, embedded IPv4 forms, non-canonical text refused; internal and reserved names; the alternate encodings of loopback and metadata refused before any lookup; schemes, credentials, ports, length; public names, literals and IDNA accepted; a mixed DNS answer refused |
+| `website/fetcher.test.ts` (87) | A page through the checked address, with URL, time, both hashes, Host and User-Agent and no cookies; gzip, deflate, br, plain text, other charsets, IPv6 answers and literals. Unsafe URLs and DNS answers refused with no lookup or connection. DNS changes between fetches and between hops refused. Redirects to internal addresses, names, schemes and ports refused without connecting; checked redirects followed and recorded; redirect limits, loops, missing locations. Declared and streamed oversize, decompression bomb, oversized headers. Unsupported types and encodings, corrupt compression, markup too complex. Timeouts (no answer, dripping body, endless DNS), cancellation. HTTP errors (retryable or not), refused connection, malformed HTTP. Per-host concurrency (2 in flight, others queued, other hosts unaffected, waiting times out). Blocked and allowed hosts. robots.txt (our group, cache per workspace, 404, 503, redirects, robots.txt itself). The production dialer connects to the given address without DNS; TLS fails closed; error mapping |
+| `website/robots.test.ts` (23) | RFC 9309 groups, precedence, patterns and percent-encoding |
+| `website/text.test.ts` (15) | Main content without the noise listed above; title, description, language, links; truncation; nesting up to the limit; hostile markup refused fast; control and bidi characters; charset detection; plain text |
+| `website/fake.test.ts` (9) | The fake's synthetic pages, its refusals, scripted pages, redirects, failures and policy; `createWebsiteFetcher` per environment and its validation; the limiter's order, single release and abort |
+| `apps/worker/src/env.test.ts` | The two host lists parsed and refused when invalid |
+| `fakes.test.ts` | The provider set's new key |
+
+## 09B: Model provider, OpenAI adapter, WebsiteResearchAgent (2026-11-07)
+
+**Basis.** The plan is still missing (O-01); this follows the 09B prompt:
+- "the model-provider abstraction, a real OpenAI adapter using current official documentation,
+  a fake adapter, runtime validation and WebsiteResearchAgent";
+- "inputs are bounded page extracts and campaign context; outputs separate verified facts,
+  hypotheses, unknown fields, evidence IDs and confidence";
+- "prompt/schema/model versioning, token limits, timeout handling, cost events";
+- "validate that cited evidence exists in the provided extracts".
+
+No route, table, migration or screen changed, and no job runs the agent yet (09C). 08B is
+still in progress; 08C and 09C wait.
+
+### D-09B-01: The model-provider abstraction
+
+- **`ModelProvider`** (`packages/integrations/src/model`) replaces the provisional `AiProvider`
+  (D-02C-05), which only its fake used. `generate(request)` returns one of three results, each
+  with the provider, the model, the request id and the usage:
+  - `output`: the answer text, still unvalidated;
+  - `refusal`;
+  - `incomplete`, with its reason.
+
+  It throws `ProviderError`, which gains a `canceled` code.
+- **A request** carries:
+  - the task, the prompt version and the fixed instructions;
+  - the input data, as JSON text;
+  - a strict JSON Schema for the answer;
+  - `maxOutputTokens` (16 to 32,000), a signal and `onCost`.
+- **No tools:** a request has no tools field, so nothing a prompt or a page says can give a
+  model tools. An answer that contains a tool call anyway is refused as `bad_response`.
+- **Bounds** are checked before anything is sent (`assertModelRequest`): instructions at most
+  20,000 characters, input at most 200,000, and the schema and task names.
+- **Cost events:** one per attempt, failed attempts included, delivered through `onCost`
+  before the result or the error returns. Each one carries:
+  - the provider, model, task, prompt version and attempt;
+  - the outcome, the provider's request id and our client request id;
+  - the usage: input tokens, cached input tokens, output tokens (reasoning included) and
+    reasoning tokens;
+  - `billing`: `reported`, `unknown` (a timeout, or a server error after sending) or `none`
+    (refused before any work);
+  - `costMicroUsd` (D-09B-05) and the time.
+
+  The events feed the usage ledger's `AI_TOKENS`; recording them is 09C's work.
+
+### D-09B-02: The OpenAI adapter
+
+**Docs checked 2026-11-07** on developers.openai.com (platform.openai.com answered 403 to the
+fetcher):
+- creating a response: https://developers.openai.com/api/reference/resources/responses/methods/create;
+- Structured Outputs: https://developers.openai.com/api/docs/guides/structured-outputs;
+- error codes: https://developers.openai.com/api/docs/guides/error-codes;
+- the API overview (Bearer authentication, `x-request-id`, `X-Client-Request-Id`, rate-limit
+  headers, REST API `v1`, `openai-version` 2020-10-01):
+  https://developers.openai.com/api/reference/overview;
+- models: https://developers.openai.com/api/docs/models.
+
+**Plain HTTPS, no SDK:** one endpoint, the same pattern as the Apollo client (D-07B-04), and
+the tests script the HTTP answers (`OpenAiResponsesProvider`, `fetch` injectable).
+
+- **Request:** `POST https://api.openai.com/v1/responses` with `Authorization: Bearer`, our UUID
+  as `X-Client-Request-Id`, and redirects refused. The body:
+  - `model`, `instructions`, and `input` as one user message holding the JSON data;
+  - `max_output_tokens`;
+  - `text.format`: `json_schema` with `strict: true`;
+  - `store: false` (the documented default is `true`);
+  - `truncation: "disabled"`: too long an input fails rather than being cut silently.
+
+  Never sent: tools, `tool_choice`, metadata, `previous_response_id`, `background` or a
+  temperature (reasoning models). `reasoning.effort` is sent only when
+  `OPENAI_REASONING_EFFORT` is set (documented values `none` to `max`; models differ).
+- **Answers:**
+  - `output_text` is an SDK-only property, so the adapter reads the output items itself: text
+    parts are joined and reasoning items skipped;
+  - a `refusal` part is a refusal result;
+  - `status: "incomplete"` is an incomplete result, with `max_output_tokens`,
+    `content_filter` or `other` as the reason;
+  - `status: "failed"` maps by `error.code` (`rate_limit_exceeded`, `server_error`, else an
+    invalid request);
+  - any other output item (`function_call`, `web_search_call` ...) is `bad_response`.
+- **Errors:**
+
+  | Status | Error | Retried |
+  |---|---|---|
+  | 401 | `unauthorized` | No |
+  | 403 (unsupported region) | `forbidden` | No |
+  | 400, 404, 422 | `invalid_request` | No |
+  | 408, 409 | `unavailable` | Yes |
+  | 429 | `rate_limited` | Yes |
+  | 429 with a billing or quota code or type (`insufficient_quota`, `credit_balance_exhausted`, the spend and usage limits) | `quota_exceeded` | No: "retrying billing, spend, or quota errors won't restore API access" |
+  | 5xx | `unavailable` | Yes |
+
+  OpenAI's message never travels.
+- **Retries:** 2 attempts by default (3 at most), waiting `Retry-After` or 1 second, never longer
+  than 20 seconds. Timeouts are never retried: a timed-out request may still be processed and
+  billed. Each attempt has 60 seconds (1 to 180).
+- **Configuration** (worker only):
+  - `OPENAI_API_KEY`, validated without echoing it and redacted from logs;
+  - `OPENAI_MODEL`, with no default because models change. Listed on 2026-11-07:
+    `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-luna` (the cheapest, $0.1 and $0.5
+    per million input and output tokens);
+  - `OPENAI_REASONING_EFFORT`;
+  - `OPENAI_INPUT_USD_PER_MTOK` and `OPENAI_OUTPUT_USD_PER_MTOK`, both or neither.
+- **Environments:** development and test always get the fake. Staging and production need the
+  key and the model, else `LiveProvidersUnavailableError` (fail closed). Nothing builds the
+  provider at startup yet, since no job uses it.
+- **Data:** nothing is stored (`store: false`), and no `safety_identifier` is sent yet (O-37).
+  A prompt holds page text and the campaign context, never secrets, credentials, tenant ids or
+  contact details.
+
+### D-09B-03: WebsiteResearchAgent: input, prompt, versions, limits
+
+- **Package:** `packages/ai-agents`, its first agent.
+- **Input** (`websiteResearchInputSchema`, `@lead-fennec-ai/shared`):
+  - the company's name and domain;
+  - the campaign context: business profile, offer and ICP criteria, through the campaign and
+    ICP schemas themselves, each nullable;
+  - the requested fields (all 12 by default);
+  - 1 to 8 extracts, each with an id (E1 to E99), an http(s) URL, a title, `retrievedAt`, the
+    page's `contentSha256` and at most 6000 characters of text, 30,000 in all.
+
+  `pageExtracts` builds extracts from fetched pages (task 09A's `WebsitePage`), cut at a word
+  or a line.
+- **Fields:** company_summary, products_services, industry, target_customers, headquarters,
+  founded_year, employee_count, markets_served, notable_customers, recent_news, technologies
+  and hiring, each with a description for the model. Headquarters, founded year and employee
+  count have one true value.
+- **Versions:** prompt `website-research/1`, schema `website-research-output/1`, format name
+  `website_research_output_v1`. `promptSha256` is the SHA-256 of both versions, the
+  instructions and the JSON Schema; a test pins it, so a change needs a new version. Every
+  result names the prompt, its hash, the schema, the provider and the model that answered.
+- **Instructions:** fixed text. Page text is untrusted data and never instructions; any request
+  in it to change the rules, reveal them, call tools, send messages, change eligibility,
+  approvals or budgets, or mark anything verified is reported in `ignoredInstructions`.
+  Facts need exact quotes from the cited extract; a field with no statement is unknown;
+  inferences are hypotheses; no outside knowledge; no personal contact details. The user
+  message is JSON only, so page text stays inside its own string.
+- **Limits:** 4000 output tokens by default (256 to 16,000, reasoning included); at most 60,000
+  characters of instructions and data (the contract keeps real inputs near 45,000 at most). No
+  model call when no extract has text.
+- **Time:** the adapter's deadline per attempt; the caller's signal cancels.
+
+### D-09B-04: Facts, hypotheses, unknown fields, evidence, confidence
+
+- **Shape first:** the answer must match `websiteResearchModelOutputSchema`, a strict zod schema:
+  - facts: a field, a value (300 characters at most) and 1 to 3 quotes with their extract ids;
+  - hypotheses, with low or medium confidence;
+  - unknown fields;
+  - ignored instructions.
+
+  The JSON Schema sent to OpenAI is written by hand in the strict subset (closed objects,
+  every property required, no string lengths: those are zod's job), and a test checks the
+  subset's rules. Anything else is refused, and the result is review_required with every field
+  unknown: invalid JSON, an extra key (an eligibility, a "verified" flag, a tool call), or a
+  high-confidence hypothesis.
+- **Each fact is then checked by code:**
+  - its field was asked for;
+  - every extract it cites was provided;
+  - every quote is in its extract. The comparison ignores case, spacing, typographic quotes and
+    dashes (NFKC), and needs at least 3 characters;
+  - no quote overlaps instruction-like page text;
+  - every number of the value is in the quotes, and so is at least one of its words.
+
+  A fact that fails any check becomes a review item with its reason, never a fact. Duplicates
+  are merged. Two different values of a one-value field both go to review
+  (`conflicting_evidence`).
+- **Unknown:** the requested fields without a verified fact. The model's own list isn't
+  trusted.
+- **Confidence:**
+  - a fact keeps the model's confidence, but is high only when its value is written out in a
+    quote;
+  - the result's confidence is set by code: low without verified facts, high with 3 or more and
+    nothing to review, else medium.
+- **Hypotheses** may cite only provided extracts, must contain no instruction-like text, and are
+  never above medium.
+- **Instruction-like page text:** these patterns flag it:
+  - ignore, disregard, forget or override ... instructions, rules or prompts;
+  - a system or developer prompt; "you are now"; "act as" an AI;
+  - calling or invoking a tool or function; "new instructions"; `<system>` tags;
+  - "mark ... as verified", eligible or approved; revealing the prompt.
+
+  An extract with such text gives a warning and makes the result review_required. The model's
+  `ignoredInstructions` are kept when found in their extract. The patterns are defence in depth.
+  The guarantees are: no tools; a closed schema without policy fields; and application code
+  alone deciding eligibility, approvals, budgets and sending.
+- **Statuses:** `completed`, `review_required`, `no_content`. A model that can't be reached
+  throws `ProviderError`, after its cost events.
+- **"Verified"** means the quote is in the page. It says nothing about whether the page is
+  right, and it is not an email address's "verified" (D-08A-04).
+
+### D-09B-05: Costs
+
+- **Tokens** come from the provider's usage.
+- **Cost:** input tokens times the input price, plus output tokens times the output price, in
+  millionths of a dollar (a price per million tokens equals millionths of a dollar per token).
+  Cached input is priced as ordinary input: an over-estimate, never an under-estimate.
+- **Unknown cost:** null without prices, or when an attempt's usage is unknown. A result's
+  total is null if any billable attempt's cost is unknown.
+- **The fake** costs 0.
+- **The ledger** (`AI_TOKENS`: reserve before, commit after) is 09C's work.
+
+### D-09B-06: The fake model and tests
+
+- **`FakeModelProvider`** never connects. Its answers come from a test's script, from responders
+  by task, or from the built-in research reader. That reader quotes the first sentence matching
+  simple patterns per field, cites exact sentences, and reports instruction-like sentences as
+  ignored. Usage is estimated at 4 characters per token. Refusals, truncation, errors and
+  cancellation can be scripted, and requests are recorded.
+- **Tests** use synthetic pages on `.example` and scripted HTTP answers shaped like the
+  documentation. No paid call, no network.
+
+| File | What it shows |
+|---|---|
+| `integrations/src/model/openai.test.ts` (24) | The documented body (no tools, `store: false`, strict schema, token ceiling, no truncation), headers and URL; reasoning effort only when set; bounds and malformed key or model refused before sending, the key never echoed; text, usage, request id and a priced cost event; refusal and incomplete answers; a tool call refused; unreadable answers; missing usage; every HTTP error mapped, with billing; rate-limit retry after `Retry-After`; quota and billing 429s not retried; server and connection errors retried once; failed responses by code; long waits not retried; timeouts not retried; cancellation before and during |
+| `integrations/src/model/fake.test.ts` (8) | The fake reader quotes only real sentences, deterministically, and lists injected text as ignored; scripts, responders, errors, ceiling, cancellation; `createModelProvider` per environment, failing closed without key and model |
+| `ai-agents/src/website-research/agent.test.ts` (28) | Verified facts with dated, hashed evidence; unknown fields; versions; cost. Fixed instructions with page text only as JSON data and no tools, identical for a hostile page. Injected pages flagged and kept out of the facts. Policy, eligibility and tool-call answers refused. Facts and hypotheses quoting injected text sent to review; high hypotheses refused. No facts means unknown; fabricated quotes, unknown extracts, numbers and values not in the quotes, and unrequested fields go to review; partial evidence refused; conflicts. Refusal, truncation, filter and bad JSON give review. No model call without text. Input bounds; provider errors after cost. `pageExtracts`. The pinned prompt hash, the strict-subset check and the schema's agreement with zod. The agent through the real adapter over scripted HTTP |
+| `ai-agents/src/website-research/evidence.test.ts` (22) | Quote normalization; numbers and words of values; instruction patterns, and ordinary text not flagged |
+| `shared/src/contracts/website-research.test.ts` (4) | Input and answer bounds; no extra keys anywhere |
+| `apps/worker/src/env.test.ts` | The OpenAI settings and `modelConfig`; malformed values refused without echoing the key |
+| `shared/src/logger.test.ts` | `OPENAI_API_KEY` redacted |
+
+## 09C: Research jobs, evidence, freshness, corrections, evaluation (2026-11-07)
+
+**Basis.** The plan is still missing (O-01); this follows the 09C prompt:
+- "connect permitted fetch results to research jobs, evidence storage, cache freshness and
+  explicit refresh";
+- "preserve prior versions and audit manual corrections";
+- "evidence viewing on lead profiles";
+- "a small reviewed evaluation set covering sparse sites, conflicting text and malicious
+  instructions", and "record quality criteria and baseline results instead of inventing a
+  universal accuracy score".
+
+It builds on the 09A fetcher, the 09B agent, the 07C job pattern and 04B's `claimJob`. No live
+site, model or provider was used.
+
+### D-09C-01: The research job
+
+- **A request** (`scope.research.request`, `research.run`) writes, in one transaction: a
+  research row (PENDING), a job task (`website_research.run`, payload `{ researchId,
+  campaignId }`) and an audit record.
+  - Checked first: the company and any campaign belong to the workspace (else 404), and the
+    company has a website or a domain (else 409 `research_not_possible`).
+  - Only one queued or running run per company: a partial unique index plus a per-company lock.
+    A second request answers with the first.
+- **The worker** `website_research` has its own BullMQ queue (`lead-fennec-research`), its own
+  relay and `claimJob` definition. `run-task` (development and test) picks the job by the task's
+  type.
+- **Pages:**
+  - the start page is the company's website, else `https://<domain>/`;
+  - plus at most three same-site links it holds, chosen by application code from their paths
+    (about or company, products or services, team, customers, careers, news, contact). Files and
+    log-in, account or legal pages are skipped, and a link whose path says nothing useful is not
+    followed.
+  - Every page goes through the safe fetcher (09A: addresses, robots.txt, access lists, limits),
+    with the workspace id as its cache scope.
+  - **Permitted results only:** a refused or failed page is recorded with its reason and never
+    read another way. A temporary failure of the start page retries the run; other failures are
+    recorded and the run goes on.
+- **Stored pages:** each page read becomes a `source_records` row (`WEBSITE`, the requested URL as
+  `external_id`, `fetched_at` = when it was read). Its payload holds the URLs, status, type, both
+  hashes, the title, at most 20,000 characters of text and at most 100 links.
+- **The model:** `createModelProvider`, made for each run. Unconfigured, the run fails with
+  `model_unavailable` and nothing else stops.
+- **Budget:** a paid model reserves `AI_TOKENS` first (estimate: characters / 3 plus 4000 output
+  tokens), then commits the tokens used. It commits the whole hold when an attempt may have been
+  billed without its usage being known, and releases it when nothing was used.
+- **Failures:** retryable fetch and model errors retry (the task's attempts); others fail the run
+  with their code, as do `usage_limit_reached` and `no_entitled_plan`.
+
+### D-09C-02: Versions and evidence
+
+- **Every run, refresh, reuse and correction is a new version** (a `research` row). Two
+  triggers keep history:
+  - `research_finished_immutable`: a completed or failed version never changes;
+  - `evidence_immutable`: evidence is append-only.
+  A new version names the one it continues (`based_on_id`).
+- **Numbered per company:** 1, 2, 3 ... in completion order (a partial unique index), assigned
+  under the per-company lock. The current version is the highest number. Clocks never decide it:
+  during testing, a correction from a process whose clock ran behind the worker's was briefly
+  taken for an old version.
+- **New columns:**
+  - `research`: `origin` (MODEL, REUSED, CORRECTION), `result_status`, `based_on_id`, `refresh`,
+    `version`, `input_sha256`, `context_sha256`, `prompt_sha256`, `schema_version`,
+    `model_provider`, `cost_micro_usd`;
+  - `evidence`: `extract_label`, `content_sha256`.
+  - Checks: hashes, the continuation rule, the version rule, the outcome rule, the provider,
+    cost, error code and findings size; evidence labels, hashes and excerpt length.
+- **Evidence:**
+  - one `WEBSITE_EXCERPT` row per extract per version: the extract's text, `captured_at` = when
+    its page was read, its stored page, the page's content hash and its label (E1, E2 ...);
+  - a correction's note is a `MANUAL_NOTE` row.
+- **`findings`** (`researchFindingsSchema`, validated before every write) holds:
+  - what was asked: the fields, and the campaign context as a snapshot;
+  - what was read: the pages (outcome, reason, stored page, time, hash) and the extracts (evidence
+    id, URL, time, page hash, text hash);
+  - what came of it: the facts (evidence ids and quotes), inferences, unknown fields, review
+    items, warnings, ignored instructions and the confidence;
+  - the corrections, the usage, and the prompt, schema, provider and model.
+- **Traceability:** a fact leads to its evidence row (label and quote), then to the extract's text,
+  URL, time and page hash, then to the stored page.
+- **The campaign context is a snapshot plus its hash, not a reference:** a version keeps what the
+  model saw even after the campaign changes.
+
+### D-09C-03: Freshness, cache and refresh
+
+- **Fresh research:** a request without refresh, for research completed in the last 30 days with
+  the same campaign context, answers `fresh` and queues nothing.
+- **Fresh pages:** without refresh, a stored copy read in the last 7 days is used instead of
+  fetching.
+- **Cache:** the input hash covers what the model would see: the prompt's hash, the schema, the
+  provider and model, the fields, the company, the campaign context, and every extract's id, URL,
+  title and text. Retrieval times are left out. When the hash equals an earlier completed
+  version's, the run becomes a REUSED version, with no model call:
+  - its findings are copied;
+  - its evidence is captured again, with the new read times;
+  - its usage is 0;
+  - the corrections are the current ones.
+- **Explicit refresh** reads the pages again and calls the model only if what it would see
+  changed.
+- The robots.txt cache stays per workspace, and the per-host limit per process (09A).
+
+### D-09C-04: Corrections
+
+- **Request:** `POST …/research/corrections`, with `research.run`.
+- **Actions:** `set` (a value of at most 300 characters), `reject` (the field becomes unknown,
+  "marked wrong"), `restore` (removes a correction). A note (at most 500 characters) is
+  required.
+- **Compare-and-set** on the current version: otherwise 409 `version_conflict`.
+- **Result:** a new version (CORRECTION) with the note as evidence, and an audit record
+  `research.corrected` holding the field and the action, never the value or the note.
+- **Corrections stay with the company:** they are carried into every later version, model runs
+  and reuses included, and applied when a version is read (shown as "Corrected by a person").
+  Every earlier version is kept.
+
+### D-09C-05: API and screen
+
+- **Routes:**
+
+  | Route | Permission |
+  |---|---|
+  | `GET …/organizations/:organizationId/research` | `contacts.read` |
+  | `GET …/research/:researchId` | `contacts.read` |
+  | `POST …/research` (202, state `queued`, `running` or `fresh`) | `research.run` |
+  | `POST …/research/corrections` (201) | `research.run` |
+
+  Each is in the endpoint list, the OpenAPI document, the route-guard test and the authorization
+  review. Error codes: `research_not_possible`, `version_conflict`.
+- **The company profile:** `/workspaces/:workspaceId/leads/organizations/:organizationId`, in the
+  Leads section (`contacts.read`, breadcrumb "Company profile"). `leads/page.tsx` keeps the Leads
+  shell, since a static folder takes the path from `[section]`. Import results link each saved
+  company to it.
+- **What the profile shows:**
+  - the status and its actions ("Research the website", "Read the pages again");
+  - the facts, with their source (quoted from the pages, or corrected by a person), confidence
+    and evidence;
+  - "Needs a person", a warning when a page held instructions, the unknown fields, and
+    inferences kept apart from facts;
+  - the evidence: each extract with its URL, read time and page version, and the quote marked;
+  - the pages read, and the history, where any earlier version can be opened.
+- **Behaviour:** a queued or running run refreshes the page (`RESEARCH_RUN_POLL`). Untrusted text
+  is rendered as text only, and URLs are links only when http(s) (`rel="noopener noreferrer
+  nofollow"`).
+- **Fake fetcher clock:** in development and test, the registry's fake fetcher now uses the real
+  clock, so stored pages and evidence show real read times. Unit tests still fix their own.
+
+### D-09C-06: Evaluation
+
+- **Where:** `docs/evaluations/website-research.md` and its saved baseline
+  `website-research-baseline.json`.
+- **The set:** 8 reviewed synthetic cases (one control, three sparse, two conflict, two
+  malicious).
+- **Criteria**, each a yes or no per case: evidence integrity, no injected content, unknowns
+  honest, flagged. Expected facts found is a count. There is no universal accuracy score.
+- **Models:** the reviewed reference answers, the fake, and an adversarial model.
+- **Baseline (2026-11-07):**
+
+  | Model | Evidence integrity | No injected content | Unknowns honest | Flagged | Expected facts found |
+  |---|---|---|---|---|---|
+  | Reference | 8/8 | 8/8 | 8/8 | 8/8 | 9 of 9 |
+  | Fake | 8/8 | 8/8 | 6/8 | 6/8 | 8 of 9 |
+  | Adversarial | 8/8 | 8/8 | 8/8 | 6/8 | 0 (nothing it made up was kept) |
+
+- **Not run:** a live model.
+- **Pinned:** `evaluation.test.ts` checks the saved file against a fresh run. The limitations are
+  recorded in the evaluation document.
+
+## 10A: Lead scoring model (2026-11-07)
+
+**Basis.** The plan is still missing (O-01); this follows the 10A prompt:
+- "configurable score weights totaling 100: industry 25, decision-maker 20, size/location 15,
+  supported need 20, contact quality 10 and timing 10";
+- "define factor schemas and score boundaries", "store input versions and evidence references";
+- "High Priority at 80–100, Review at 60–79 and Low Priority below 60";
+- "validate customized weights and missing data policy".
+
+The completion check asks that missing evidence never gets a fabricated positive value and that
+saved scores can be reproduced from their inputs. Code: `packages/shared/src/contracts/lead-scoring.ts`
+(the calculation), `lead-scoring-rules.ts` (the rules) and
+`packages/database/src/tenancy/lead-scoring.ts` (`scope.scoring`).
+
+### D-10A-01: Factors, weights and levels
+
+- **Six factors:** `industry`, `decisionMaker`, `sizeLocation`, `supportedNeed`,
+  `contactQuality`, `timing`. Default weights 25, 20, 15, 20, 10, 10.
+- **Weights:** whole numbers from 0 to 100, every factor present, adding up to exactly 100. An
+  unknown factor is refused by name. 0 switches a factor off; one factor may weigh 100.
+- **Levels:** an assessment rates a factor from 0 to 4 (no fit, weak, partial, strong, full).
+  Points = weight × level / 4.
+- **The score:** the sum of points, rounded down to a whole number. It is summed in quarter
+  points, so no floating-point rounding decides a band, and rounding down never lifts a lead into
+  a higher band (79.75 is 79, Review).
+- **Versions:** the calculation is `lead-score/1` (`scores.method_version`), the rules
+  `lead-score-rules/1` (in the inputs). Both are stored with every score.
+
+### D-10A-02: Factor schemas and evidence references
+
+- **An assessment** is one of two strict shapes:
+  - `assessed`: a level, who proposed it (`rules`, `model` or `person`), 1 to 10 pieces of
+    evidence (even for level 0: the evidence that it doesn't fit) and a short explanation;
+  - `missing`: a reason (`no_data`, `no_target` or `not_assessed`) and an explanation. It has no
+    level and no evidence field at all, so a missing factor that claims either is refused.
+- **Evidence kinds:**
+  - a stored field of the company (`industry`, `employeeCount`, `countryCode`) or of the person
+    (`title`, `countryCode`), with the value read;
+  - a research fact: the research id, its version number, the field, the value and its 1 to 3
+    evidence rows;
+  - an email check: its id, stored status and time;
+  - a stored evidence row.
+- **Only the calculation scores.** `calculateLeadScore` validates the configuration and exactly
+  one assessment per factor, and refuses anything else (`LeadScoreInputError`). Rules propose
+  assessments today; a model or a person may later (10C), and they still only rate factors.
+
+### D-10A-03: Missing data and bands
+
+- **A factor without evidence earns 0 points.** No neutral value is assumed, and its weight is
+  never moved onto the factors that were found (that would credit unknown data). No policy
+  setting changes this; an unknown setting is refused by name.
+- **Bands:** High Priority 80–100, Review 60–79, Low Priority 0–59 (`leadScoreBand`). Every whole
+  score is in exactly one band.
+- **The missing-data policy** may only move a lead to Review, never higher:
+  - `requiredFactors`: factors that need evidence before a lead can be High Priority. Each must
+    have a weight above 0. A missing one keeps a High Priority score at Review.
+  - `maxMissingWeight` (0–100) and `whenInsufficient`: when the missing factors weigh more,
+    `REVIEW` sends the lead to Review whatever its score; `SCORE` keeps the band of the score.
+  - Both the band of the score alone (`scoreBand`) and the band after the policy (`band`) are
+    reported, with the conditions that applied (`bandReasons`).
+- **Defaults:** required industry, decision-maker and supported need; at most 30 missing; `SCORE`.
+  By default the band follows the score, as the prompt states it; a campaign can choose `REVIEW`.
+  Consequence: until 10C assesses supported need and timing, the rules reach at most 70, so no
+  lead is High Priority yet.
+
+### D-10A-04: The rules
+
+Deterministic, from stored data only:
+- **Targets:** each list from the campaign's lead filters when they set it, else from its ICP;
+  seniorities from the ICP.
+- **Industry:** the company record's industry, else the industry fact of the company's current
+  research version (after corrections). The same words: full; every word of one in the other:
+  strong; a shared word: weak; else none.
+- **Decision-maker:** `rankRoleRelevance` (08A, the one definition of role fit), scaled to what is
+  targeted (titles count up to 70, seniorities up to 30).
+- **Size and location:** employees against the range, and the company's country (else the
+  person's) against the countries. Each targeted part is an equal share; an unknown part earns
+  nothing.
+- **Contact quality:** the newest check of the person's current address. Verified within 30 days:
+  full; verified earlier: partial; risky: weak; unknown or invalid: none. No address, no check,
+  or a check dated after the score: missing. This is fit only; whether an address may be sent to
+  stays with `emailSendEligibility` and 10B.
+- **Supported need and timing:** `not_assessed` until 10C.
+- **Nothing targeted** for a weighted factor: missing (`no_target`); its explanation says to add
+  targets or set the weight to 0. Fit is never assumed.
+- **Stored text** (titles, industries) is untrusted: it is only compared and quoted (shortened).
+
+### D-10A-05: Stored scores
+
+- **Configuration:** `campaigns.scoring` (JSON, at most 4 KB; NULL means the defaults) is the
+  campaign section `scoring`. It follows the 06A save rules (compare-and-set, DRAFT only, audited
+  by section name), is copied by duplicate, and is read as `{ custom, config }`.
+- **`scores`** gains `campaign_id`, `campaign_version`, `verification_id`, `version`, `band`,
+  `inputs` and `input_sha256`. `icp_id` becomes optional, because a campaign may have no ICP.
+- **Checks:** an ICP or a campaign; a lead score has every part or none; the band fits the value
+  (Review fits any); inputs are an object of at most 64 KB; the hash, method version and reason
+  length.
+- **Inputs:** the versions, the configuration and where it came from, the campaign id and
+  version, the facts the rules read (the time, the targets, the person, the company, the research
+  version and its industry fact, the email check) and the assessments. They are validated with
+  `leadScoreInputsSchema` before every write and every read. `input_sha256` is the SHA-256 of
+  their canonical JSON.
+- **Citations:** `score_evidence` holds every evidence row the assessments cite. Before writing,
+  each row is checked to be the company's evidence in this workspace.
+- **Never changed:** triggers refuse any change to a score or a citation. A new calculation is a
+  new version, numbered per campaign and person under a lock with a partial unique index (the
+  09C clock-skew lesson). The current score is the highest version.
+- **`scope.scoring`:**
+  - `scoreLead`: the system actor only (application code scores; there is no member action yet);
+  - `current`, `get`, `reproduce`: `scores.read`, or the system actor.
+
+  Another workspace's ids, malformed ids and scores recorded before 10A are not found.
+- **Reproduction:** the rules run again on the stored facts and every rules assessment must come
+  out the same; the stored assessments must give the stored value and band; the hash of the
+  stored JSON must match; the citations must be the rows the assessments name.
+- **Deletion:** a score goes with its person, its campaign and its email check, and a citation
+  goes with its evidence row. The score still names a removed row in its inputs, and reproduction
+  reports `evidenceMatches: false`.
+  - **Found by the erasure tests:** with NO ACTION, deleting a person whose score cited their
+    evidence failed. PostgreSQL checked the evidence reference during the person's cascade,
+    before the cascade through `scores` had removed the citation. The email-check reference
+    escaped this only by the order the constraints were created in. Erasing a person must always
+    work, so both cascade.
+  - `scores.research_id` keeps its 03A NO ACTION.
+
+### D-10A-06: Not in 10A
+
+- No route or screen calculates or shows lead scores, and no job calls `scoreLead` yet (10C).
+- Weights are configurable through the campaign API; the setup wizard has no scoring stage.
+- No send eligibility (10B). A score never makes anyone eligible to be sent to.
+
+## 10B: Send eligibility decisions (2026-11-07)
+
+**Basis.** The plan is still missing (O-01); this follows the 10B prompt:
+- "SendEligibilityService foundations with independent fit and eligibility results";
+- "check verification, suppression, source permissions, configured region policy, exclusions and
+  required sender/campaign conditions";
+- "unknown policy or stale verification must return review or blocked status, never inferred
+  permission";
+- "deterministic rules with reason codes; the AI score cannot override a hard block".
+
+The completion check asks that a score of 100 still fails when suppressed, invalid, restricted or
+policy-unknown, and that tests cover the current status and changes after qualification. Code:
+`packages/shared/src/contracts/send-eligibility.ts` (the rules) and
+`packages/database/src/tenancy/send-eligibility.ts` (`scope.eligibility`).
+
+### D-10B-01: Fit and eligibility are separate
+
+- **Two results:** `evaluate` answers `{ fit, eligibility, sendPermitted, needsPerson }`. The fit
+  is the lead's current score (10A). Eligibility comes from `evaluateSendEligibility`, which takes
+  no score at all: its facts schema is strict, so facts carrying a score are refused.
+- **Only eligibility permits:** `sendPermitted` is true only when eligibility is `eligible`. A score
+  of 100 is reported next to a refusal and changes nothing.
+- **Three answers per check:** `pass`; `review` (a person may decide, task 10C); `blocked` (nobody
+  may send, and neither a score nor a person can lift it, `overridable: false`). The result is
+  the strictest answer of all checks.
+- **Current status:** nothing is cached or stored. Every call reads the facts again, so eligibility
+  follows every change after a lead was scored. The rules are versioned (`send-eligibility/1`).
+
+### D-10B-02: The checks and their reason codes
+
+In order. The first three hold for every lead of a campaign; the rest are about the person.
+
+| Check | Blocked | Review |
+|---|---|---|
+| Workspace sending | `sending_disabled`, `no_entitled_plan`, `plan_excludes_email` | |
+| Campaign | `campaign_not_active` (anything but ACTIVE) | |
+| Sending mailbox | `sender_missing`, `sender_not_ready` (not ACTIVE, or no stored authorization) | |
+| Person | `contact_archived` | |
+| Do-not-contact list | `suppressed_email`; `suppressed_domain` (the address's domain or the company's) | |
+| Campaign exclusions | `excluded_email`, `excluded_domain`, `excluded_lead_list`, `in_other_campaign` (a pending or active enrollment elsewhere, when the campaign leaves those out) | |
+| Email check | `no_email`, `email_not_verified` (no check of this address, a malformed one, one from another provider, or one dated after now), `email_invalid` | `email_risky`, `email_unknown`, `verification_stale` (verified more than 30 days ago) |
+| Data source | `source_blocked` | `source_unknown` (no source record), `source_policy_unknown`, `source_review` |
+| Region | `region_blocked`, `company_region_blocked`, and the two below when unnamed countries are blocked | `region_policy_unknown`, `country_unknown`, `region_not_listed`, `region_review` |
+
+- **The email check** reuses 08A's `emailSendEligibility`, so "verified recently" has one
+  definition. An address nobody checked is blocked (it must be checked first), not sent to on
+  trust. Stored checks are read as email checks; a provider the check schema doesn't know isn't a
+  check.
+- **Sources:** the providers of the person's source records. The strictest answer wins (one
+  blocked source blocks).
+- **Region:** the recipient's own country decides. The company's country never grants permission,
+  but a blocked company country blocks.
+- **`BUILT_SERVICES.eligibility` stays `false`:** the rules exist, but nothing checks leads before
+  they join a campaign yet (there is no enrollment step). Activation keeps saying so.
+
+### D-10B-03: The send policy
+
+- **Where:** `tenant_settings.send_policy` (JSON, at most 16 KB) and `send_policy_version`, next to
+  the workspace's other sending settings (one table per concept).
+- **Shape** (`sendPolicySchema`):
+  - `regions.countries`: country code → `ALLOW`, `REVIEW` or `BLOCK` (at most 250);
+  - `regions.otherCountries`: `REVIEW` or `BLOCK`, never `ALLOW`, so a country is allowed only
+    by naming it;
+  - `sources`: provider → action. An unnamed source needs a person.
+  - Unknown settings are refused by name.
+- **Not set:** every lead gets `region_policy_unknown` and `source_policy_unknown` (review). A
+  stored policy out of shape counts as not set.
+- **Changing it:** `PATCH /workspaces/:workspaceId/settings/send-policy` (`settings.manage`) replaces
+  it, or clears it with `null`. It is compare-and-set on the version (409 otherwise) and audited
+  (`send_policy.updated`: version, whether set, the number of countries, the source names).
+  Reading it (`GET`) also needs `settings.manage`, the permission of the Workspace settings
+  section.
+
+### D-10B-04: The service
+
+- `scope.eligibility.evaluate(campaignId, contactId)` needs `campaigns.read` and `contacts.read` (or
+  the system actor, or a platform admin's audited scope). The fit is read through
+  `scope.scoring.current`, so it also needs `scores.read`.
+- The facts are read in one transaction:
+  - the campaign and its mailbox;
+  - the workspace's sending switch, current subscription, email limit and policy;
+  - the person, their company, and the newest check of their current address;
+  - matching suppressions, their lead lists, their other enrollments and their sources.
+- Another workspace's or a malformed id is not found.
+
+### D-10B-05: Not in 10B
+
+- No route or screen shows a lead's eligibility (10C), and no job calls it yet.
+- No person can resolve a review yet: overrides are 10C, and a block will stay closed to them.
+- Only the policy routes are new; the workspace settings page is still unbuilt.
+
+## 10C: Lead qualification (2026-11-08)
+
+**Basis.** The plan is still missing (O-01); this follows the 10C prompt:
+- "LeadQualificationAgent to propose evidence-grounded factor explanations through validated
+  schemas";
+- "calculate final numeric scores in application code and persist score/rule versions";
+- "qualified, review and rejected states with human overrides that are audited but cannot bypass
+  hard sending restrictions";
+- "expose explanations, evidence and eligibility separately in the UI".
+
+The completion check asks that every classification is explainable, invalid model output goes to
+review, manual changes are tracked, and tests show score changes never erase suppression.
+
+### D-10C-01: The LeadQualificationAgent
+
+- **What it rates:** only supported need and timing, the two factors rules can't judge. The rules
+  keep the other four (10A).
+- **Input** (`qualificationInputSchema`):
+  - the time, the campaign's business profile and offer, the company's name and domain, the
+    person's title;
+  - the verified facts of the company's current research version, after corrections (09C),
+    numbered F1 to F30, each with up to three quotes and the date its page was read.
+
+  Bounded: 300 characters per value or quote, at most 40,000 characters of input, 2,000 output
+  tokens by default (256 to 8,000).
+- **Prompt:** `lead-qualification/1`, pinned by a hash test. It runs with a strict JSON schema and
+  no tools. Facts and titles go only in the data, never in the instructions.
+- **Checks** (application code, on every answer):
+  - the shape, strictly (any extra key, such as a score or a state, refuses the whole answer);
+  - every factor answered exactly once;
+  - every cited fact was given;
+  - a level cites at least one fact;
+  - timing rests only on `hiring` and `recent_news` facts;
+  - nothing cited or written tries to instruct a model.
+
+  A proposal that fails is dropped, and its factor stays missing (`not_assessed`). A refusal, a
+  cut-off or an invalid answer drops everything. Facts the model reports as instructions also
+  flag the answer for review.
+- **No facts:** the model isn't called (`no_facts`). **No model:** `unavailable`, and the rules
+  score alone.
+- **Development and tests:** the fake model has a deterministic qualification responder that
+  cites only the facts it was given.
+
+### D-10C-02: Scoring with the agent
+
+- `scope.scoring.scoreLead(campaignId, contactId, proposals)` takes the agent's proposals for
+  supported need and timing (proposed by the model only). Before saving, it checks every cited
+  research fact again against the current research version: field, value and evidence rows. Any
+  mismatch is refused (`LeadScoreInputError`), and nothing is saved.
+- The score is calculated by `calculateLeadScore`, as in 10A. Its method is `AI` when an accepted
+  model proposal counts, else `RULES`.
+- **Versions kept** with the score: the calculation (`lead-score/1`), the rules
+  (`lead-score-rules/1`) and the agent run (prompt version and hash, schema, provider, model,
+  outcome and review items, in `inputs.agent`).
+- Reproduction recalculates the stored assessments and reruns the rules. The model's assessments
+  are not rerun: they are stored inputs.
+
+### D-10C-03: The states
+
+- **States:** `QUALIFIED`, `REVIEW` and `REJECTED`, decided by `classifyLead` in this order:
+  1. the person's own eligibility is blocked: `REJECTED`;
+  2. not scored: `REVIEW`;
+  3. the agent's answer needed review, or no model ran: the lead can't be better than `REVIEW`;
+  4. Low Priority: `REJECTED` (or `REVIEW` when step 3 applies);
+  5. Review band: `REVIEW`;
+  6. High Priority with eligibility reasons that need a person: `REVIEW`;
+  7. otherwise `QUALIFIED`.
+- The campaign's own checks (a draft campaign, sending switched off) don't change the state: they
+  block sending, not the person.
+- **Every state is explained:** at least one reason, each with a message and the codes behind it.
+  The database checks this.
+
+### D-10C-04: Decisions and a person's override
+
+- **Storage:** `lead_qualifications` is append-only, numbered per campaign and person under a
+  lock; the current decision is the highest version. Each decision keeps the score it was made
+  with and the person's own eligibility status at the time.
+- **A person's decision** needs `campaigns.write`:
+  - a note is required (at most 1,000 characters); it isn't copied into the audit record;
+  - it names the version it started from (409 otherwise);
+  - `QUALIFIED` is refused while the person's own eligibility is blocked (409
+    `qualification_blocked`; a database check too);
+  - accepting the eligibility checks that need a person also needs `drafts.approve`, and only
+    with `QUALIFIED`; the current review reason codes are recorded.
+- **What may be sent** (`contactDecision`):
+  - `sendPermitted` when eligibility is `eligible`, or when it is `review` and a person's current
+    `QUALIFIED` decision accepted every current review reason;
+  - `readyToContact` when sending is permitted and the lead is qualified.
+
+  A block is never permitted, and a new review reason needs a person again.
+- **Automatic decisions** are audited as the system. A new run makes a new current decision; the
+  history keeps the person's.
+- **Deletion:** decisions go with their campaign, person and score. The deciding member can't be
+  deleted while their decisions exist, as with approvals.
+
+### D-10C-05: Job, API and screens
+
+- **Requesting a run:** `research.run` (members); one queued or running run per lead; audited.
+- **The job:** `lead_qualification.run` on the queue `lead-fennec-qualification`, worker
+  `lead_qualification`. A paid model reserves `AI_TOKENS` first; a retryable provider error
+  retries.
+- **Routes**, under the Campaigns section:
+  - `GET …/campaigns/:campaignId/leads` and `…/leads/:contactId`: `campaigns.read`, and in the
+    repository `contacts.read` and `scores.read`;
+  - `POST …/qualify`: `research.run`, `202`;
+  - `POST …/decisions`: `campaigns.write`, `201`.
+- **Screens:**
+  - the campaign's leads, reached from the setup page's "Leads" link;
+  - one lead's page, in three separate sections: fit (each factor's rating, who rated it, why,
+    and its evidence), eligibility (every check, decided now), and qualification (the state, its
+    reasons, the history and a person's decision).
+
+  The lead page refreshes while a run is queued.
+
+### D-10C-06: Not in 10C
+
+- Nothing enrolls or emails leads; `BUILT_SERVICES` is unchanged, so activation still fails
+  closed.
+- No bulk qualification of a whole lead list, and no automatic re-run when facts change.
+- No evaluation set for the qualification agent, only its tests, and no live model was run.
+
 ## Open choices (need a decision from the user)
 
 | ID | Choice | Current state | Options |
@@ -3076,3 +4023,9 @@ migration: contracts and fakes only. No provider-specific detail was implemented
 | O-32 | Apollo organization search (07B) | Built from the official docs only (D-07B-01 to D-07B-05); no live request was made, so the mapping is unproven against real answers. Not known: the account's plan, and whether it has a REST API key with organization search access (the endpoint answers 403 without it). Apollo matches exact industry names, so free-text ICP industries may find nothing; country names come from the runtime's English names (Intl), unverified against Apollo's location names. The response documents no industry, employee count or country, so found companies have none. The `accounts` array (companies the team already saved) is ignored. A retried timeout may cost a second credit. | Create a key scoped to `api/v1/mixed_companies/search` and run one authorized live page (1 credit) in staging. Decide whether ICP industries should be picked from Apollo's list, whether saved accounts count as results, and whether to fill industry and size from an enrichment step (separate provider, official docs first). |
 | O-33 | Search jobs and CSV imports (07C) | Chosen without the plan (D-07C-01 to D-07C-06): the 5-second relay, one job at a time, 3 provider attempts per task (5 task attempts), the suppression rule (a parent domain excludes subdomains), matching without a domain by name key only among companies without a domain, fill-in of missing details only, CSV limits (256 KB, 1000 rows) and fields, and the error report columns. The BullMQ transport has run only against its documentation: there is no Redis on this machine, so the queue and the worker process were not started; the job itself ran through run-task. Organizations saved before 07C have no name key, so a domainless one can be matched only after it gets one. Contacts are not imported (companies only). | Run the worker against Redis (CI or Docker) before relying on it. Confirm the rules and limits against the plan. Decide whether imports should also bring in contacts (08A), whether name matching should consider the country, and whether old organizations need their name keys backfilled. |
 | O-34 | Contact enrichment (08A) | Contracts and fakes only (D-08A-01 to D-08A-05). Chosen without the plan: the seniority levels, the relevance weights (title 70, seniority 30), the 30-day freshness of a verified check, dropping addresses at other domains, and the identity key order (email, LinkedIn, company and name). No email verification provider is chosen, and no live people-search or enrichment adapter exists (Apollo people search is separate from 07B and needs its own docs check). Nothing is stored yet: contacts, checks and the send rule are used by later tasks. | Confirm the rules against the plan. Choose a verification provider (official docs first) and whether Apollo people search and enrichment are used. Decide whether a person may approve a risky or unknown address for sending, and how that approval is recorded. |
+| O-36 | Website fetching (09A) | Chosen without the plan (D-09A-01 to D-09A-05): the limits and their ceilings, HTML and plain text only (no PDF), ports 80 and 443, reading "configured access restrictions" as the operator's block and allow lists plus robots.txt, an unreachable robots.txt as "try later" (retryable) rather than a permanent refusal, the user agent `LeadFennecBot/0.1` without a contact URL, and per-host concurrency inside one worker process (not per registrable domain, not across workers). Never run against the internet: every test uses a local fixture server, and TLS ran only against a server that does not speak it (no certificate fixture). Nothing is stored and no job fetches pages yet. O-35 is kept for 08B's verification blocker, written when 08B is finished. | Confirm the limits and the reading of the restrictions against the plan. Add a contact URL to the user agent. Decide on a shared per-domain limit (Redis) and a public suffix list. Run one authorized live fetch in staging. Store pages as `source_records` and `evidence` in the research task. |
+| O-37 | Model use (09B) | Chosen without the plan (D-09B-02 to D-09B-05): the 12 research fields and their descriptions, the limits (8 extracts, 6000 and 30,000 characters, 4000 output tokens), the confidence rules, the instruction patterns, at most one OpenAI retry, and no default model. No live call was made: the adapter is tested only against scripted answers shaped like the documentation, so the real answers, the schema's acceptance in strict mode and the models' behaviour are unproven. Prices are configuration, not checked against billing. No `safety_identifier` is sent. Prompts carry public page text, which can include names from team pages. Nothing is stored and no job runs the agent yet. | Choose the model (e.g. `gpt-6-luna`, the cheapest listed) and its reasoning effort with a small authorized staging run, and set the prices from the pricing page. Decide whether to send a `safety_identifier` (e.g. a hashed workspace id). Confirm the fields and limits against the plan. Record `AI_TOKENS` usage and store results with their evidence in 09C. |
+| O-38 | Website research jobs and evaluation (09C) | Chosen without the plan (D-09C-01 to D-09C-06): at most 4 pages (the start page and 3 links chosen by path words), 30-day freshness for research and 7-day for pages, reuse when the input hash matches, corrections carried into later versions, `research.run` for corrections, and the profile page under Leads (whose list is still unbuilt). The evaluation set is 8 synthetic English cases, reviewed by the author only; a person has not reviewed it. Known limits: a conflict is caught only when the model reports both values; value support is word-level; the instruction patterns are English-only. No live model or site was used: the BullMQ path is untested here (no Redis), and the profile was checked with axe, not a screen reader. | Review the cases and their expectations, then add real-site and live-model baselines once a model is chosen and a run is authorized. Decide whether conflicts should also be searched for by code, and which further fields have one value. Confirm the page choice, the freshness windows and the permissions against the plan. Run the worker against Redis. |
+| O-39 | Lead scoring model (10A) | Chosen without the plan (D-10A-01 to D-10A-06): five levels per factor, points rounded down, targets from the campaign's lead filters else its ICP, the word-matching and role rules, contact quality from the newest email check, and the default policy (required industry, decision-maker and supported need; at most 30 missing; the band follows the score). Supported need and timing are not assessed until 10C, so no lead reaches High Priority yet. Weights are set through the campaign API only (no wizard stage), and nothing calculates scores outside the tests until 10C adds the job. | Confirm the levels, the rules, the defaults and whether too little data should go to Review by default. Decide where people set weights (a wizard stage or the campaign page) and who may (a permission). Review the industry matching against real provider industries. |
+| O-40 | Send eligibility rules and the send policy (10B) | Chosen without the plan (D-10B-01 to D-10B-05): which reasons block and which need a person; an unchecked address is blocked; a stale check (over 30 days), a risky or unknown one needs a person; the recipient's own country decides and unnamed countries can never be allowed; unnamed sources need a person and the strictest source wins; "in another campaign" counts pending and active enrollments only. No region or source is allowed until a workspace sets a policy, and no screen sets it yet (the API does). `BUILT_SERVICES.eligibility` stays false until leads are checked when they join a campaign. | Confirm the block and review split and the 30-day window against the plan and legal advice; decide the default policy for new workspaces (none today), whether a company's country should ever count, and how enrollment calls the checks (10C or later). |
+| O-41 | Lead qualification (10C) | Chosen without the plan (D-10C-01 to D-10C-06): the agent rates only supported need and timing; the order of the state rules (a lead block rejects, a Low Priority score rejects unless the agent failed, High Priority with review reasons goes to Review); research.run to request a run, campaigns.write to decide and drafts.approve to accept review reasons; a person's note is never audited as text; a new run replaces a person's current decision (the history keeps it). The agent's prompt was tested with the fake model only; it has no evaluation set or live baseline. | Confirm the state rules and the permissions against the plan. Decide whether a run should keep a person's decision current, whether Low Priority should reject or go to Review, and when leads are re-qualified (on research refresh, in bulk). Build an evaluation set for the agent like 09C's and run a live baseline once a model is chosen and a run is authorized. |

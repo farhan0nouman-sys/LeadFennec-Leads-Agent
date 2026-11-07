@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@lead-fennec-ai/shared": "workspace:*",
+    "parse5": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

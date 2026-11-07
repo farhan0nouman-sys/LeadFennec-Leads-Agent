@@ -4,6 +4,841 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## GIT-15: Commit 09A to 10C (2026-11-08)
+
+**Status: Done (local commit only).** The request was `git commit`.
+
+| Step | Actual result |
+|---|---|
+| Branch and author | `feat/05a-app-shell` (on top of `1fe897d`); author `LeadFennec-Leads-Agent` with the GitHub `noreply` address |
+| Content | 09A (safe website fetching), 09B (model provider, OpenAI adapter, WebsiteResearchAgent), 09C (research jobs, evidence, corrections, company profile, evaluation), 10A (lead scoring model), 10B (send eligibility and the send policy), 10C (lead qualification), and this log entry |
+| Checks before committing | Each task's own regression (see its entry); the last, 10C's, ran cache-free on the whole tree with every task in it: format, typecheck, lint, all unit and PGlite suites, migrations and drift, build, OpenAPI, and the browser tests with and without a database, all passing. After this entry: `pnpm format:check` and a scan of the staged changes for credentials, the personal emails and the Apollo account id (results below). |
+| Commit | The commit that contains this entry (`git log`) |
+
+- **Results:**
+  - `pnpm format:check` exit 0;
+  - 152 files staged, none of them env files, build output, generated code or reference repos;
+  - the scan of the staged diff found no credentials and no personal emails (only the public
+    repository name), and no Apollo-style 24-hex ids.
+- **Not pushed.**
+- **Still open:** 08B (its decisions and final entry) and 08C; no live model, Redis or CI run.
+
+---
+
+## 10C: Lead qualification (2026-11-08)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **No live model:** the agent ran with the fake model only. No OpenAI model is chosen (O-37),
+  and the agent has no evaluation set or live baseline yet (O-41).
+- **No Redis:** the qualification queue (BullMQ) and the worker process weren't started. The job
+  ran through `run-task` and the job tests (O-33).
+- **Nothing is sent:** leads aren't enrolled or emailed; `BUILT_SERVICES` is unchanged, so
+  activation still fails closed.
+- **Plan:** the state rules, permissions and agent scope were chosen without the missing plan
+  (O-01, O-41).
+- **Real PostgreSQL / CI:** PGlite only.
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `1fe897d`, together with 09A to
+  10B.
+- **Order:** 08B is still in progress and 08C waits.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `contracts/lead-qualification.ts` (new: the agent's input and output schemas, factor guide and limits, review reasons, states and reasons, `classifyLead`, `leadEligibilityStatus`, `leadEligibilityCodes`, the decision request, `contactDecision`, the view and list schemas, routes, `qualification_blocked`). `contracts/lead-scoring-rules.ts` (the agent run in the stored inputs, `LEAD_SCORE_AGENT_STATUSES`). `contracts/endpoints.ts` (4 endpoints, 2 cache resources), `workspaces.ts` (error code), `index.ts`. Tests: `lead-qualification.test.ts` (new, 10); `endpoints.test.ts` (49 → 53). |
+| AI agents | `lead-qualification/prompt.ts` (new: `lead-qualification/1`, its schema and pinned hash), `agent.ts` (new: `LeadQualificationAgent`), `index.ts`; package `index.ts`. Test: `agent.test.ts` (new, 9). |
+| Integrations | `model/fake.ts`: the built-in qualification responder. |
+| Database | `schema.prisma`: table `lead_qualifications` and enums `qualification_state`, `qualification_origin`. Migrations `20261107000600_lead_qualification` (generated) and `…000700_lead_qualification_checks` (checks, triggers). `tenancy/qualification.ts` (new: `scope.qualification` with `request`, `context`, `recordAutomatic`, `decide`, `view`, `list`), `lead-scoring.ts` (checked proposals, the agent run, method AI), `access.ts`, `index.ts`. Fixtures: a person's decision per tenant. Tests: `qualification.integration.test.ts` (new, 9); tenant tables 45 → 46; relations 67 → 71; model registry 45 → 46. |
+| Worker | `jobs/lead-qualification.ts` (new: the job), `main.ts` (its queue, relay and consumer), `queue.ts` (`QUALIFICATION_QUEUE_NAME`), `run-task.ts` (dispatch), `jobs/website-research.ts` (the token helper exported). Test: `jobs/lead-qualification.integration.test.ts` (new, 3). |
+| API | `workspaces/qualification.controller.ts` (new, 4 routes), `workspaces.module.ts`, `http/api-errors.ts` (2 errors, mapped and caught). Tests: `qualification.integration.test.ts` (new, 4), `route-guards.test.ts`. |
+| Web | `app/workspaces/[workspaceId]/campaigns/[campaignId]/leads/page.tsx` and `leads/[contactId]/page.tsx` (new), `components/qualification/campaign-leads.tsx` and `lead-qualification.tsx` (new), `lib/qualification.ts` (new) and its test (4), `lib/polling.ts` (`QUALIFICATION_RUN_POLL`), `components/data/status-label.tsx` (4 kinds), `components/campaigns/campaign-wizard.tsx` (the Leads link). Browser tests: `e2e/lead-qualification.spec.ts` (new, 3), `e2e/support/db.ts` (3 helpers). |
+| Docs | `docs/decisions.md` D-10C-01 to 06 and O-41; `docs/api/qualification.md` (new); `docs/api/openapi.json` (regenerated); `docs/security/authorization-review.md` (3 route rows, 2 service rows); README (Lead qualification); `CLAUDE.md` (the lead qualification rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 15/15 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 15/15 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 12/12 tasks, 0 cached: shared **267**, integrations **379**, ai-agents **63**, web **42**, database **46 passed, 372 skipped**, worker **9 passed, 16 skipped**, api **31 passed, 72 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 12/12 tasks, 0 cached: shared **267**, integrations **379**, ai-agents **63**, database **416 passed, 2 skipped** (the PGlite concurrency skips), api **103**, web **42**, worker **25** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 27 migrations (2 new); up to date; no difference, exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date (regenerated for the 4 routes) |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **54 passed** (3 new: the leads list and the lead page, qualification by the worker, a person's decision and a suppression). The e2e task ran; its 11 build dependencies came from the cache-free build just before |
+| `pnpm test:e2e` without it | **9 passed, 45 skipped** |
+| Reference repos / credential and personal-data scan of the 152 uncommitted files (09A to 10C) | 0 changes in each of the 9 / no matches (only the public repository name) |
+
+**Earlier failures in this task (logged honestly):**
+1. **The lead page hid "accept these checks" (a defect found and fixed):** the first browser run
+   failed. The page offered to accept review reasons only when the overall eligibility was
+   `review`. A draft campaign makes it `blocked` for everyone, although the person's own checks
+   only needed a person, and the API accepts those. The page now offers them unless the person
+   is blocked. A unit test covers both cases, and the rerun passed.
+2. **Test expectations and setup:**
+   - three answers broke the output schema's limit (invalid output, not a missing factor);
+   - a test organization had no normalized domain;
+   - a test lead had no email check, so it was rightly blocked;
+   - the API's test clock (2026-11-02) made a check dated today a check from the future, so it
+     was rightly ignored.
+   - The ai-agents tests read the integrations build, which predated the new fake responder
+     (rebuilt). The prompt hash was pinned after a placeholder.
+3. **Lint and types:** an unused body parameter (now passed to the repository, which validates
+   it), optional chains, an unnecessary assertion, nullish coalescing, an `as never` replaced by
+   the right type.
+4. **Tooling:**
+   - edit scripts whose markers no longer matched after `prisma format`, or matched twice
+     (nothing written each time; corrected);
+   - a quoting slip in an inline script (nothing written; done with the Edit tool).
+5. The OpenAPI test failed until `pnpm openapi` regenerated the document, as expected.
+
+### What 10C proves (local)
+
+- **Every classification is explainable:**
+  - every state from `classifyLead`, in all 80 combinations of fit, eligibility and agent outcome,
+    has at least one reason with a message;
+  - the database refuses a decision without reasons;
+  - the lead page shows the reasons, and every factor's rating, who rated it, why, and its
+    evidence (a company or person field, a research excerpt with its URL and date, an email
+    check).
+- **Invalid model output goes to review:**
+  - an answer that isn't JSON, breaks the schema, carries a score or a state, refuses, or is cut
+    off drops every proposal;
+  - a proposal citing an unknown fact, a level without evidence, timing not from hiring or news,
+    or instruction-like text is dropped;
+  - in the job, invalid output and a missing model left supported need and timing missing (score
+    70) and the decision Review, with the reason.
+- **Application code scores:**
+  - the repository checks every cited research fact again;
+  - a proposal with a value the research doesn't state, another fact's evidence rows, or a factor
+    the rules assess is refused, and nothing is saved;
+  - stored scores keep the calculation, rule and agent versions, and still reproduce.
+- **Manual changes are tracked:**
+  - a person's decision is a new version with their name and note, behind a version check (409);
+  - the audit record leaves out the note;
+  - accepting review reasons needs `drafts.approve`, and a new review reason (an aged email check)
+    needs a person again;
+  - the history keeps every decision, and the database refuses changes.
+- **Score changes never erase a suppression:**
+  - with the score raised to 100 by the agent, the suppression row is still there and still
+    blocks;
+  - the automatic decision is Rejected (`suppressed_email`), and nobody can qualify the person
+    (409, and a database check);
+  - `sendPermitted` and `readyToContact` stay false;
+  - the browser shows "Nobody can override this." and no Qualified option.
+- **Isolation:** another workspace's campaign or person is not found; only the worker records
+  automatic decisions or reads the agent's context.
+
+### Incomplete live checks (not passed)
+
+- A live model and an evaluation set for the agent.
+- The BullMQ qualification queue with Redis.
+- Real PostgreSQL and CI; a screen-reader check of the lead page (axe only).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker or Redis (O-06).
+3. No OpenAI key or model chosen (O-37).
+4. 08B is unfinished (its decisions and final entry); 08C waits.
+5. Open: O-19 to O-34, O-36 to O-41.
+
+### Manual check
+
+Open a campaign's setup, choose "Leads", and open a person. Press "Qualify this lead", then run
+the queued task in development (`node apps/worker/dist/run-task.js <task id>`, the newest
+`lead_qualification.run` in `job_tasks`). The page then shows:
+- Fit, with each factor's rating, explanation and evidence;
+- Eligibility, with every check;
+- Qualification, with the state and its reasons.
+
+Decide yourself with a note: a new decision appears in the history. Add the person's address to
+the do-not-contact list and reload: eligibility says "Nobody can override this.", and Qualified
+is no longer offered.
+
+### Next prompt
+
+The 10A to 10C prompts are done. Finish 08B (its decisions and final entry), then 08C; the plan
+is missing (O-01), so the user sends the next prompt.
+
+---
+
+## 10B: Send eligibility decisions (2026-11-07)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Nothing calls eligibility in the running app yet:** there is no enrollment or sending step,
+  and no screen shows it (10C). It was exercised in the database and API tests only.
+  `BUILT_SERVICES.eligibility` stays `false` for that reason, so activation still fails closed.
+- **No workspace has a send policy:** until one is set (only through the API for now), every
+  lead needs a person (`region_policy_unknown`, `source_policy_unknown`).
+- **Plan:** the block and review split, the 30-day window and the policy shape were chosen
+  without the missing plan (O-01, O-40). They haven't had legal review.
+- **Real PostgreSQL / CI:** PGlite only.
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `1fe897d`, together with 09A to
+  10A.
+- **Order:** 08B is still in progress and 08C waits.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `contracts/send-eligibility.ts` (new: the send policy schema and its routes, the checks and reason codes, the facts schema, `evaluateSendEligibility`, the result schema, `leadFitSchema`, `leadSendDecision`). `contracts/endpoints.ts` (2 endpoints, the `settings` tag, the `sendPolicy` cache resource), `index.ts`. Tests: `send-eligibility.test.ts` (new, 13); `endpoints.test.ts` (47 → 49). |
+| Database | `schema.prisma`: `tenant_settings.send_policy` and `send_policy_version`. Migrations `20261107000400_send_policy` (generated) and `…000500_send_policy_checks` (checks). `tenancy/send-eligibility.ts` (new: `scope.eligibility` with `evaluate`, `policy`, `updatePolicy`, and `SendPolicyVersionConflictError`), `access.ts`, `index.ts`. Test: `send-eligibility.integration.test.ts` (new, 7). |
+| API | `workspaces/send-policy.controller.ts` (new: `GET` and `PATCH /workspaces/:workspaceId/settings/send-policy`), `workspaces.module.ts`, `http/api-errors.ts` (the conflict error, mapped and caught). Tests: `send-policy.integration.test.ts` (new, 3), `route-guards.test.ts`. |
+| Docs | `docs/decisions.md` D-10B-01 to 05 and O-40; `docs/api/send-policy.md` (new); `docs/api/openapi.json` (regenerated); `docs/security/authorization-review.md` (2 routes, 3 service methods); README (Send eligibility); `CLAUDE.md` (the send eligibility rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 (after `prettier --write` on the 2 new shared files) |
+| `pnpm typecheck --force` | Exit 0; 15/15 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 15/15 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 12/12 tasks, 0 cached: shared **257**, integrations **379**, ai-agents **54**, web **38**, database **46 passed, 361 skipped**, worker **9 passed, 13 skipped**, api **31 passed, 68 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 12/12 tasks, 0 cached: shared **257**, integrations **379**, ai-agents **54**, database **405 passed, 2 skipped** (the PGlite concurrency skips), api **99**, web **38**, worker **22** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 25 migrations (2 new); up to date; no difference, exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date (regenerated for the 2 routes) |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **51 passed** (no new browser scenario: 10B adds no screen). The e2e task ran; its 11 build dependencies came from the cache-free build just before |
+| `pnpm test:e2e` without it | **9 passed, 42 skipped** |
+| Reference repos / credential and personal-data scan of the 129 uncommitted files (09A to 10B) | 0 changes in each of the 9 / no matches (only the public repository name) |
+
+**Earlier failures in this task (logged honestly):**
+1. **A conflict answered 500 (a defect found and fixed):** the API test's stale save got
+   `500 Internal server error` instead of `409 version_conflict`. The new error was mapped, but
+   the exception filter's `@Catch(...)` list names every error class, and the new one wasn't in
+   it. Added; the test now passes.
+2. **Validation messages:** zod reports a bad record key as "Invalid key in record", and an
+   unknown source didn't name the known ones. Both records now have their own messages, which
+   the tests pin. Zod's declared issue type lacks the `unrecognized_keys` code it produces at
+   run time (a type error), so the check is written the other way round.
+3. **Test setup slips:** pausing a campaign and completing an enrollment in the test broke
+   database rules (`paused_at` and `completed_at` must be set too); resetting exclusions to `{}`
+   instead of NULL would have failed the strict parse. All three were in the test only.
+4. **Tooling:** a duplicate type re-export (removed before it compiled); an edit script whose
+   marker matched twice (nothing written; done with the Edit tool); one lint finding
+   (nullish coalescing).
+5. A filtered test run (`-t`) skipped the setup of the earlier tests and failed for that reason
+   alone; only full-file runs are counted.
+
+### What 10B proves (local)
+
+- **A score of 100 still fails** when the person is suppressed (`suppressed_email`), the address
+  is invalid (`email_invalid`), the region or source is restricted (`region_blocked`,
+  `source_blocked`) or the policy is unknown (`region_policy_unknown`, `source_policy_unknown`).
+  The same holds in the rules, on PostgreSQL, and next to a stored lead score of 100. The rules
+  refuse facts that carry a score at all.
+- **Current status and changes after qualification:** after the 10A rules scored the lead, each
+  of these took effect at once and was undone, with the fit unchanged every time:
+  - a paused campaign, a paused mailbox, sending switched off;
+  - a domain on the do-not-contact list, an excluded lead list, an active enrollment elsewhere;
+  - an email check that aged past 30 days, a newer invalid check, a changed or cleared policy.
+- **Nothing unknown is permission:**
+  - an address nobody checked, a check of another address, a malformed one or one from the
+    future is blocked;
+  - a stale, risky or unknown check, an unnamed source or country, an unknown country, a
+    person without a recorded source, and a policy that is unset (or stored out of shape) need
+    a person;
+  - the company's country never permits.
+- **Hard blocks:** every block is `overridable: false`, and a block wins over any review.
+- **The policy:** saved with a version check (409), audited without personal data, and refused
+  when it could allow unnamed countries or names unknown settings. It needs `settings.manage`
+  (403 for a member, CSRF required, 404 for another workspace), and Beta's policy is its own.
+- **Isolation:** another workspace's campaign or person, and malformed ids, are not found.
+
+### Incomplete live checks (not passed)
+
+- Eligibility in the running app (no enrollment, sending or screen until 10C and later).
+- Real PostgreSQL and CI.
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker or Redis (O-06).
+3. No OpenAI key or model chosen (O-37).
+4. 08B is unfinished (its decisions and final entry); 08C waits.
+5. Open: O-19 to O-34, O-36 to O-40.
+
+### Manual check
+
+There is no screen yet. Through the API, with an admin session:
+- `GET /workspaces/:workspaceId/settings/send-policy` answers `{ "version": 0, "policy": null }`;
+- a `PATCH` with `otherCountries: "ALLOW"` answers `400` ("Choose REVIEW or BLOCK.");
+- a valid policy answers version 1;
+- repeating the same `PATCH` with version 0 answers `409 version_conflict`.
+
+### Next prompt
+
+10C (LeadQualificationAgent, qualification states and the UI), as sent. 08B (its decisions and
+final entry) and 08C are still open.
+
+---
+
+## 10A: Lead scoring model (2026-11-07)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Nothing calculates scores in the running app yet:** `scope.scoring.scoreLead` is a worker
+  method with no job or route. 10C adds the qualification step and the screens. Scores were
+  calculated in the database and API tests only.
+- **Supported need and timing aren't assessed** until 10C. With the default weights the rules
+  reach at most 70, so no lead is High Priority yet.
+- **Weights are set through the campaign API only:** the setup wizard has no scoring stage
+  (O-39).
+- **Plan:** the levels, rules and default policy were chosen without the missing plan (O-01,
+  O-39).
+- **Real PostgreSQL / CI:** PGlite only.
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `1fe897d`, together with 09A to
+  09C.
+- **Order:** 08B is still in progress and 08C waits.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `contracts/lead-scoring.ts` (new: factors, default weights, the weight, policy and configuration schemas, bands, assessment and evidence schemas, `calculateLeadScore`, `describeLeadScore`, `leadScoreEvidenceIds`). `contracts/lead-scoring-rules.ts` (new: targets, the facts schema, the rules `assessLeadFactors`, the stored-inputs schema, `reproduceLeadScore`). `contracts/research-fields.ts` (new: the research field list, moved out of `website-research.ts` to avoid an import cycle; still exported there). `contracts/campaigns.ts` (the `scoring` section: request, response `{ custom, config }`, `CAMPAIGN_SECTIONS`). `index.ts`. Tests: `lead-scoring.test.ts` (new, 24), `lead-scoring-rules.test.ts` (new, 14). |
+| Database | `schema.prisma`: `campaigns.scoring`; `scores` gains the campaign and its version, the email check, a version number, the band, the inputs and their hash, and `icp_id` becomes optional; enum `score_band`; new table `score_evidence`. Migrations `20261107000200_lead_scoring` (generated) and `…000300_lead_scoring_checks` (checks, and triggers that refuse any change to a score or a citation). `tenancy/lead-scoring.ts` (new: `scope.scoring`), `access.ts`, `index.ts`, `campaigns.ts` (the scoring section: read, save, copy). Fixtures: one lead score per tenant, built by the real rules and calculation, citing the careers-page evidence (`fixture-data.ts`, `load.ts`). Tests: `lead-scoring.integration.test.ts` (new, 11); tenant tables 44 → 45 (structure, tenant access, model registry); relations 63 → 67; fixture scores 2 → 3. |
+| API | No new route. `campaigns.integration.test.ts`: the scoring section over HTTP (1 new). |
+| Web | `lib/campaign-wizard.test.ts`: the test campaign has the new field. |
+| Docs | `docs/decisions.md` D-10A-01 to 06 and O-39; `docs/api/campaigns.md` (Lead scoring); `docs/api/openapi.json` (regenerated); `docs/security/authorization-review.md` (the `scope.scoring` rows); README (Lead scoring); `CLAUDE.md` (the lead scoring rule; scores in the append-only list). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 (after `prettier --write` on the 8 new or changed code files) |
+| `pnpm typecheck --force` | Exit 0; 15/15 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 15/15 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 12/12 tasks, 0 cached: shared **244**, integrations **379**, ai-agents **54**, web **38**, database **46 passed, 354 skipped**, worker **9 passed, 13 skipped**, api **31 passed, 65 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 12/12 tasks, 0 cached: shared **244**, integrations **379**, ai-agents **54**, database **398 passed, 2 skipped** (the PGlite concurrency skips), api **96**, web **38**, worker **22** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 23 migrations (2 new); up to date; no difference, exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date (regenerated for the campaign `scoring` section) |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **51 passed** (no new browser scenario: 10A adds no screen). The e2e task ran; its 11 build dependencies came from the cache-free build just before |
+| `pnpm test:e2e` without it | **9 passed, 42 skipped** |
+| Reference repos / credential and personal-data scan of the 120 uncommitted files (09A to 10A) | 0 changes in each of the 9 / no matches (only the public repository name) |
+
+**Earlier failures in this task (logged honestly):**
+1. **Erasing a person failed (a defect found and fixed):** two existing erasure tests (schema and
+   outreach) failed. Deleting a contact whose fixture lead score cited that contact's evidence
+   row hit the `score_evidence` NO ACTION reference: PostgreSQL checked it during the contact's
+   cascade, before the cascade through `scores` had removed the citation. The email-check
+   reference escaped only by the order the constraints were created in. Both references now
+   cascade (D-10A-05); the score still names a removed row and recalculation reports it. A new
+   test erases a person with scores and citations. The generated migration was corrected in
+   place: at that point it had been applied only to this machine's throwaway in-memory PGlite,
+   never committed or applied anywhere else.
+2. **Test expectations:** the model registry count (44 → 45) was missed at first; my erasure
+   test expected one Beta score where the fixtures hold two (the older ICP score and the lead
+   score); audit records are ordered by `occurredAt` (a type error).
+3. **Type and lint:** a read-only policy literal and a union spread in test helpers; unnecessary
+   optional chains and type assertions; an unused destructured variable.
+4. **The OpenAPI test** failed until `pnpm openapi` regenerated the document, as expected after a
+   contract change.
+
+### What 10A proves (local)
+
+- **Boundaries:** every whole score is in exactly one band. 79.75 is 79 (Review), 80 is High
+  Priority, 59.75 is 59 (Low Priority), 60 is Review.
+- **Invalid weights are refused:**
+  - totals other than 100 (99, 101, 0), naming the total;
+  - fractions, negatives, values above 100, strings, NaN, infinity, null, a missing or unknown
+    factor;
+  - a required factor with weight 0, repeated or unknown required factors, an out-of-range limit,
+    an unknown action, and any setting that would give missing data points.
+
+  Over HTTP: `400` with the issue paths `scoring.weights`,
+  `scoring.missingData.requiredFactors.0` and `scoring.missingData`.
+- **Missing evidence gets nothing:**
+  - all 64 combinations of missing factors give exactly 100 minus their weight;
+  - a missing factor can't carry a level or evidence, and an assessed one needs evidence;
+  - on PostgreSQL, a person with no company, no address and a title that doesn't match scores 0,
+    every missing factor at 0 points and nothing cited.
+- **Saved scores can be reproduced from their inputs:**
+  - each stored score keeps its inputs, their hash, the campaign version, the research version,
+    the email check and its citations;
+  - recalculation still passes after the campaign's weights and the company's industry changed;
+  - a stored value the inputs don't give, and inputs edited after hashing, are both reported;
+  - triggers refuse changes, and versions are numbered per lead.
+- **Policy:** a missing required factor keeps a High Priority score at Review; too little data
+  goes to Review only when the policy says `REVIEW`; nothing is ever lifted above Review.
+- **Isolation:** only the worker calculates; another workspace's campaign, person or score is not
+  found; cited evidence must be the company's evidence in this workspace.
+- **Untrusted text:** instructions in a title or an industry are only compared and quoted (level
+  0).
+
+### Incomplete live checks (not passed)
+
+- Scoring in the running app (no job or route until 10C).
+- The industry matching against real provider industries.
+- Real PostgreSQL and CI.
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker or Redis (O-06).
+3. No OpenAI key or model chosen (O-37).
+4. 08B is unfinished (its decisions and final entry); 08C waits.
+5. Open: O-19 to O-34, O-36 to O-39.
+
+### Manual check
+
+No screen shows scores yet. A campaign's scoring section can be checked through the API on a
+draft campaign: weights adding up to 105 answer `400` ("The weights add up to 105. Make them add
+up to 100."); valid weights answer with `scoring.custom: true`; `"scoring": null` returns the
+defaults.
+
+### Next prompt
+
+10B (separate eligibility decisions), as sent. 08B (its decisions and final entry) and 08C are
+still open.
+
+---
+
+## 09C: Research jobs, evidence, freshness, corrections, evaluation (2026-11-07)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **No live site or model:** the job ran with the fake fetcher (synthetic pages) and the fake
+  model. No OpenAI key or model is chosen (O-37), and a live evaluation baseline needs an
+  authorized paid run (O-38).
+- **No Redis:** the research queue (BullMQ) and the worker process weren't started. The job
+  itself ran through `run-task` and the job tests (O-33, O-38).
+- **Evaluation set reviewed by the author only:** a human review of the cases is open (O-38).
+- **Plan:** pages, freshness windows, permissions and the evaluation criteria were chosen
+  without the missing plan (O-01, O-38).
+- **Real PostgreSQL / CI:** PGlite only.
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `1fe897d`, together with 09A and
+  09B.
+- **Order:** 08B is still in progress and 08C waits.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Database | `schema.prisma`: `research` gains origin, result status, based-on, refresh, version, input, context and prompt hashes, schema version, model provider and cost; `evidence` gains its extract label and page hash; enums `research_origin`, `research_result_status`; partial unique indexes (one active run per company, one version number per company); a self-reference. Migrations `20261107000000_website_research` (generated) and `…000100_website_research_checks` (checks, `research_finished_immutable` and `evidence_immutable` triggers). `tenancy/research.ts` (new: request, read, versions, corrections, and the worker's page store, reuse, completion, retry and failure), `access.ts` (`scope.research`), `index.ts`. Fixtures: a correction version in both tenants. Tests: `research.integration.test.ts` (new, 9); relation count 62 → 63; fixture research count 1 → 2. |
+| Shared | `contracts/research.ts` (new: routes, requests, corrections, the stored findings schema, versions, history, the company research view, freshness, `research_not_possible`), `website-research.ts` (review reasons moved here), `endpoints.ts` (4 endpoints, the `research` tag, cache resources), `workspaces.ts` (error codes), `navigation.ts` (the Leads "Company profile" detail), `index.ts`. `endpoints.test.ts` (43 → 47). |
+| Integrations | `registry.ts`: the development and test fake fetcher uses the real clock. |
+| AI agents | `website-research/pages.ts` (new: `pickResearchLinks`, `researchInputSha256`), `types.ts` (review reasons from shared). Evaluation (new): `evaluation/cases.ts` (8 reviewed cases), `evaluate.ts` (criteria, three models, baseline), `cli.ts`, `evaluation.test.ts` (4); `package.json` (`evaluate`). |
+| Worker | `jobs/website-research.ts` (new: the job), `main.ts` (a queue, relay and consumer per worker definition), `queue.ts` (named queues), `run-task.ts` (dispatch by type), `package.json` (ai-agents). Test: `jobs/website-research.integration.test.ts` (new, 6). |
+| API | `workspaces/research.controller.ts` (new, 4 routes), `workspaces.module.ts`, `http/api-errors.ts` (three errors). Tests: `research.integration.test.ts` (new, 3), `route-guards.test.ts`. |
+| Web | `app/workspaces/[workspaceId]/leads/page.tsx` (the Leads shell) and `leads/organizations/[organizationId]/page.tsx` (new: the company profile), `components/research/company-research.tsx` (new), `lib/research.ts` (new) and its test (4), `lib/polling.ts` (`RESEARCH_RUN_POLL`), `components/data/status-label.tsx`, `components/imports/run-view.tsx` (links to profiles). Browser tests: `e2e/company-research.spec.ts` (new, 4), `e2e/imports.spec.ts` (the profile link), `e2e/support/db.ts`, `worker.ts`. |
+| Docs | `docs/decisions.md` D-09C-01 to 06 and O-38; `docs/evaluations/website-research.md` and `website-research-baseline.json` (new); `docs/api/openapi.json`; `docs/security/authorization-review.md`; README (Website research jobs and evidence); `CLAUDE.md` (website research rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 15/15 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 15/15 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 12/12 tasks, 0 cached: shared **206**, integrations **379**, ai-agents **54**, web **38**, database **46 passed, 341 skipped**, worker **9 passed, 13 skipped**, api **31 passed, 64 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 12/12 tasks, 0 cached: shared **206**, integrations **379**, ai-agents **54**, database **385 passed, 2 skipped** (the PGlite concurrency skips), api **95**, web **38**, worker **22** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 21 migrations (2 new); up to date; no difference, exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date (regenerated for the 4 routes) |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **51 passed** (4 new: the company profile; the imports scenario also checks the profile link). The e2e task ran; its 11 build dependencies came from the cache-free build just before |
+| `pnpm test:e2e` without it | **9 passed, 42 skipped** |
+| Reference repos / credential and personal-data scan of the 103 uncommitted files (09A to 09C) | 0 changes in each of the 9 / no matches (only the synthetic test keys) |
+
+**Earlier failures in this task (logged honestly):**
+1. **Clock skew (a defect found and fixed):** the API test completed a run with the worker's
+   clock and corrected it with the API's (5 days behind). Ordering by completion time took the
+   run for the current version, so a correction on a stale version was accepted. Versions now
+   carry a number per company, assigned under a per-company lock, with a unique index. A test
+   reproduces the skew.
+2. **Ids checked too late (fixed):** a request naming another workspace's campaign answered
+   "running" when a run was active, because the active check came first. The campaign is now
+   checked before anything else.
+3. **A misspelled field compiled:** selecting `domain` (the column is `normalizedDomain`) passed
+   the type check, because Prisma's generic select types accept unknown nested keys. Fixed; the
+   integration tests run every query.
+4. **Test expectations:** the fixture campaign has no business profile; a malformed id is a
+   404, not a 400; a stub that declares OpenAI is recorded as OpenAI; ambiguous browser
+   locators (two `status` regions, a URL shown twice). The endpoint count rose to 47.
+5. **The evaluation's own test** first required "unknowns honest" of every model. The fake fails
+   it on the conflict cases, which is a real limitation, so the test now requires only the
+   guarantees and pins the rest through the saved baseline.
+6. **Lint:** an `any` from `expect.stringContaining` in a test (found by the full-package lint,
+   not the per-file one), form values read without a string check, an optional chain.
+7. **Tooling slips:** a script with `]);` for `);` (nothing written); a marker that no longer
+   matched after `prisma format` (nothing written); a stray `cat >` waiting on input hung one
+   command, which was stopped, and its probe file was removed. A note on run-task: it now tries
+   the search worker first and falls back to research on `wrong_worker`, refused before anything
+   is claimed.
+8. **Writing this log** failed once with the same Windows `UNKNOWN` open error as in 09B. The
+   file was unchanged, and the retry succeeded.
+
+### What 09C proves (local)
+
+- **Research is traceable to dated extracts:** each fact cites evidence rows. Each row is the
+  extract's text, its page URL, when the page was read, the page's content hash and the stored
+  page (a source record). This holds through refreshes, reuses and corrections, in the database,
+  the API, the worker job and the browser.
+- **Refreshes preserve history:**
+  - a completed version and its evidence can't be updated (triggers; tested by trying);
+  - refresh, reuse and correction add numbered versions that name what they continue;
+  - earlier versions stay readable through the API and on the profile.
+- **Cache hits avoid model calls:**
+  - fresh research (30 days) answers a request without a run;
+  - stored pages (7 days) are used without fetching;
+  - a refresh whose pages are unchanged reuses the findings, with 0 model calls (the fake model's
+    request count doesn't move);
+  - a changed page calls the model again.
+- **Corrections:** set, reject and restore work; each is audited (field and action only), is a
+  compare-and-set (409 on a stale version), and is carried into later model runs.
+- **Permitted fetches only:** pages refused by robots.txt or failing are recorded with their
+  reason, and the run finishes with nothing to read. A temporary start-page failure retries.
+- **Budgets:** a paid model reserves and commits its AI tokens; without budget the run fails
+  before any model call; without a configured model it fails as `model_unavailable`.
+- **Injected instructions:** a hostile page's instructions never become facts; the version is
+  flagged for review.
+- **Evaluation saved:** criteria, 8 reviewed cases, and baselines for three models, with the
+  limitations, in `docs/evaluations/website-research.md`. A test fails if the saved baseline
+  stops matching.
+
+### Incomplete live checks (not passed)
+
+- A live model and real sites: an authorized staging run, and a live evaluation baseline.
+- The BullMQ research queue with Redis.
+- A human review of the evaluation cases; a screen-reader check of the profile.
+- Real PostgreSQL and CI.
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker or Redis (O-06).
+3. No OpenAI key or model chosen (O-37).
+4. 08B is unfinished (its decisions and final entry); 08C waits.
+5. Open: O-19 to O-34, O-36 to O-38.
+
+### Manual check
+
+Open a company from an import run's results (Imports → a run → a company name). Press "Research
+the website", then run the queued task in development (`node apps/worker/dist/run-task.js
+<task id>`, the id from `job_tasks`). The profile then shows facts with their evidence. Press
+"Read the pages again": a new version says the pages were unchanged. Correct a field: a third
+version shows the correction, and version 1 is unchanged in the history.
+
+### Next prompt
+
+Finish 08B (its decisions and final entry), then 08C. The plan is missing (O-01), so the user
+sends the next prompt.
+
+---
+
+## 09B: Model provider, OpenAI adapter, WebsiteResearchAgent (2026-11-07)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **No live model call:** the OpenAI adapter is tested only against scripted HTTP answers
+  shaped like OpenAI's documentation (checked 2026-11-07). No key exists here, no paid call
+  was made, and no model was chosen (O-37).
+- **No job runs the agent yet:** nothing is stored, and no usage is recorded in the ledger
+  (that is 09C's work).
+- **Plan:** the research fields, limits, confidence rules and instruction patterns were chosen
+  without the missing plan (O-01, O-37).
+- **Real PostgreSQL / CI:** the regression ran on PGlite only (09B changes no table).
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `1fe897d`, together with 09A.
+- **Order:** 08B is still in progress and 08C waits; 09C was sent with this prompt and waits.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `contracts/website-research.ts` (new): the 12 research fields and their descriptions, limits, `researchExtractSchema`, `websiteResearchInputSchema` (company, campaign context from the campaign and ICP schemas, fields, 1 to 8 extracts), the strict `websiteResearchModelOutputSchema`. `index.ts`. `logger.ts` (redacts `OPENAI_API_KEY`). Tests: `contracts/website-research.test.ts` (new, 4), `logger.test.ts`. |
+| Integrations | New `src/model/`: `types.ts` (`ModelProvider`, requests without tools, results, `ModelCostEvent`, prices, bounds), `openai.ts` (`OpenAiResponsesProvider`: the Responses API, strict structured output, `store: false`, no tools, retries, deadline, errors, cost events), `fake.ts` (`FakeModelProvider` and the deterministic research reader), `index.ts`. `providers.ts` (`AiProvider` replaced by `ModelProvider`; the `canceled` error code), `fakes.ts` (`FakeAiProvider` replaced), `registry.ts` (`createModelProvider`), `index.ts`. Tests: `model/openai.test.ts` (new, 24), `model/fake.test.ts` (new, 8), `fakes.test.ts` (the old fake's test removed). |
+| AI agents | First code in `packages/ai-agents`: `website-research/prompt.ts` (versioned instructions, the hand-written strict JSON Schema, the pinned hash, the JSON input), `evidence.ts` (quote, value and instruction checks), `extracts.ts` (`pageExtracts`), `types.ts`, `agent.ts` (`WebsiteResearchAgent`), `index.ts`. `package.json` (build, test, dependencies), `tsconfig.build.json`, `vitest.config.mjs`. Tests (new): `agent.test.ts` (28), `evidence.test.ts` (22). |
+| Worker | `env.ts`: `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_REASONING_EFFORT`, `OPENAI_INPUT_USD_PER_MTOK`, `OPENAI_OUTPUT_USD_PER_MTOK` (both prices or neither), `modelConfig`. `env.test.ts` (+2). |
+| Config | `turbo.json` (the five variables), `.env.example` (commented placeholders), `pnpm-lock.yaml` (ai-agents' workspace links only; no new external package). |
+| Docs | `docs/decisions.md` D-09B-01 to 06 and O-37; `docs/local-development.md` (the five variables); README (Website research); `CLAUDE.md` (AI models rule). This entry. |
+
+No route, table, migration or screen changed.
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 11/11 tasks, 0 cached (ai-agents now has tests): shared **206**, integrations **379**, ai-agents **50**, database **46 passed, 332 skipped**, web **33**, worker **9 passed, 7 skipped**, api **31 passed, 61 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 11/11 tasks, 0 cached: shared **206**, integrations **379**, ai-agents **50**, database **376 passed, 2 skipped** (the PGlite concurrency skips), web **33**, worker **16**, api **92** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 19 migrations (none new); up to date; no difference, exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date (no route changed) |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **47 passed** (no new scenario: 09B has no screen). The e2e task ran; its 11 build dependencies came from the cache-free build just before |
+| `pnpm test:e2e` without it | **9 passed, 38 skipped** |
+| Reference repos / credential and personal-data scan of the 57 uncommitted files (09A and 09B) | 0 changes in each of the 9 / no matches (only the synthetic `sk-synthetic-...` test keys) |
+
+**Earlier failures in this task (logged honestly):**
+1. **Docs:** platform.openai.com answered 403 to the fetcher; the same documentation was read
+   on developers.openai.com. The reference page is 558,000 characters long, so it was read in
+   parts.
+2. **Types and lint:** a too-narrow type for OpenAI's error body (`exactOptionalPropertyTypes`);
+   flags set inside closures that TypeScript treated as always false (now held in an object);
+   a useless initial assignment.
+3. **Test expectations:** one extract count in a `pageExtracts` test (a third short page fits
+   the budget) was wrong; the prompt hash started as a placeholder and was then pinned.
+4. **Escape trap again:** a `\u0027` written in a test string became a bare apostrophe, which
+   broke the string. It was caught before running and the string rewritten with double quotes.
+   Every new file was then scanned for stray characters (none).
+5. **Writing this log** failed once with a Windows `UNKNOWN` error when opening the file
+   (likely a short-lived lock). The file was unchanged, and the retry succeeded.
+
+### What 09B proves (local)
+
+- **Injected webpage instructions can't invoke tools or change policy:**
+  - a model request has no tools field. The OpenAI body has no tools, `tool_choice`,
+    metadata or background, and an answer containing a tool call is refused;
+  - the instructions are the same fixed text for a benign and a hostile page; page text
+    travels only as JSON data;
+  - answers that add an eligibility, a "verified" flag, a send flag or tool calls are refused
+    as a whole (strict schema), with every field unknown;
+  - facts or hypotheses quoting instruction-like page text go to review; the page is flagged
+    and what the model ignored is recorded.
+- **Missing evidence gives unknown or review, never a fabricated claim:**
+  - no facts means every field unknown;
+  - all of these go to review and their field stays unknown: a quote not in its extract, an
+    extract that wasn't provided, a number or value the quotes don't contain, a fact with one
+    bad quote among good ones, conflicting values, an unrequested field;
+  - a refusal, a truncated or filtered answer, or bad JSON gives review with every field
+    unknown;
+  - a high-confidence hypothesis is refused.
+- **Provenance and versions:** every verified fact carries its quotes with the extract's URL,
+  retrieval time and page hash; every result names the prompt, its pinned hash, the schema,
+  the provider and the model.
+- **The real adapter's contract**, against scripted HTTP:
+  - the documented body and headers, `store: false`, strict structured output, the token
+    ceiling;
+  - refusals, incomplete answers, usage and request ids;
+  - every error mapped, billing and quota 429s not retried, a rate limit retried after
+    `Retry-After`;
+  - timeouts not retried, cancellation, a cost event per attempt with a computed cost, the key
+    never echoed.
+
+  The agent also ran end to end through it.
+- **Fake model:** offline, deterministic, quoting only real sentences, with scripted refusals,
+  truncation and errors.
+
+### Incomplete live checks (not passed)
+
+- A live OpenAI call (no key; staging, authorized, with a chosen model and prices).
+- Real PostgreSQL and CI.
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker or Redis (O-06).
+3. No OpenAI key or model chosen (O-37).
+4. 08B is unfinished (its decisions and final entry); 08C and 09C wait.
+5. Open: O-19 to O-34, O-36, O-37.
+
+### Manual check
+
+None: 09B has no screen or route. Once authorized, run one research request in staging with a
+real key and model on a synthetic page, and compare the answer with the checks above.
+
+### Next prompt
+
+09C (sent and waiting). Then finish 08B and do 08C.
+
+---
+
+## 09A: Safe server-side website fetching (2026-11-06)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **No live fetch:** every test uses a local fixture server and a fake resolver. Nothing was
+  fetched from the internet, and TLS ran only against a server that doesn't speak it (O-36).
+- **No job uses the fetcher yet:** nothing is stored. Research jobs come in a later task.
+- **Plan:** limits, the reading of "configured access restrictions" and the robots.txt
+  handling were chosen without the missing plan (O-01, O-36).
+- **Real PostgreSQL / CI:** the regression ran on PGlite only (09A changes no table).
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `1fe897d`.
+- **Order:** 08B is still in progress (its decisions and final entry are not written) and 08C
+  waits. This regression covered the whole tree, 08B's code included, but 08B's status is
+  unchanged.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Integrations | New `src/website/`: `address.ts` (IPv4 and IPv6 checks, cloud metadata, internal names, URL parsing, DNS answer checks), `errors.ts` (`WebsiteFetchError`, retryable or permanent), `policy.ts` (limits with ceilings, blocked and allowed hosts), `robots.ts` (RFC 9309), `text.ts` (parse5 text extraction with nesting and element caps, decoding, clean-up), `limiter.ts` (per-host concurrency), `transport.ts` (HTTP over a connection to the checked address), `fetcher.ts` (`SafeWebsiteFetcher`: hops, redirects, robots.txt, limits, hashes), `fake.ts` (`FakeWebsiteFetcher`), `types.ts`, `index.ts`. `providers.ts` (`ProviderSet.websiteFetcher`), `fakes.ts`, `registry.ts` (`createWebsiteFetcher`), `index.ts`, `package.json` (parse5). Tests (new): `website/address.test.ts` (166), `website/fetcher.test.ts` (87), `website/robots.test.ts` (23), `website/text.test.ts` (15), `website/fake.test.ts` (9); `fakes.test.ts` (new key). |
+| Worker | `env.ts`: `WEBSITE_FETCH_BLOCKED_HOSTS`, `WEBSITE_FETCH_ALLOWED_HOSTS` (domain lists). `main.ts`: builds the fetcher at startup, so an invalid restriction stops the worker. `env.test.ts` (+1). |
+| Config | `pnpm-workspace.yaml` (catalog: `parse5` 8.1.0), `pnpm-lock.yaml` (parse5 8.1.0, entities 9.0.0), `turbo.json` (the two variables), `.env.example` (commented placeholders). |
+| Docs | `docs/decisions.md` D-09A-01 to 07 and O-36; `docs/local-development.md` (the two variables); README (Website fetching); `CLAUDE.md` (website fetching rule). This entry. |
+
+No route, table, migration or screen changed.
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 14/14 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 14/14 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 10/10 tasks, 0 cached: shared **202**, integrations **348**, database **46 passed, 332 skipped**, web **33**, worker **7 passed, 7 skipped**, api **31 passed, 61 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 10/10 tasks, 0 cached: shared **202**, integrations **348**, database **376 passed, 2 skipped** (the PGlite concurrency skips), web **33**, worker **14**, api **92** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 19 migrations (none new); up to date; no difference, exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date (no route changed) |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **47 passed** (no new scenario: 09A has no screen). The e2e task ran; its 11 build dependencies came from the cache-free build just before |
+| `pnpm test:e2e` without it | **9 passed, 38 skipped** |
+| Reference repos / credential and personal-data scan of the 34 changed files | 0 changes in each of the 9 / no matches |
+
+**Dependency:** parse5 **8.1.0** (MIT, published 2026-11-01, older than pnpm's
+`minimumReleaseAge`) and its one dependency entities 9.0.0 (BSD-2-Clause). The lockfile gained
+only these two packages.
+
+**Earlier failures in this task (logged honestly):**
+1. **Quadratic parsing (a defect found and fixed):** a test with 20,000 nested `<div>` took
+   7 s and returned no text. Measured on its own, parse5 took 6.4 s, growing with the square
+   of the depth, so a hostile 2 MiB page could hold a worker for minutes. A tree adapter now
+   caps open elements at 512 and elements at 100,000 (`too_complex`, refused in
+   milliseconds). Line breaks from empty blocks also no longer use up the text budget.
+2. **Test expectations:** `::2` reports `unspecified` (it carries 0.0.0.2), not
+   `ipv4_embedded`. One expected text line had a stray space. Fragment-only links (`#main`)
+   now count as no link, and `<form>` as a block. All fixed.
+3. **Escapes:** some regex escapes written by the editor landed as literal invisible
+   characters (ESLint `no-irregular-whitespace`), and a heredoc collapsed `\\`, so one fix
+   script matched nothing and wrote nothing. Both were redone with character codes, and the
+   files were scanned for stray characters (none left).
+4. **Lint:** two unnecessary type assertions, two promise rejections that weren't `Error`,
+   and an `eslint-disable` comment that Prettier moved away from its line. A `node:util`
+   import was needed for the `TextDecoder` type, and `tls.connect` takes no `family`.
+5. **Test harness:** a malformed-HTTP test hung while closing its raw server, because the
+   server-side socket stayed open. The client socket was already destroyed (checked
+   separately). The test now destroys its sockets. A concurrency test left a rejection
+   unhandled for a moment; both outcomes are now awaited together.
+6. **TLS error mapping:** TLS to a server that doesn't speak it gives `EPROTO`, which first
+   mapped to a retryable `connection_failed`. It is now `tls_failed` (permanent), with a test.
+
+### What 09A proves (local)
+
+- **Unsafe destinations are refused before any connection:**
+  - addresses: loopback, private, shared, link-local, unspecified, multicast, broadcast,
+    documentation, benchmarking and reserved IPv4; IPv6 outside 2000::/3, unique local,
+    link-local, site-local, documentation, Teredo, 6to4, NAT64 and IPv4-mapped forms;
+  - cloud metadata, by address (169.254.169.254, Azure's public 168.63.129.16, Alibaba's
+    100.100.100.200, AWS and Google over IPv6) and by name (`metadata.google.internal`,
+    `metadata.goog`);
+  - internal names (`localhost`, single labels, `.local`, `.internal`, `.home.arpa` ...);
+  - alternate encodings: integer, hex, octal, short, percent-encoded and full-width IPv4;
+    IPv6 written out or IPv4-mapped;
+  - other schemes, credentials in the URL, other ports;
+  - none of these makes a DNS lookup, a connection or a request.
+- **Every DNS answer is checked:** a name answering with any internal address (one in a mixed
+  answer, an IPv4-mapped one, a metadata one) is refused; the connection goes to the checked
+  address, never to a second lookup.
+- **DNS changes:** a name that was public and then answers 127.0.0.1 is refused on the next
+  fetch. A name that turns into the metadata address between two hops is refused at the
+  redirect, after one connection only.
+- **Redirects to internal addresses** (loopback, IPv6 loopback, metadata, hex and octal
+  forms, mapped IPv6, `localhost`, metadata names, a name resolving to 10.0.0.5) and to other
+  schemes, ports or credentials are refused without connecting. Checked redirects are
+  followed and recorded; more than the limit, loops and missing locations are refused.
+- **Oversized responses:** a declared length over the limit is refused before the body; a
+  streamed body, a 20 MiB decompression bomb and 20 KB headers stop at their limits.
+- **Unsupported types:** PDF, PNG, JSON, octet-stream, CSV, an invalid type, a missing type,
+  and unknown or stacked encodings are refused; corrupt compression is a bad response.
+- **Timeouts:** a server that never answers, a body that drips forever and a lookup that
+  never returns all end at the budget (200–300 ms in the tests), as retryable timeouts;
+  cancellation is `canceled`.
+- **Per-host concurrency:** with 2 per host, 5 requests to one host run 2 at a time with 3
+  queued, while another host is served; a queued request times out within its budget.
+- **Access restrictions:** blocked hosts and their subdomains are refused, also through a
+  redirect; an allow list refuses the rest; invalid lists or limits are refused at
+  construction and at worker startup.
+- **robots.txt:** our group wins over `*`; rules are cached per workspace; 404 allows, 503
+  means "try later"; a robots.txt redirect to another host is followed and checked, and one
+  to 127.0.0.1 is never connected to.
+- **Text and provenance:** main content without scripts, styles, navigation, header,
+  footer, cookie banner, hidden or decorative text, controls, embeds or dialogs. Title,
+  description, language and absolute links. The requested and final URL, redirects,
+  retrieval time and the SHA-256 of body and text.
+- **The fake** gives the same synthetic page every time and refuses the same unsafe URLs.
+
+### Incomplete live checks (not passed)
+
+- A live fetch of a real site, and TLS against a real certificate (staging, authorized).
+- Real PostgreSQL and CI.
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No Docker or Redis (O-06).
+3. 08B is unfinished: its decisions (D-08B-*, O-35) and final entry are not written. 08C
+   waits.
+4. Open: O-19 to O-34, O-36.
+
+### Manual check
+
+None: 09A has no screen or route. Optionally, in staging and once authorized, fetch one public
+page through the worker's fetcher and compare the text and hashes.
+
+### Next prompt
+
+Finish 08B (its decisions and final entry), then 08C (sent and waiting). The plan is missing
+(O-01), so the user sends the next prompt.
+
+---
+
+## GIT-14: Push `feat/05a-app-shell` (2026-11-06)
+
+**Status: Done.** The request was `git push`.
+
+| Step | Actual result |
+|---|---|
+| Pushed | `feat/05a-app-shell` → `origin/feat/05a-app-shell`, `20d0b38..1fe897d` (08A, 08B in progress); the remote head is `1fe897d` (checked with `git ls-remote`) |
+| Remote | `github.com/farhan0nouman-sys/LeadFennec-Leads-Agent` (**public**); `main` unchanged at `7fc44f2`; `feat/04a-auth` unchanged at `3e0b418` |
+
+- **08B is in progress** in the pushed commit: its regression and docs are not finished.
+- **CI has not run:** the workflow runs on pushes to `main`, on pull requests and on manual
+  dispatch, not on pushes to other branches.
+- This entry is not in the pushed commit; it is a local change to the log.
+
+---
+
 ## GIT-13: Commit 08A and 08B in progress (2026-11-06)
 
 **Status: Done (local commit only).** The request was `git commit`.

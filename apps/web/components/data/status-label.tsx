@@ -74,6 +74,39 @@ export const STATUS_LABELS = {
     FAILED: { label: 'Failed', tone: 'danger' },
     CANCELLED: { label: 'Cancelled', tone: 'neutral' },
   },
+  // A company's website research run, and its outcome (task 09C).
+  research: {
+    PENDING: { label: 'Queued', tone: 'info' },
+    RUNNING: { label: 'Running', tone: 'info' },
+    COMPLETED: { label: 'Completed', tone: 'success' },
+    FAILED: { label: 'Failed', tone: 'danger' },
+  },
+  researchResult: {
+    COMPLETED: { label: 'Checked', tone: 'success' },
+    REVIEW_REQUIRED: { label: 'Needs review', tone: 'warning' },
+    NO_CONTENT: { label: 'Nothing to read', tone: 'neutral' },
+  },
+  // A lead's qualification, its score's band, and its eligibility (task 10C).
+  qualification: {
+    QUALIFIED: { label: 'Qualified', tone: 'success' },
+    REVIEW: { label: 'Review', tone: 'warning' },
+    REJECTED: { label: 'Rejected', tone: 'neutral' },
+  },
+  scoreBand: {
+    HIGH_PRIORITY: { label: 'High Priority', tone: 'success' },
+    REVIEW: { label: 'Review', tone: 'warning' },
+    LOW_PRIORITY: { label: 'Low Priority', tone: 'neutral' },
+  },
+  eligibility: {
+    eligible: { label: 'May be emailed', tone: 'success' },
+    review: { label: 'A person must decide', tone: 'warning' },
+    blocked: { label: 'May not be emailed', tone: 'danger' },
+  },
+  eligibilityCheck: {
+    pass: { label: 'Passed', tone: 'success' },
+    review: { label: 'Needs a person', tone: 'warning' },
+    blocked: { label: 'Blocked', tone: 'danger' },
+  },
   // What happened to one record of a run.
   importResult: {
     CREATED: { label: 'Saved (new)', tone: 'success' },

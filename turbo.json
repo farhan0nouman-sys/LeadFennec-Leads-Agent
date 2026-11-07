@@ -47,7 +47,14 @@
         "REDIS_URL",
         "WORKER_HEALTH_PORT",
         "HEALTH_CHECK_TIMEOUT_MS",
-        "APOLLO_API_KEY"
+        "APOLLO_API_KEY",
+        "WEBSITE_FETCH_BLOCKED_HOSTS",
+        "WEBSITE_FETCH_ALLOWED_HOSTS",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "OPENAI_REASONING_EFFORT",
+        "OPENAI_INPUT_USD_PER_MTOK",
+        "OPENAI_OUTPUT_USD_PER_MTOK"
       ]
     }
   }

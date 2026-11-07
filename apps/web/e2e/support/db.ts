@@ -342,6 +342,128 @@ export class E2eDatabase {
     return id;
   }
 
+  /** A company with a synthetic website (task 09C); the fake fetcher serves its pages. */
+  async seedOrganization(
+    workspaceId: string,
+    name: string,
+    websiteUrl: string,
+  ): Promise<string> {
+    const id = randomUUID();
+    await this.client.query(
+      `INSERT INTO organizations (tenant_id, id, name, website_url, updated_at)
+       VALUES ($1, $2, $3, $4, now())`,
+      [workspaceId, id, name, websiteUrl],
+    );
+    return id;
+  }
+
+  /** The queued job task of a website research (task 09C). */
+  async researchTaskId(
+    workspaceId: string,
+    researchId: string,
+  ): Promise<string> {
+    const { rows } = await this.client.query<{ id: string }>(
+      `SELECT id FROM job_tasks
+       WHERE tenant_id = $1 AND task_type = 'website_research.run' AND idempotency_key = $2`,
+      [workspaceId, `research:${researchId}`],
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) {
+      throw new Error('No task for this research');
+    }
+    return id;
+  }
+
+  /** The newest research of a company (task 09C). */
+  async latestResearchId(
+    workspaceId: string,
+    organizationId: string,
+  ): Promise<string> {
+    const { rows } = await this.client.query<{ id: string }>(
+      `SELECT id FROM research WHERE tenant_id = $1 AND organization_id = $2
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [workspaceId, organizationId],
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) {
+      throw new Error('No research for this company');
+    }
+    return id;
+  }
+
+  /**
+   * A campaign lead to qualify (task 10C): a US software company's VP Sales on a new lead
+   * list, with a recent email check and a recorded source. Synthetic (.example) data.
+   */
+  async seedQualificationLead(
+    workspaceId: string,
+    run: string,
+  ): Promise<{
+    readonly listId: string;
+    readonly organizationId: string;
+    readonly contactId: string;
+    readonly email: string;
+  }> {
+    const listId = randomUUID();
+    const organizationId = randomUUID();
+    const contactId = randomUUID();
+    const domain = `${run}.example`;
+    const email = `quinn@${domain}`;
+    await this.client.query(
+      `INSERT INTO lead_lists (tenant_id, id, name, updated_at) VALUES ($1, $2, $3, now())`,
+      [workspaceId, listId, `Prospects ${run}`],
+    );
+    await this.client.query(
+      `INSERT INTO organizations (tenant_id, id, name, website_url, normalized_domain, industry, employee_count, country_code, updated_at)
+       VALUES ($1, $2, 'Quill Software (synthetic)', $3, $4, 'software', 120, 'US', now())`,
+      [workspaceId, organizationId, `https://${domain}/`, domain],
+    );
+    await this.client.query(
+      `INSERT INTO contacts (tenant_id, id, organization_id, first_name, last_name, title, email, normalized_email, email_domain, country_code, updated_at)
+       VALUES ($1, $2, $3, 'Quinn', 'Park', 'VP Sales', $4, $4, $5, 'US', now())`,
+      [workspaceId, contactId, organizationId, email, domain],
+    );
+    await this.client.query(
+      `INSERT INTO lead_list_members (tenant_id, lead_list_id, contact_id) VALUES ($1, $2, $3)`,
+      [workspaceId, listId, contactId],
+    );
+    await this.client.query(
+      `INSERT INTO verifications (tenant_id, id, contact_id, normalized_email, provider, status, checked_at)
+       VALUES ($1, $2, $3, $4, 'fake', 'VALID', now() - interval '1 hour')`,
+      [workspaceId, randomUUID(), contactId, email],
+    );
+    await this.client.query(
+      `INSERT INTO source_records (tenant_id, id, provider, contact_id, payload, payload_sha256)
+       VALUES ($1, $2, 'APOLLO', $3, '{}', $4)`,
+      [workspaceId, randomUUID(), contactId, 'a'.repeat(64)],
+    );
+    return { listId, organizationId, contactId, email };
+  }
+
+  /** The newest queued qualification of a workspace (task 10C). */
+  async qualificationTaskId(workspaceId: string): Promise<string> {
+    const { rows } = await this.client.query<{ id: string }>(
+      `SELECT id FROM job_tasks
+       WHERE tenant_id = $1 AND task_type = 'lead_qualification.run' AND status = 'PENDING'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [workspaceId],
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) {
+      throw new Error('No queued qualification');
+    }
+    return id;
+  }
+
+  /** An address the workspace must never contact (task 10C). */
+  async seedSuppressedEmail(workspaceId: string, email: string) {
+    await this.client.query(
+      `INSERT INTO suppressions (tenant_id, id, normalized_email, reason, source)
+       VALUES ($1, $2, $3, 'OPT_OUT', 'MANUAL')`,
+      [workspaceId, randomUUID(), email],
+    );
+  }
+
   async organizationCount(workspaceId: string): Promise<number> {
     const { rows } = await this.client.query<{ n: number }>(
       'SELECT count(*)::int AS n FROM organizations WHERE tenant_id = $1',

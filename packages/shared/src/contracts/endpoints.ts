@@ -17,6 +17,27 @@ import {
   verifyEmailRequestSchema,
 } from './auth.js';
 import {
+  RESEARCH_ROUTES,
+  organizationResearchSchema,
+  researchAcceptedSchema,
+  researchCorrectionRequestSchema,
+  researchRequestSchema,
+  researchVersionSchema,
+} from './research.js';
+import {
+  SEND_POLICY_ROUTES,
+  sendPolicyStateSchema,
+  updateSendPolicyRequestSchema,
+} from './send-eligibility.js';
+import {
+  QUALIFICATION_ROUTES,
+  leadPageSchema,
+  leadQualificationViewSchema,
+  qualificationDecisionRequestSchema,
+  qualifyAcceptedSchema,
+  qualifyRequestSchema,
+} from './lead-qualification.js';
+import {
   activateCampaignRequestSchema,
   activationReportSchema,
 } from './campaign-activation.js';
@@ -110,6 +131,16 @@ export const ENDPOINT_TAGS = [
       'Lead discovery runs: organization searches from an ICP, queued and followed by run id.',
   },
   {
+    name: 'research',
+    description:
+      'Website research of a company: versions with dated evidence, refreshes and corrections.',
+  },
+  {
+    name: 'settings',
+    description:
+      "Workspace settings: the send policy (which recipients' countries and which data sources may be emailed).",
+  },
+  {
     name: 'dashboard',
     description:
       'Counts, recent activity and integration health for the workspace dashboard.',
@@ -146,6 +177,11 @@ export const CACHE_RESOURCES = {
   importRuns: 'workspace',
   importOptions: 'workspace',
   importResults: 'workspace',
+  organizationResearch: 'workspace',
+  researchVersion: 'workspace',
+  sendPolicy: 'workspace',
+  campaignLeads: 'workspace',
+  campaignLead: 'workspace',
 } as const;
 
 export type CacheResource = keyof typeof CACHE_RESOURCES;
@@ -217,8 +253,25 @@ const memberParams = z
 const campaignParams = z
   .object({ workspaceId: z.uuid(), campaignId: z.uuid() })
   .strict();
+const leadParams = z
+  .object({
+    workspaceId: z.uuid(),
+    campaignId: z.uuid(),
+    contactId: z.uuid(),
+  })
+  .strict();
 const importParams = z
   .object({ workspaceId: z.uuid(), importId: z.uuid() })
+  .strict();
+const organizationParams = z
+  .object({ workspaceId: z.uuid(), organizationId: z.uuid() })
+  .strict();
+const researchVersionParams = z
+  .object({
+    workspaceId: z.uuid(),
+    organizationId: z.uuid(),
+    researchId: z.uuid(),
+  })
   .strict();
 const invitationParams = z
   .object({ workspaceId: z.uuid(), invitationId: z.uuid() })
@@ -761,6 +814,178 @@ export const API = {
       invalidates: ['importRun', 'importRuns', 'importResults', 'activity'],
     }),
   },
+  research: {
+    organization: endpoint({
+      id: 'research.organization',
+      method: 'GET',
+      path: RESEARCH_ROUTES.organization(':workspaceId', ':organizationId'),
+      tag: 'research',
+      summary:
+        "A company's website research: the current version with its facts and dated evidence, a queued or running run, and the earlier versions.",
+      access: 'workspace',
+      permission: 'contacts.read',
+      params: organizationParams,
+      status: 200,
+      response: organizationResearchSchema,
+      cache: 'organizationResearch',
+    }),
+    version: endpoint({
+      id: 'research.version',
+      method: 'GET',
+      path: RESEARCH_ROUTES.version(
+        ':workspaceId',
+        ':organizationId',
+        ':researchId',
+      ),
+      tag: 'research',
+      summary:
+        "One version of a company's research, as it was completed, with its evidence.",
+      access: 'workspace',
+      permission: 'contacts.read',
+      params: researchVersionParams,
+      status: 200,
+      response: researchVersionSchema,
+      cache: 'researchVersion',
+    }),
+    request: endpoint({
+      id: 'research.request',
+      method: 'POST',
+      path: RESEARCH_ROUTES.organization(':workspaceId', ':organizationId'),
+      tag: 'research',
+      summary:
+        'Queues website research of a company, or answers with a run already queued or research completed in the last 30 days (unless refresh). Reads public pages only, through the safe fetcher.',
+      access: 'workspace',
+      permission: 'research.run',
+      params: organizationParams,
+      body: researchRequestSchema,
+      status: 202,
+      response: researchAcceptedSchema,
+      errors: ['research_not_possible'],
+      invalidates: ['organizationResearch', 'activity'],
+    }),
+    correct: endpoint({
+      id: 'research.correct',
+      method: 'POST',
+      path: RESEARCH_ROUTES.corrections(':workspaceId', ':organizationId'),
+      tag: 'research',
+      summary:
+        "Corrects one field of the current version (set, reject or restore), with a note: a new version, audited; earlier versions don't change.",
+      access: 'workspace',
+      permission: 'research.run',
+      params: organizationParams,
+      body: researchCorrectionRequestSchema,
+      status: 201,
+      response: researchVersionSchema,
+      errors: ['version_conflict'],
+      invalidates: ['organizationResearch', 'researchVersion', 'activity'],
+    }),
+  },
+  qualification: {
+    leads: endpoint({
+      id: 'qualification.leads',
+      method: 'GET',
+      path: QUALIFICATION_ROUTES.leads(':workspaceId', ':campaignId'),
+      tag: 'campaigns',
+      summary:
+        "The campaign's leads (its lead list), one page at a time, with each lead's current score and qualification.",
+      access: 'workspace',
+      permission: 'campaigns.read',
+      params: campaignParams,
+      query: pageQuerySchema,
+      status: 200,
+      response: leadPageSchema,
+      cache: 'campaignLeads',
+    }),
+    lead: endpoint({
+      id: 'qualification.lead',
+      method: 'GET',
+      path: QUALIFICATION_ROUTES.lead(
+        ':workspaceId',
+        ':campaignId',
+        ':contactId',
+      ),
+      tag: 'campaigns',
+      summary:
+        "One lead of a campaign: its fit (the score's factors with explanations and evidence), its eligibility decided now and apart from the score, and its qualification with the history of decisions.",
+      access: 'workspace',
+      permission: 'campaigns.read',
+      params: leadParams,
+      status: 200,
+      response: leadQualificationViewSchema,
+      cache: 'campaignLead',
+    }),
+    qualify: endpoint({
+      id: 'qualification.qualify',
+      method: 'POST',
+      path: QUALIFICATION_ROUTES.qualify(
+        ':workspaceId',
+        ':campaignId',
+        ':contactId',
+      ),
+      tag: 'campaigns',
+      summary:
+        'Queues a qualification run (the agent proposes supported need and timing; application code scores and decides), or answers with the run already queued. Audited.',
+      access: 'workspace',
+      permission: 'research.run',
+      params: leadParams,
+      body: qualifyRequestSchema,
+      status: 202,
+      response: qualifyAcceptedSchema,
+      invalidates: ['campaignLead', 'activity'],
+    }),
+    decide: endpoint({
+      id: 'qualification.decide',
+      method: 'POST',
+      path: QUALIFICATION_ROUTES.decisions(
+        ':workspaceId',
+        ':campaignId',
+        ':contactId',
+      ),
+      tag: 'campaigns',
+      summary:
+        "A person's decision (qualified, review or rejected) with a note, if `version` is the current one; audited. It never lifts a block: a blocked lead can't be qualified. Accepting the eligibility checks that need a person also needs drafts.approve.",
+      access: 'workspace',
+      permission: 'campaigns.write',
+      params: leadParams,
+      body: qualificationDecisionRequestSchema,
+      status: 201,
+      response: leadQualificationViewSchema,
+      errors: ['version_conflict', 'qualification_blocked'],
+      invalidates: ['campaignLead', 'campaignLeads', 'activity'],
+    }),
+  },
+  settings: {
+    sendPolicy: endpoint({
+      id: 'settings.sendPolicy',
+      method: 'GET',
+      path: SEND_POLICY_ROUTES.sendPolicy(':workspaceId'),
+      tag: 'settings',
+      summary:
+        "The workspace's send policy and its version; null until it is set, and then nobody is allowed.",
+      access: 'workspace',
+      permission: 'settings.manage',
+      params: workspaceParams,
+      status: 200,
+      response: sendPolicyStateSchema,
+      cache: 'sendPolicy',
+    }),
+    updateSendPolicy: endpoint({
+      id: 'settings.updateSendPolicy',
+      method: 'PATCH',
+      path: SEND_POLICY_ROUTES.sendPolicy(':workspaceId'),
+      tag: 'settings',
+      summary:
+        'Replaces the send policy if `version` is the stored one (409 otherwise); null clears it. Audited.',
+      access: 'workspace',
+      permission: 'settings.manage',
+      params: workspaceParams,
+      body: updateSendPolicyRequestSchema,
+      status: 200,
+      response: sendPolicyStateSchema,
+      errors: ['version_conflict'],
+      invalidates: ['sendPolicy', 'activity'],
+    }),
+  },
   dashboard: {
     leadSummary: endpoint({
       id: 'dashboard.leadSummary',
@@ -890,6 +1115,8 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
   campaign_name_taken: 409,
   campaign_not_ready: 409,
   import_not_cancellable: 409,
+  research_not_possible: 409,
+  qualification_blocked: 409,
 };
 
 /** Mutations need the session's CSRF token (and every non-GET route checks the origin). */

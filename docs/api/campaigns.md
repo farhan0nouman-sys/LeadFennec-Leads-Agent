@@ -33,8 +33,8 @@ outside the user's workspaces, `403` without the permission) as in
   the answer is `409 version_conflict`: load it again and reapply your change.
 - Send only the sections you change: `name`, `description`, `businessProfile`, `offer`,
   `audience`, `exclusions`, `leadLimits`, `timezone`, `schedule`, `sender`, `sequence`,
-  `approvalMode`. Each one replaces its section entirely. `null` clears the description, the
-  business profile or the offer.
+  `approvalMode`, `scoring`. Each one replaces its section entirely. `null` clears the
+  description, the business profile or the offer, and returns `scoring` to the defaults.
 - Inside a section every field is optional while the campaign is a draft, but every value
   must be within its bounds. Unknown fields are refused.
 - Time zones, domains and addresses are normalized (`europe/berlin` → `Europe/Berlin`,
@@ -60,6 +60,35 @@ Another workspace's record and an id that doesn't exist get the same answer.
 `HUMAN` (the default): every draft needs a member's approval. `AUTOMATIC` can be set only by
 a member whose role grants `drafts.approve` (else `403`), and only in a workspace that doesn't
 require approval (else `400`, issue `approvalMode`). Workspaces require approval by default.
+
+## Lead scoring (task 10A)
+
+`scoring` sets how the campaign's leads are scored (`docs/decisions.md` D-10A-*). Without it the
+defaults apply; it isn't needed to start a campaign.
+
+```json
+{
+  "version": 4,
+  "scoring": {
+    "weights": { "industry": 25, "decisionMaker": 20, "sizeLocation": 15,
+                 "supportedNeed": 20, "contactQuality": 10, "timing": 10 },
+    "missingData": { "requiredFactors": ["industry", "decisionMaker", "supportedNeed"],
+                     "maxMissingWeight": 30, "whenInsufficient": "SCORE" }
+  }
+}
+```
+
+- **Weights:** every factor, whole numbers from 0 to 100, adding up to exactly 100. Otherwise
+  `400 validation_failed`, e.g. issue `scoring.weights`: "The weights add up to 105. Make them
+  add up to 100."
+- **`missingData`:** a factor without evidence always earns 0 points, and no setting changes
+  that (an unknown setting is refused by name).
+  - `requiredFactors` (each with a weight above 0): a lead missing one is never High Priority.
+  - `maxMissingWeight` and `whenInsufficient`: when the missing factors weigh more, `REVIEW`
+    sends the lead to Review; `SCORE` keeps the band of its score.
+- **Bands:** High Priority 80–100, Review 60–79, Low Priority 0–59.
+- **The response** has `scoring: { "custom": false, "config": { … } }`: the configuration in
+  effect, and whether the campaign set its own.
 
 ## Readiness
 

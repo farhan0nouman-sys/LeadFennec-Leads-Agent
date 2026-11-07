@@ -118,6 +118,12 @@ schemas are in `apps/api/src/env.ts`, `apps/worker/src/env.ts` and `apps/web/env
 | `API_BASE_URL` | web | none (required) | `http://` or `https://` URL. Server-side only. |
 | `WEB_APP_URL` | api | `http://localhost:3000` in development and test; required elsewhere | Origin of the web app, no path. `https://` outside development and test. Emailed account links point here, and the API refuses state-changing requests from any other origin. |
 | `APOLLO_API_KEY` | worker | none | Staging and production only: an Apollo API key scoped to `api/v1/mixed_companies/search` (organization search, task 07B). 8–200 printable characters, no spaces; empty counts as unset. Development and tests always use the fake provider, so leave it unset locally. Redacted from logs. |
+| `WEBSITE_FETCH_BLOCKED_HOSTS` | worker | none | Comma-separated domains the website fetcher never fetches, with their subdomains (task 09A). Each entry is normalized like a company domain (lower case, no `www.`); an invalid entry stops the worker at startup. Applies in every environment, the fake included. Empty counts as unset. |
+| `OPENAI_API_KEY` | worker | none | Staging and production only (task 09B): an OpenAI API key, 20-512 printable characters, no spaces. Development and tests always use the fake model, so leave it unset locally. Empty counts as unset. Redacted from logs. |
+| `OPENAI_MODEL` | worker | none | The model id, e.g. `gpt-6-luna`; required with `OPENAI_API_KEY` (unconfigured fails closed). |
+| `OPENAI_REASONING_EFFORT` | worker | none | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`; sent only when set (models differ). |
+| `OPENAI_INPUT_USD_PER_MTOK`, `OPENAI_OUTPUT_USD_PER_MTOK` | worker | none | Prices in US dollars per million tokens, from OpenAI's pricing page, both or neither. Without them, cost events carry tokens but no cost. |
+| `WEBSITE_FETCH_ALLOWED_HOSTS` | worker | none | When set, the only domains (and subdomains) the website fetcher fetches; everything else is refused. Same format as above. Useful in staging. |
 
 Turborepo runs in strict environment mode: the `dev` task only passes the variables listed in
 `turbo.json` (`passThroughEnv`). When an app gains a variable, add it there too.

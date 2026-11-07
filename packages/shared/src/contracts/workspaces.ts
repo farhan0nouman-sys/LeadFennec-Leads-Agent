@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { AUTH_ERROR_CODES, emailInputSchema, linkTokenSchema } from './auth.js';
 import { CAMPAIGN_ERROR_CODES } from './campaigns.js';
 import { IMPORT_ERROR_CODES } from './organization-import.js';
+import { QUALIFICATION_ERROR_CODES } from './lead-qualification.js';
+import { RESEARCH_ERROR_CODES } from './research.js';
 
 export const WORKSPACE_ROUTES = {
   workspaces: '/workspaces',
@@ -227,6 +229,8 @@ export const API_ERROR_CODES = [
   ...WORKSPACE_ERROR_CODES,
   ...CAMPAIGN_ERROR_CODES,
   ...IMPORT_ERROR_CODES,
+  ...RESEARCH_ERROR_CODES,
+  ...QUALIFICATION_ERROR_CODES,
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];

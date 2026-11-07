@@ -36,6 +36,22 @@ import {
   type DiscoveryRepository,
 } from './discovery.js';
 import {
+  createLeadScoringRepository,
+  type LeadScoringRepository,
+} from './lead-scoring.js';
+import {
+  createResearchRepository,
+  type ResearchRepository,
+} from './research.js';
+import {
+  createQualificationRepository,
+  type QualificationRepository,
+} from './qualification.js';
+import {
+  createSendEligibilityService,
+  type SendEligibilityService,
+} from './send-eligibility.js';
+import {
   createDashboardRepository,
   type DashboardRepository,
 } from './dashboard.js';
@@ -61,6 +77,14 @@ export interface TenantScope {
   readonly campaigns: CampaignRepository;
   readonly dashboard: DashboardRepository;
   readonly discovery: DiscoveryRepository;
+  /** Website research of companies (task 09C). */
+  readonly research: ResearchRepository;
+  /** Lead scores for campaigns (task 10A). */
+  readonly scoring: LeadScoringRepository;
+  /** Whether a campaign may email a person, apart from fit (task 10B). */
+  readonly eligibility: SendEligibilityService;
+  /** Qualification decisions for campaign leads (task 10C). */
+  readonly qualification: QualificationRepository;
   readonly invitations: InvitationRepository;
   readonly members: MemberRepository;
   readonly notifications: NotificationRepository;
@@ -90,6 +114,10 @@ function buildScope(
     campaigns: createCampaignRepository(prisma, tenantId, actor, now),
     dashboard: createDashboardRepository(prisma, tenantId, actor, now),
     discovery: createDiscoveryRepository(prisma, tenantId, actor, now),
+    research: createResearchRepository(prisma, tenantId, actor, now),
+    scoring: createLeadScoringRepository(prisma, tenantId, actor, now),
+    eligibility: createSendEligibilityService(prisma, tenantId, actor, now),
+    qualification: createQualificationRepository(prisma, tenantId, actor, now),
     invitations: createInvitationRepository(prisma, tenantId, actor, now),
     members: createMemberRepository(prisma, tenantId, actor),
     notifications: createNotificationRepository(prisma, tenantId, actor, now),

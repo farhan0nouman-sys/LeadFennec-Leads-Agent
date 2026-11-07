@@ -10,7 +10,11 @@ const execute = promisify(execFile);
 // Playwright runs from apps/web, like the API server command in playwright.config.ts.
 const RUN_TASK = resolve('../worker/dist/run-task.js');
 
-/** The job's outcome: completed, cancelled, skipped, retrying or failed. */
+/**
+ * The job's outcome: completed, cancelled, skipped, retrying or failed (a search); completed,
+ * reused, no_content, skipped, retrying or failed (a website research, task 09C). run-task
+ * picks the job by the task's type.
+ */
 export async function runSearchTask(taskId: string): Promise<string> {
   const { stdout } = await execute(process.execPath, [RUN_TASK, taskId], {
     env: {

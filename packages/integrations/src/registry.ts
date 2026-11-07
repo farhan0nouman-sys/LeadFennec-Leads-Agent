@@ -16,6 +16,15 @@ import type {
   PeopleSearchProvider,
   ProviderSet,
 } from './providers.js';
+import { FakeModelProvider } from './model/fake.js';
+import {
+  OpenAiResponsesProvider,
+  type OpenAiReasoningEffort,
+} from './model/openai.js';
+import type { ModelPrices, ModelProvider } from './model/types.js';
+import { FakeWebsiteFetcher } from './website/fake.js';
+import { SafeWebsiteFetcher } from './website/fetcher.js';
+import type { WebsiteFetcher } from './website/types.js';
 
 export type ProviderMode = 'fake' | 'live';
 
@@ -140,4 +149,79 @@ export function createEmailVerificationProvider(
   throw new LiveProvidersUnavailableError(
     'No email verification service is selected, so addresses cannot be checked (docs/decisions.md O-35).',
   );
+}
+
+/** The access restrictions of website fetching, from the app's validated environment. */
+export interface WebsiteFetchConfig {
+  /** WEBSITE_FETCH_BLOCKED_HOSTS: never fetched, with their subdomains. */
+  readonly blockedHosts?: readonly string[] | undefined;
+  /** WEBSITE_FETCH_ALLOWED_HOSTS: when set, only these (and their subdomains) are fetched. */
+  readonly allowedHosts?: readonly string[] | undefined;
+}
+
+/**
+ * The website fetcher for this environment (task 09A, docs/decisions.md D-09A-07): the
+ * synthetic fake in development and test (it never connects), the safe live fetcher in
+ * staging and production. Both apply the same URL checks and access restrictions; an invalid
+ * restriction throws here, before any fetch.
+ */
+export function createWebsiteFetcher(
+  appEnv: AppEnv,
+  config: WebsiteFetchConfig = {},
+): WebsiteFetcher {
+  const policy = {
+    blockedHosts: [...(config.blockedHosts ?? [])],
+    allowedHosts:
+      config.allowedHosts === undefined || config.allowedHosts.length === 0
+        ? null
+        : [...config.allowedHosts],
+  };
+  if (isLocal(appEnv)) {
+    // The real clock: stored pages and evidence show when they were read (task 09C). Unit
+    // tests that need a fixed time build the fake themselves.
+    return new FakeWebsiteFetcher({ policy, now: () => new Date() });
+  }
+  return new SafeWebsiteFetcher({ policy });
+}
+
+/** The model configuration, from the app's validated environment (task 09B). */
+export interface ModelConfig {
+  /** OPENAI_API_KEY. Ignored in development and test, which always use the fake. */
+  readonly openAiApiKey?: string | undefined;
+  /** OPENAI_MODEL. */
+  readonly openAiModel?: string | undefined;
+  /** OPENAI_REASONING_EFFORT. */
+  readonly openAiReasoningEffort?: OpenAiReasoningEffort | undefined;
+  /** OPENAI_INPUT_USD_PER_MTOK and OPENAI_OUTPUT_USD_PER_MTOK, both or neither. */
+  readonly prices?: ModelPrices | null | undefined;
+}
+
+/**
+ * The model provider for this environment (task 09B, docs/decisions.md D-09B-02): the fake in
+ * development and test, whatever the configuration; OpenAI in staging and production, which
+ * needs OPENAI_API_KEY and OPENAI_MODEL (unconfigured fails closed).
+ */
+export function createModelProvider(
+  appEnv: AppEnv,
+  config: ModelConfig,
+): ModelProvider {
+  if (isLocal(appEnv)) {
+    return new FakeModelProvider();
+  }
+  if (
+    config.openAiApiKey === undefined ||
+    config.openAiApiKey === '' ||
+    config.openAiModel === undefined ||
+    config.openAiModel === ''
+  ) {
+    throw new LiveProvidersUnavailableError(
+      'OPENAI_API_KEY and OPENAI_MODEL must both be set, so there is no model provider.',
+    );
+  }
+  return new OpenAiResponsesProvider({
+    apiKey: config.openAiApiKey,
+    model: config.openAiModel,
+    reasoningEffort: config.openAiReasoningEffort,
+    prices: config.prices ?? null,
+  });
 }

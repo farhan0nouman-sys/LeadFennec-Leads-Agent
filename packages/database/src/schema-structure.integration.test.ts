@@ -171,7 +171,7 @@ describe.runIf(testDatabaseUrl !== undefined)(
       expect(tables.filter((t) => !t.hasTenantId).map((t) => t.name)).toEqual(
         PLATFORM_TABLES,
       );
-      expect(tenantTables()).toHaveLength(44);
+      expect(tenantTables()).toHaveLength(46);
     });
 
     it('makes tenant_id required, the first key column, cascading and immutable', async () => {

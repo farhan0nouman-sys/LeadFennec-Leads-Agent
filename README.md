@@ -396,6 +396,128 @@ Task 08A defines how people are found for a company and when an address may be u
   fresh `verified` check makes it automatically eligible (`emailSendEligibility`); `risky` and
   `unknown` always need a person.
 
+## Website fetching
+
+Task 09A adds the only way server code fetches public web pages (`docs/decisions.md`
+D-09A-*): `createWebsiteFetcher` (`packages/integrations/src/website`). Development and tests
+get a fake that never connects; staging and production get `SafeWebsiteFetcher`. No job
+uses it yet.
+
+- **Checked at every hop:** the URL (http or https, no credentials, ports 80 and 443), the
+  host name, every address of the DNS answer (no loopback, private, link-local, metadata or
+  other non-public address, IPv6 and alternate encodings included), the access lists
+  (`WEBSITE_FETCH_BLOCKED_HOSTS`, `WEBSITE_FETCH_ALLOWED_HOSTS`) and robots.txt. The
+  connection goes to the checked address, never to a second lookup; redirects are followed by
+  the fetcher and checked like the first URL.
+- **Bounded:** 5 redirects, 15 seconds in all, 2 MiB of body (decompressed), HTML and plain
+  text only, 2 requests per host at a time, and parse limits for hostile markup.
+- **Returned:** readable text without scripts or navigation, title, description, language,
+  links, the requested and final URL, redirects, retrieval time and SHA-256 hashes. All of it
+  is untrusted data.
+- **Tests** run the real HTTP client against a local fixture server through a fake resolver;
+  nothing leaves the machine.
+
+## Website research (AI)
+
+Task 09B adds the model provider and the WebsiteResearchAgent (`docs/decisions.md` D-09B-01
+to D-09B-06). No job runs it yet.
+
+- **Models** sit behind `ModelProvider` (`packages/integrations/src/model`):
+  `createModelProvider` gives development and tests a fake that never connects, and staging
+  and production the OpenAI adapter (`OPENAI_API_KEY` and `OPENAI_MODEL`, worker only). A
+  model gets fixed instructions, the data and a strict output schema, never tools. Every
+  attempt emits a cost event (tokens, and a cost when prices are configured).
+- **WebsiteResearchAgent** (`packages/ai-agents`) reads at most 8 bounded page extracts with the
+  campaign's context and returns:
+  - verified facts, each with quotes from dated, hashed extracts;
+  - hypotheses (never above medium confidence);
+  - unknown fields, evidence ids and a confidence set by code.
+- **Untrusted pages:** page text reaches the model only as JSON data. Application code finds
+  every cited quote in its extract and checks the value against it. A claim that fails goes to
+  review, never into the facts. Pages that try to instruct the model are flagged.
+- **Versions:** the prompt, the schema and the model are recorded with every result; the
+  prompt's hash is pinned by a test.
+
+## Website research jobs and evidence
+
+Task 09C connects the fetcher (09A) and the agent (09B) to a job, stored evidence and the
+company profile (`docs/decisions.md` D-09C-01 to D-09C-06).
+
+- **A run** (`POST /workspaces/:workspaceId/organizations/:organizationId/research`,
+  `research.run`) queues a `website_research.run` job. The worker reads the company's start
+  page and up to three pages it links to through the safe fetcher, stores each page read, and
+  keeps each extract as dated evidence.
+- **Versions:** every run, refresh, reuse and correction is a new, numbered version. Completed
+  versions and evidence never change (database triggers), and every fact leads to its quote,
+  extract, read time and page hash.
+- **Freshness:** research from the last 30 days answers a request without a new run. Stored pages
+  are reused for 7 days. When the model would see exactly what it saw before, the earlier
+  findings are reused without a model call. "Read the pages again" re-reads the pages.
+- **Corrections** (set, reject or restore, with a note) are compare-and-set, audited, and carried
+  into later versions.
+- **The company profile** (`/workspaces/:workspaceId/leads/organizations/:organizationId`, linked
+  from import results) shows the facts with their evidence, the unknown fields, inferences, what
+  needs a person, page warnings and the history.
+- **Evaluation:** a reviewed set of synthetic sites with criteria and a saved baseline, not an
+  accuracy score: `docs/evaluations/website-research.md`.
+
+## Lead scoring
+
+Task 10A scores a person for a campaign in application code (`docs/decisions.md` D-10A-01 to
+D-10A-06).
+
+- **Factors and weights:** industry 25, decision-maker 20, size and location 15, supported need
+  20, contact quality 10, timing 10 by default. A campaign may set its own weights (whole
+  numbers adding up to 100) and missing-data policy in its `scoring` section.
+- **Assessments:** each factor is rated from 0 to 4 with the evidence it rests on, or is
+  missing. Missing factors earn 0 points; their weight is never given to other factors.
+- **Bands:** High Priority 80–100, Review 60–79, Low Priority 0–59. The missing-data policy can
+  only move a lead to Review.
+- **Rules** (deterministic) rate industry, decision-maker, size and location, and contact quality
+  from stored data. Supported need and timing wait for the qualification step (10C).
+- **Stored scores** keep everything they were calculated from: the inputs and their hash, the
+  campaign version, the research version, the email check and the evidence rows they cite. A
+  score never changes; `scope.scoring.reproduce` recalculates one and reports any difference.
+
+## Send eligibility
+
+Task 10B decides whether a campaign may email a person, apart from how well they fit
+(`docs/decisions.md` D-10B-01 to D-10B-05).
+
+- **Separate results:** `scope.eligibility.evaluate` returns the lead's fit (its score) and its
+  eligibility side by side. Only eligibility permits sending: a score of 100 changes nothing.
+- **Checks:** workspace sending and plan, the campaign, its mailbox, the person, the
+  do-not-contact list, the campaign's exclusions, the email check, the data source and the
+  region. Each answers pass, review (a person must decide) or blocked (nobody may send), with
+  reason codes.
+- **Nothing unknown is permission:** an address that wasn't checked is blocked, and a stale,
+  risky or unknown check needs a person. So do a source or a country the policy doesn't name, a
+  missing policy, and a recipient whose country isn't known.
+- **The send policy** (`GET` and `PATCH /workspaces/:workspaceId/settings/send-policy`,
+  `settings.manage`): countries and sources with ALLOW, REVIEW or BLOCK. It is saved with a
+  version check and audited; see `docs/api/send-policy.md`.
+- **Always current:** eligibility is decided from the facts when asked, so it follows every
+  change after a lead was scored.
+
+## Lead qualification
+
+Task 10C qualifies a campaign's leads (`docs/decisions.md` D-10C-01 to D-10C-06,
+`docs/api/qualification.md`).
+
+- **The agent proposes:** the LeadQualificationAgent rates supported need and timing from the
+  company's verified research facts, citing them. Application code checks every citation, drops
+  what doesn't check out, and calculates the score; the rules rate the other factors.
+- **States:** qualified, review or rejected, decided by rules from the score, the person's own
+  eligibility and the agent's outcome, always with reasons. Invalid model output goes to review.
+- **People decide too:** a decision with a note, kept in an append-only history and audited. It
+  never lifts a block. Accepting the checks that need a person (`drafts.approve`) is the only way
+  to widen what may be sent, and only for those checks.
+- **Screens:** a campaign's leads (from the setup page's "Leads" link), and each lead's page with
+  fit (every factor's rating, explanation and evidence), eligibility and qualification shown
+  apart.
+- **The job:** `lead_qualification.run`, queued by "Qualify this lead"; in development run it
+  with `node apps/worker/dist/run-task.js <task id>`.
+
 ## Screens
 
 The web app has the account and team screens (`docs/decisions.md` D-04C-*): sign-in,

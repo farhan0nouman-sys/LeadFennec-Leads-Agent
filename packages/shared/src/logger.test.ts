@@ -35,7 +35,7 @@ describe('createLogger', () => {
       {
         password: 'pw-1',
         provider: { apiKey: 'key-1', token: 'tok-1' },
-        env: { APOLLO_API_KEY: 'apollo-1' },
+        env: { APOLLO_API_KEY: 'apollo-1', OPENAI_API_KEY: 'openai-1' },
         req: { headers: { authorization: 'Bearer abc', cookie: 'sid=1' } },
       },
       'secrets',
@@ -46,6 +46,7 @@ describe('createLogger', () => {
       'key-1',
       'tok-1',
       'apollo-1',
+      'openai-1',
       'Bearer abc',
       'sid=1',
     ]) {

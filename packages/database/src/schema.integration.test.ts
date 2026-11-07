@@ -106,9 +106,9 @@ describe.runIf(testDatabaseUrl !== undefined)(
             contacts: 3,
             leadListMembers: 3,
             sourceRecords: 3,
-            research: 1,
+            research: 2,
             evidence: 1,
-            scores: 2,
+            scores: 3,
             verifications: 1,
           });
         }

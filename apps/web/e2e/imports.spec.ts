@@ -140,6 +140,11 @@ test('a search finds companies, runs in the worker and reports what was saved', 
     0,
   );
   expect(await db.organizationCount(workspaceId)).toBe(30);
+  // Each saved company opens its profile, with its website research (task 09C).
+  await expect(results.getByRole('link').first()).toHaveAttribute(
+    'href',
+    new RegExp(`/workspaces/${workspaceId}/leads/organizations/[0-9a-f-]{36}$`),
+  );
   await expectAccessible(page);
 });
 

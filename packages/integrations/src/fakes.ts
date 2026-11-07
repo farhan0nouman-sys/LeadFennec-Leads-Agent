@@ -1,7 +1,4 @@
 import type {
-  AiGenerateRequest,
-  AiGenerateResult,
-  AiProvider,
   BillingProvider,
   CrmContact,
   CrmProvider,
@@ -20,6 +17,8 @@ import {
   FakePeopleSearchProvider,
 } from './fake-contacts.js';
 import { FakeOrganizationSearchProvider } from './fake-organization-search.js';
+import { FakeModelProvider } from './model/fake.js';
+import { FakeWebsiteFetcher } from './website/fake.js';
 
 export {
   FakeContactEnrichmentProvider,
@@ -29,37 +28,6 @@ export {
 };
 
 // In-memory fakes: deterministic, inspectable, and they never open a network connection.
-
-/** Returns scripted outputs in order; throws when the script runs out. */
-export class FakeAiProvider implements AiProvider {
-  readonly requests: AiGenerateRequest[] = [];
-  private readonly outputs: unknown[];
-
-  constructor(outputs: readonly unknown[] = []) {
-    this.outputs = [...outputs];
-  }
-
-  generate(request: AiGenerateRequest): Promise<AiGenerateResult> {
-    this.requests.push(request);
-    if (this.outputs.length === 0) {
-      return Promise.reject(
-        new Error(
-          `FakeAiProvider: no scripted output for task "${request.task}"`,
-        ),
-      );
-    }
-    const output = this.outputs.shift();
-    return Promise.resolve({
-      output,
-      usage: {
-        inputTokens: Math.ceil(
-          (request.instructions.length + request.input.length) / 4,
-        ),
-        outputTokens: Math.ceil(JSON.stringify(output ?? null).length / 4),
-      },
-    });
-  }
-}
 
 /** Records messages instead of sending them. A repeated idempotency key is not re-sent. */
 export class FakeMailboxProvider implements MailboxProvider {
@@ -131,7 +99,7 @@ export class FakeTransactionalMailProvider implements TransactionalMailProvider 
 }
 
 export interface FakeProviderSet extends ProviderSet {
-  readonly ai: FakeAiProvider;
+  readonly ai: FakeModelProvider;
   readonly peopleSearch: FakePeopleSearchProvider;
   readonly contactEnrichment: FakeContactEnrichmentProvider;
   readonly organizationSearch: FakeOrganizationSearchProvider;
@@ -141,11 +109,12 @@ export interface FakeProviderSet extends ProviderSet {
   readonly crm: FakeCrmProvider;
   readonly billing: FakeBillingProvider;
   readonly mail: FakeTransactionalMailProvider;
+  readonly websiteFetcher: FakeWebsiteFetcher;
 }
 
 export function createFakeProviders(): FakeProviderSet {
   return {
-    ai: new FakeAiProvider(),
+    ai: new FakeModelProvider(),
     peopleSearch: new FakePeopleSearchProvider(),
     contactEnrichment: new FakeContactEnrichmentProvider(),
     organizationSearch: new FakeOrganizationSearchProvider(),
@@ -155,5 +124,6 @@ export function createFakeProviders(): FakeProviderSet {
     crm: new FakeCrmProvider(),
     billing: new FakeBillingProvider(),
     mail: new FakeTransactionalMailProvider(),
+    websiteFetcher: new FakeWebsiteFetcher(),
   };
 }

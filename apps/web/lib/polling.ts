@@ -91,6 +91,22 @@ export const HEALTH_POLL: PollPolicy = Object.freeze({
 });
 
 /** A running import or search (task 07C): every 5 seconds, for at most 30 minutes. */
+/** A queued or running website research (task 09C): the same pace as an import run. */
+/** A queued or running lead qualification (task 10C): the same pace as research. */
+export const QUALIFICATION_RUN_POLL: PollPolicy = Object.freeze({
+  intervalMs: 5_000,
+  maxPolls: 360,
+  maxFailures: 3,
+  maxBackoffMs: 60_000,
+});
+
+export const RESEARCH_RUN_POLL: PollPolicy = Object.freeze({
+  intervalMs: 5_000,
+  maxPolls: 360,
+  maxFailures: 3,
+  maxBackoffMs: 60_000,
+});
+
 export const IMPORT_RUN_POLL: PollPolicy = Object.freeze({
   intervalMs: 5_000,
   maxPolls: 360,

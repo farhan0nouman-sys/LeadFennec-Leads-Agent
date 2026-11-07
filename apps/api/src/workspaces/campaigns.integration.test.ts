@@ -11,6 +11,7 @@ import {
   campaignSummarySchema,
   CAMPAIGN_ROUTES as C,
   DASHBOARD_ROUTES as D,
+  DEFAULT_LEAD_SCORING_CONFIG,
   invitationSchema,
   normalizeEmail,
   roleListResponseSchema,
@@ -389,6 +390,82 @@ describe.runIf(testDatabaseUrl !== undefined)(
           ).json,
         ).version,
       ).toBe(1);
+    });
+
+    it('saves custom score weights and refuses weights that do not add up to 100 (task 10A)', async () => {
+      const draft = await create(admin, 'Scoring');
+      expect(draft.scoring).toEqual({
+        custom: false,
+        config: DEFAULT_LEAD_SCORING_CONFIG,
+      });
+      const config = {
+        weights: {
+          industry: 30,
+          decisionMaker: 30,
+          sizeLocation: 10,
+          supportedNeed: 10,
+          contactQuality: 10,
+          timing: 10,
+        },
+        missingData: {
+          requiredFactors: ['decisionMaker'],
+          maxMissingWeight: 20,
+          whenInsufficient: 'REVIEW',
+        },
+      };
+      const issueOf = async (scoring: unknown) =>
+        expectError(
+          await save(draft.id, { version: 1, scoring }),
+          400,
+          'validation_failed',
+        ).error.issues;
+      expect(
+        await issueOf({
+          ...config,
+          weights: { ...config.weights, timing: 15 },
+        }),
+      ).toEqual([
+        {
+          path: 'scoring.weights',
+          message: 'The weights add up to 105. Make them add up to 100.',
+        },
+      ]);
+      expect(
+        await issueOf({
+          ...config,
+          weights: { ...config.weights, timing: 0, industry: 40 },
+          missingData: { ...config.missingData, requiredFactors: ['timing'] },
+        }),
+      ).toEqual([
+        {
+          path: 'scoring.missingData.requiredFactors.0',
+          message:
+            "Timing has a weight of 0. Give it a weight, or don't require it.",
+        },
+      ]);
+      expect(
+        await issueOf({
+          ...config,
+          missingData: { ...config.missingData, missingFactorCredit: 0.5 },
+        }),
+      ).toEqual([
+        {
+          path: 'scoring.missingData',
+          message:
+            'Lead Fennec doesn\'t recognize the setting "missingFactorCredit". A factor without evidence always earns 0 points.',
+        },
+      ]);
+      const saved = await save(draft.id, { version: 1, scoring: config });
+      expect(saved.status).toBe(200);
+      expect(campaignSchema.parse(saved.json).scoring).toEqual({
+        custom: true,
+        config,
+      });
+      const reset = await save(draft.id, { version: 2, scoring: null });
+      expect(campaignSchema.parse(reset.json).scoring).toEqual({
+        custom: false,
+        config: DEFAULT_LEAD_SCORING_CONFIG,
+      });
     });
 
     it('keeps human approval unless someone who may approve, in a workspace that allows it, changes it', async () => {

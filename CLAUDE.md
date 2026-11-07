@@ -123,7 +123,8 @@ if needed; next prompt ID.
   (`scope.usage.reserve`), then commits what was used or releases the hold. Read plan,
   status and limits from the database, never from the billing provider at request time.
 - **Append-only rows** (triggers reject updates): draft content, approvals, payment facts,
-  usage ledger entries, audit and platform audit records. Correct with a new row.
+  usage ledger entries, audit and platform audit records, scores and their evidence citations.
+  Correct with a new row.
 - **Identity keys:** only from `normalizeEmail` / `normalizeDomain` (`@lead-fennec-ai/shared`).
   Keep the raw value in its own column.
 - **Time:**
@@ -246,6 +247,54 @@ if needed; next prompt ID.
   only from an email check; never add a "verified" field or treat a provider's claim as one.
   Automatic sending needs `emailSendEligibility(...).automatic`: `risky` and `unknown` never
   qualify.
+- **Website fetching** (`docs/decisions.md` D-09A-*): fetch public pages only through a
+  `WebsiteFetcher` from `createWebsiteFetcher` (the fake in development and tests); never
+  call `fetch` or `http.request` on a URL from a page, a provider or a user. It checks every
+  URL and redirect (`parseFetchTarget`, every DNS answer, the access lists, robots.txt) and
+  connects to the checked address only. Change limits only within the policy schema's
+  ceilings. Pass the workspace id as `cacheScope`. Page text, titles and links are
+  untrusted: validate before use, escape when rendering, and follow links only through the
+  fetcher.
+- **AI models** (`docs/decisions.md` D-09B-*): call models only through a `ModelProvider`
+  from `createModelProvider` (the fake in development and tests), and never give a model
+  tools. Prompts are versioned constants with a pinned hash; change their text only with a new
+  version. Untrusted text (pages, emails) goes only in the request's JSON input, never in the
+  instructions. Validate every answer with its zod schema, then check every cited quote
+  against the extract it cites. A claim that fails is a review item, never a fact, and a field
+  without a verified fact is unknown. Pass every cost event on (`onCost`).
+- **Website research** (`docs/decisions.md` D-09C-*): research runs only as
+  `website_research.run` jobs queued by `scope.research.request`, and reads pages only through
+  the fetcher. Each page read is a `WEBSITE` source record and each extract an evidence row.
+  Never update a completed version or evidence: add a version (refresh, reuse, correction)
+  through `scope.research`. The current version is the highest `version`, never the latest
+  timestamp. Corrections are compare-and-set and audited without their text. After changing the
+  prompt, fields or checks, regenerate the evaluation baseline
+  (`pnpm --filter @lead-fennec-ai/ai-agents run evaluate`) and review its diff.
+- **Lead scoring** (`docs/decisions.md` D-10A-*): only `calculateLeadScore` turns factor
+  assessments into a score; rules, a model or a person only propose assessments, and an assessed
+  factor cites its evidence. A factor without evidence is `missing` and earns 0 points: never
+  give it a neutral value or move its weight to other factors. Weights are whole numbers adding
+  up to 100, and the missing-data policy may only move a lead to Review. Save scores through
+  `scope.scoring` with their validated inputs (`leadScoreInputsSchema`), hash and citations; a
+  score never changes, a new calculation is a new version. Change the rules or the calculation
+  only with a new version (`LEAD_SCORE_RULES_VERSION`, `LEAD_SCORE_METHOD`), and keep
+  `reproduceLeadScore` able to recalculate every stored score.
+- **Send eligibility** (`docs/decisions.md` D-10B-*): whether a campaign may email a person comes
+  only from `evaluateSendEligibility` (through `scope.eligibility.evaluate`), which never takes a
+  score. Report fit and eligibility side by side; only `eligible` permits sending. Add a check
+  there, with a reason code, never in a page or a job. Nothing unknown is permission: an unset
+  policy, an unnamed country or source, an unknown country and an unchecked or stale address are
+  review or blocked. A block is never overridable, by a score or by a person. Decide eligibility
+  from the facts when asked; never cache or store it as permission. Change the send policy only
+  through `scope.eligibility.updatePolicy` (compare-and-set, audited).
+- **Lead qualification** (`docs/decisions.md` D-10C-*): the LeadQualificationAgent only proposes
+  ratings of supported need and timing, citing research facts; never let a model score, decide a
+  state or touch eligibility. Pass its checked proposals to `scope.scoring.scoreLead`, which
+  checks every citation again. States come only from `classifyLead`, always with reasons; add a
+  rule there. Decisions are append-only (`scope.qualification`): a person's needs a note, a
+  version check and an audit record without the note; a blocked person is never qualified. What
+  may be sent comes only from `contactDecision`. Change the prompt or its schema only with a new
+  version.
 - **Campaign wizard** (`docs/decisions.md` D-06B-*): a stage turns its form into the sections
   of a save and checks them with `updateCampaignRequestSchema` (`apps/web/lib/campaign-wizard.ts`);
   map every issue path, the page's or the API's, to a field of the stage, and never write a

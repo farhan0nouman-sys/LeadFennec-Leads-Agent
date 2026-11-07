@@ -14,6 +14,10 @@ import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 
 export const JOB_QUEUE_NAME = 'lead-fennec-jobs';
+/** Website research (task 09C): its own queue, so each worker only receives its own tasks. */
+export const RESEARCH_QUEUE_NAME = 'lead-fennec-research';
+/** Lead qualification (task 10C): its own queue too. */
+export const QUALIFICATION_QUEUE_NAME = 'lead-fennec-qualification';
 
 export type PublishJob = (envelope: JobEnvelope) => Promise<void>;
 
@@ -44,9 +48,12 @@ export interface JobQueue {
 }
 
 /** The producer side. `redisUrl` comes from the validated environment. */
-export function createJobQueue(redisUrl: string): JobQueue {
+export function createJobQueue(
+  redisUrl: string,
+  queueName: string = JOB_QUEUE_NAME,
+): JobQueue {
   const connection = new Redis(redisUrl, { maxRetriesPerRequest: 1 });
-  const queue = new Queue<JobEnvelope>(JOB_QUEUE_NAME, { connection });
+  const queue = new Queue<JobEnvelope>(queueName, { connection });
   return {
     publish: async (envelope) => {
       await queue.add('task', envelope, {
@@ -66,11 +73,12 @@ export function createJobQueue(redisUrl: string): JobQueue {
 export function createJobWorker(
   redisUrl: string,
   handle: (message: unknown) => Promise<void>,
+  queueName: string = JOB_QUEUE_NAME,
 ): Worker<JobEnvelope> {
   // BullMQ requires maxRetriesPerRequest: null on a worker's connection.
   const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
   return new Worker<JobEnvelope>(
-    JOB_QUEUE_NAME,
+    queueName,
     async (job) => {
       await handle(job.data);
     },

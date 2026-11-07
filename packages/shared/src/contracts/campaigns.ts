@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { normalizeDomain, normalizeEmail } from '../identity.js';
 import { normalizeTimeZone } from '../time-zone.js';
 import { CAMPAIGN_STATUSES } from './dashboard.js';
+import { leadScoringConfigSchema } from './lead-scoring.js';
 
 export const CAMPAIGN_ROUTES = {
   campaigns: (workspaceId: string) => `/workspaces/${workspaceId}/campaigns`,
@@ -327,9 +328,23 @@ export const CAMPAIGN_SECTIONS = [
   'sender',
   'sequence',
   'approvalMode',
+  'scoring',
 ] as const;
 
 export type CampaignSection = (typeof CAMPAIGN_SECTIONS)[number];
+
+/**
+ * How the campaign's leads are scored (task 10A, docs/decisions.md D-10A-*): factor weights
+ * adding up to 100 and the missing-data policy. Not needed to start: without it the defaults
+ * apply. A null in a save goes back to the defaults.
+ */
+export const campaignScoringSchema = z
+  .object({
+    /** False while the defaults apply. */
+    custom: z.boolean(),
+    config: leadScoringConfigSchema,
+  })
+  .strict();
 
 export const createCampaignRequestSchema = z
   .object({
@@ -357,6 +372,7 @@ export const updateCampaignRequestSchema = z
     sender: senderSchema.optional(),
     sequence: sequenceInputSchema.optional(),
     approvalMode: approvalModeSchema.optional(),
+    scoring: leadScoringConfigSchema.nullable().optional(),
   })
   .strict()
   .refine(
@@ -424,6 +440,7 @@ export const campaignSchema = z
     schedule: scheduleSchema,
     sender: senderSchema,
     sequence: z.object({ steps: z.array(stepSchema) }).strict(),
+    scoring: campaignScoringSchema,
     readiness: campaignReadinessSchema,
     createdAt: iso,
     updatedAt: iso,

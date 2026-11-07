@@ -1,6 +1,7 @@
 import {
   CAMPAIGN_SETUP_STAGES,
   campaignSchema,
+  DEFAULT_LEAD_SCORING_CONFIG,
   type Campaign,
 } from '@lead-fennec-ai/shared';
 import { describe, expect, it } from 'vitest';
@@ -53,6 +54,7 @@ const campaign = (overrides: Partial<Campaign> = {}): Campaign =>
     },
     sender: { emailAccountId: null },
     sequence: { steps: [] },
+    scoring: { custom: false, config: DEFAULT_LEAD_SCORING_CONFIG },
     readiness: {
       complete: false,
       missing: [

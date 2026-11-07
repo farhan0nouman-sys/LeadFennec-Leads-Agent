@@ -16,7 +16,13 @@ import {
   InvitationError,
   LastAdminError,
   PermissionDeniedError,
+  QualificationBlockedError,
+  QualificationVersionConflictError,
   RecordNotFoundError,
+  ResearchCorrectionError,
+  ResearchNotPossibleError,
+  ResearchVersionConflictError,
+  SendPolicyVersionConflictError,
   SlugTakenError,
   TenantAccessDeniedError,
 } from '@lead-fennec-ai/database';
@@ -187,6 +193,34 @@ export function toApiException(error: unknown): ApiHttpException | null {
   if (error instanceof InvitationError) {
     return INVITATION_ERRORS[error.reason]();
   }
+  if (error instanceof QualificationBlockedError) {
+    // One issue per eligibility reason that blocks.
+    return new ApiHttpException(
+      409,
+      'qualification_blocked',
+      "This person may not be emailed, so they can't be qualified.",
+      {
+        issues: error.reasons.map((code) => ({
+          path: 'eligibility',
+          message: code,
+        })),
+      },
+    );
+  }
+  if (error instanceof QualificationVersionConflictError) {
+    return new ApiHttpException(
+      409,
+      'version_conflict',
+      'This lead was decided on since you opened it. Reload it, then decide again.',
+    );
+  }
+  if (error instanceof SendPolicyVersionConflictError) {
+    return new ApiHttpException(
+      409,
+      'version_conflict',
+      'The send policy was changed since you opened it. Reload it, then make your change again.',
+    );
+  }
   if (error instanceof CampaignVersionConflictError) {
     return new ApiHttpException(
       409,
@@ -254,6 +288,30 @@ export function toApiException(error: unknown): ApiHttpException | null {
       'This import already finished, so it can no longer be cancelled.',
     );
   }
+  if (error instanceof ResearchNotPossibleError) {
+    return new ApiHttpException(
+      409,
+      'research_not_possible',
+      'This company has no website or domain to research.',
+    );
+  }
+  if (error instanceof ResearchVersionConflictError) {
+    return new ApiHttpException(
+      409,
+      'version_conflict',
+      'The research changed since you opened it. Reload it, then make your correction again.',
+    );
+  }
+  if (error instanceof ResearchCorrectionError) {
+    return new ApiHttpException(
+      400,
+      'validation_failed',
+      'The correction is invalid.',
+      {
+        issues: [{ path: error.path, message: error.message }],
+      },
+    );
+  }
   if (error instanceof InvalidCursorError) {
     return new ApiHttpException(
       400,
@@ -307,6 +365,12 @@ function send(
   DiscoveryRequestError,
   CsvImportError,
   ImportNotCancellableError,
+  ResearchNotPossibleError,
+  ResearchVersionConflictError,
+  ResearchCorrectionError,
+  SendPolicyVersionConflictError,
+  QualificationBlockedError,
+  QualificationVersionConflictError,
   InvalidCursorError,
   ZodError,
 )

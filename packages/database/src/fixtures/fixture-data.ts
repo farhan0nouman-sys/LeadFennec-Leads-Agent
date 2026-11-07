@@ -6,12 +6,23 @@
 // The outreach and billing data is fake history: nothing was ever sent or charged, and every
 // provider id ("fake_…") and secret reference ("fake://…") points at nothing.
 import {
+  assessLeadFactors,
+  calculateLeadScore,
+  DEFAULT_LEAD_SCORING_CONFIG,
+  describeLeadScore,
+  LEAD_SCORE_METHOD,
+  LEAD_SCORE_RULES_VERSION,
+  leadScoreInputsSchema,
   normalizeDomain,
   normalizeEmail,
   normalizeTimeZone,
   parseSecretRef,
   PERMISSION_CATALOG,
+  scoringTargets,
   SYSTEM_ROLES,
+  type IcpCriteria,
+  type LeadFactorAssessment,
+  type LeadScoreFacts,
 } from '@lead-fennec-ai/shared';
 import { createHash } from 'node:crypto';
 import type { Prisma, UsageMetric } from '../generated/prisma/client.js';
@@ -178,6 +189,11 @@ export interface FixtureTenant extends FixtureOutreach, FixtureBilling {
   readonly evidence: Prisma.EvidenceCreateManyInput[];
   readonly scores: Prisma.ScoreCreateManyInput[];
   readonly verifications: Prisma.VerificationCreateManyInput[];
+  /** Lead scores for the campaign (task 10A), loaded after the campaign and the email check. */
+  readonly leadScores: Prisma.ScoreCreateManyInput[];
+  readonly scoreEvidence: Prisma.ScoreEvidenceCreateManyInput[];
+  /** A person's qualification decision on that score (task 10C). */
+  readonly leadQualifications: Prisma.LeadQualificationCreateManyInput[];
 }
 
 /** Ids of every fixture row, for tests that need to reference them. */
@@ -202,9 +218,12 @@ export function fixtureIds(key: FixtureKey) {
     sourceCsvRow2: fixtureId(g, 81),
     sourceApollo: fixtureId(g, 82),
     research: fixtureId(g, 90),
+    researchCorrection: fixtureId(g, 91),
     evidence: fixtureId(g, 100),
     score: fixtureId(g, 110),
     scoreOrg: fixtureId(g, 111),
+    leadScore: fixtureId(g, 112),
+    leadQualification: fixtureId(g, 113),
     verification: fixtureId(g, 120),
     emailAccount: fixtureId(g, 130),
     templateIntro: fixtureId(g, 140),
@@ -1024,6 +1043,122 @@ function buildBilling(
   };
 }
 
+/**
+ * The shared contact scored for the campaign (task 10A) with the campaign's default
+ * configuration, built by the real rules and calculation so it can be recalculated. A person
+ * assessed timing from the careers-page evidence, so the score cites a stored evidence row.
+ */
+function buildLeadScore(
+  key: FixtureKey,
+  ids: ReturnType<typeof fixtureIds>,
+  criteria: IcpCriteria,
+): Pick<FixtureTenant, 'leadScores' | 'scoreEvidence' | 'leadQualifications'> {
+  const alpha = key === 'alpha';
+  const tenantId = ids.tenant;
+  const scoredAt = new Date('2026-10-10T09:00:00Z');
+  const facts: LeadScoreFacts = {
+    asOf: scoredAt.toISOString(),
+    targets: scoringTargets(null, criteria),
+    contact: {
+      id: ids.contactShared,
+      title: alpha ? 'VP Sales' : 'Practice Manager',
+      countryCode: alpha ? 'US' : 'GB',
+      hasEmail: true,
+    },
+    organization: {
+      id: ids.orgShared,
+      industry: alpha ? 'software' : 'dental',
+      employeeCount: alpha ? 120 : 18,
+      countryCode: alpha ? 'US' : 'GB',
+    },
+    research: null,
+    emailCheck: {
+      verificationId: ids.verification,
+      status: alpha ? 'VALID' : 'RISKY',
+      checkedAt: new Date('2026-10-03T08:00:00Z').toISOString(),
+    },
+  };
+  const assessments = assessLeadFactors(facts).map(
+    (assessment): LeadFactorAssessment =>
+      assessment.factor === 'timing'
+        ? {
+            factor: 'timing',
+            status: 'assessed',
+            level: 3,
+            assessedBy: 'person',
+            evidence: [{ kind: 'evidence', evidenceId: ids.evidence }],
+            explanation:
+              'The careers page says the company is hiring (fixture).',
+          }
+        : assessment,
+  );
+  const inputs = leadScoreInputsSchema.parse({
+    v: 1,
+    method: LEAD_SCORE_METHOD,
+    rules: LEAD_SCORE_RULES_VERSION,
+    config: DEFAULT_LEAD_SCORING_CONFIG,
+    configSource: 'default',
+    campaign: { id: ids.campaign, version: 1, icpId: ids.icp },
+    facts,
+    assessments,
+  });
+  const result = calculateLeadScore(inputs.config, inputs.assessments);
+  return {
+    leadScores: [
+      {
+        tenantId,
+        id: ids.leadScore,
+        icpId: ids.icp,
+        campaignId: ids.campaign,
+        campaignVersion: 1,
+        contactId: ids.contactShared,
+        verificationId: ids.verification,
+        value: result.value,
+        band: result.band,
+        reason: describeLeadScore(result),
+        method: 'MANUAL',
+        methodVersion: LEAD_SCORE_METHOD,
+        inputs,
+        inputSha256: payloadSha256(inputs),
+        version: 1,
+        scoredAt,
+        createdAt: scoredAt,
+      },
+    ],
+    scoreEvidence: [
+      {
+        tenantId,
+        scoreId: ids.leadScore,
+        evidenceId: ids.evidence,
+        createdAt: scoredAt,
+      },
+    ],
+    leadQualifications: [
+      {
+        tenantId,
+        id: ids.leadQualification,
+        campaignId: ids.campaign,
+        contactId: ids.contactShared,
+        version: 1,
+        state: 'REVIEW',
+        origin: 'PERSON',
+        scoreId: ids.leadScore,
+        eligibilityStatus: 'review',
+        reasons: [
+          {
+            code: 'person_decision',
+            message: 'A person decided: Review.',
+            details: [],
+          },
+        ],
+        note: 'Waiting for the research to be refreshed (fixture).',
+        decidedByMembershipId: ids.membershipAdmin,
+        decidedAt: new Date('2026-10-10T10:00:00Z'),
+      },
+    ],
+  };
+}
+
 function buildTenant(key: FixtureKey): FixtureTenant {
   const ids = fixtureIds(key);
   const tenantId = ids.tenant;
@@ -1046,6 +1181,17 @@ function buildTenant(key: FixtureKey): FixtureTenant {
         firstName: 'Sam',
         lastName: 'Patel',
         rawEmail: 'sam.patel@beta-only.test',
+      };
+  const icpCriteria: IcpCriteria = alpha
+    ? {
+        industries: ['software'],
+        employees: { min: 50, max: 500 },
+        titles: ['VP Sales', 'Head of Revenue'],
+      }
+    : {
+        industries: ['dental'],
+        employees: { min: 5, max: 50 },
+        titles: ['Owner', 'Practice Manager'],
       };
   const sharedRaw = 'Alex.Rivera@Shared-Prospect.TEST';
   const outreach = buildOutreach(key, ids, {
@@ -1190,17 +1336,7 @@ function buildTenant(key: FixtureKey): FixtureTenant {
         description: alpha
           ? 'Revenue leaders at B2B software companies with 50-500 employees.'
           : 'Owners and practice managers of independent dental clinics.',
-        criteria: alpha
-          ? {
-              industries: ['software'],
-              employees: { min: 50, max: 500 },
-              titles: ['VP Sales', 'Head of Revenue'],
-            }
-          : {
-              industries: ['dental'],
-              employees: { min: 5, max: 50 },
-              titles: ['Owner', 'Practice Manager'],
-            },
+        criteria: { ...icpCriteria },
         status: 'ACTIVE',
       },
     ],
@@ -1315,6 +1451,27 @@ function buildTenant(key: FixtureKey): FixtureTenant {
         startedAt: new Date('2026-10-02T10:00:00Z'),
         completedAt: new Date('2026-10-02T10:00:30Z'),
       },
+      {
+        // A later version that continues the first (task 09C): a person's correction.
+        tenantId,
+        id: ids.researchCorrection,
+        contactId: ids.contactShared,
+        organizationId: ids.orgShared,
+        icpId: ids.icp,
+        status: 'COMPLETED',
+        origin: 'CORRECTION',
+        resultStatus: 'COMPLETED',
+        basedOnId: ids.research,
+        summary: 'Fixture research summary, corrected (fake data).',
+        findings: { fit: alpha ? 'strong' : 'moderate', corrected: true },
+        model: 'fake-model',
+        promptVersion: 'research-v0',
+        inputTokens: 0,
+        outputTokens: 0,
+        costMicroUsd: 0,
+        startedAt: new Date('2026-10-03T09:00:00Z'),
+        completedAt: new Date('2026-10-03T09:00:00Z'),
+      },
     ],
     evidence: [
       {
@@ -1370,6 +1527,7 @@ function buildTenant(key: FixtureKey): FixtureTenant {
         expiresAt: new Date('2027-01-01T00:00:00Z'),
       },
     ],
+    ...buildLeadScore(key, ids, icpCriteria),
     ...outreach,
     ...billing,
     inboundEvents: [...outreach.inboundEvents, ...billing.inboundEvents],

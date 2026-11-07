@@ -1,12 +1,18 @@
-// Development and test only (task 07C, docs/decisions.md D-07C-01): runs one queued search task
-// directly, without Redis. `node dist/run-task.js <taskId>` prints the outcome. The browser
+// Development and test only (task 07C, docs/decisions.md D-07C-01): runs one queued task (a
+// search, a website research since 09C, a lead qualification since 10C) directly, without Redis. `node dist/run-task.js <taskId>` prints the outcome. The browser
 // tests use it to run the real job against their database. Elsewhere it refuses to run.
-import { createPrismaClient } from '@lead-fennec-ai/database';
-import { createOrganizationSearchProvider } from '@lead-fennec-ai/integrations';
+import { createPrismaClient, JobRejectedError } from '@lead-fennec-ai/database';
+import {
+  createModelProvider,
+  createOrganizationSearchProvider,
+  createWebsiteFetcher,
+} from '@lead-fennec-ai/integrations';
 import { describeStartupError } from '@lead-fennec-ai/shared';
 import { z } from 'zod';
-import { loadWorkerEnv } from './env.js';
+import { loadWorkerEnv, modelConfig } from './env.js';
 import { runDiscoveryTask } from './jobs/lead-discovery.js';
+import { runQualificationTask } from './jobs/lead-qualification.js';
+import { runResearchTask } from './jobs/website-research.js';
 
 async function run(): Promise<void> {
   const env = loadWorkerEnv(process.env);
@@ -25,12 +31,42 @@ async function run(): Promise<void> {
     databaseUrl: env.DATABASE_URL,
     maxConnections: 1,
   });
+  const message = { v: 1, taskId: taskId.data };
   try {
-    const outcome = await runDiscoveryTask(
-      prisma,
-      { v: 1, taskId: taskId.data },
-      { provider: () => createOrganizationSearchProvider(env.APP_ENV, {}) },
-    );
+    let outcome: string;
+    try {
+      outcome = await runDiscoveryTask(prisma, message, {
+        provider: () => createOrganizationSearchProvider(env.APP_ENV, {}),
+      });
+    } catch (error) {
+      // Not a search: claimJob refuses it before claiming anything, so try research.
+      if (
+        !(error instanceof JobRejectedError) ||
+        error.reason !== 'wrong_worker'
+      ) {
+        throw error;
+      }
+      const fetcher = createWebsiteFetcher(env.APP_ENV, {
+        blockedHosts: env.WEBSITE_FETCH_BLOCKED_HOSTS,
+        allowedHosts: env.WEBSITE_FETCH_ALLOWED_HOSTS,
+      });
+      const model = () => createModelProvider(env.APP_ENV, modelConfig(env));
+      try {
+        outcome = await runResearchTask(prisma, message, {
+          fetcher: () => fetcher,
+          model,
+        });
+      } catch (inner) {
+        // Not a research either: a qualification, or refused for its own reason.
+        if (
+          !(inner instanceof JobRejectedError) ||
+          inner.reason !== 'wrong_worker'
+        ) {
+          throw inner;
+        }
+        outcome = await runQualificationTask(prisma, message, { model });
+      }
+    }
     console.log(outcome);
   } finally {
     await prisma.$disconnect();

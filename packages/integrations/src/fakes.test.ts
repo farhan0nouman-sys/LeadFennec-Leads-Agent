@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  FakeAiProvider,
   FakeBillingProvider,
   FakeCrmProvider,
   FakeMailboxProvider,
@@ -31,22 +30,6 @@ describe('FakeMailboxProvider', () => {
     const second = await mailbox.send({ ...message, subject: 'Retry' });
     expect(second).toEqual(first);
     expect(mailbox.sent).toHaveLength(1);
-  });
-});
-
-describe('FakeAiProvider', () => {
-  it('returns scripted outputs in order and records requests', async () => {
-    const ai = new FakeAiProvider([{ fit: true }, { fit: false }]);
-    const request = {
-      task: 'qualify',
-      instructions: 'i',
-      input: 'x',
-      maxOutputTokens: 50,
-    };
-    expect((await ai.generate(request)).output).toEqual({ fit: true });
-    expect((await ai.generate(request)).output).toEqual({ fit: false });
-    expect(ai.requests).toHaveLength(2);
-    await expect(ai.generate(request)).rejects.toThrow(/no scripted output/);
   });
 });
 
@@ -107,6 +90,7 @@ describe('other fakes', () => {
       'microsoftGraph',
       'organizationSearch',
       'peopleSearch',
+      'websiteFetcher',
     ]);
     expect(createFakeProviders().gmail).not.toBe(providers.gmail);
   });

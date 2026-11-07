@@ -106,6 +106,13 @@ export async function loadFixtureTenants(
         await tx.sequence.createMany({ data: f.sequences, ...opts });
         await tx.sequenceStep.createMany({ data: f.sequenceSteps, ...opts });
         await tx.campaignLead.createMany({ data: f.campaignLeads, ...opts });
+        // Lead scores need the campaign, the email check and the evidence (task 10A).
+        await tx.score.createMany({ data: f.leadScores, ...opts });
+        await tx.scoreEvidence.createMany({ data: f.scoreEvidence, ...opts });
+        await tx.leadQualification.createMany({
+          data: f.leadQualifications,
+          ...opts,
+        });
         await tx.draft.createMany({ data: f.drafts, ...opts });
         await tx.approval.createMany({ data: f.approvals, ...opts });
         await tx.outboundIntent.createMany({

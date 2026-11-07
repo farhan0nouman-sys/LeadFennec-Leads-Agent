@@ -78,6 +78,8 @@ export const WORKSPACE_SECTIONS = [
     description:
       'Companies and contacts with their research, scores and email verification.',
     primaryAction: 'Find leads',
+    // A company's profile with its website research (task 09C) sits below this section.
+    detailLabel: 'Company profile',
     apiResources: ['leads', 'organizations', 'contacts'],
   },
   {

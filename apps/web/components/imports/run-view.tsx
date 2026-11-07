@@ -11,6 +11,7 @@ import {
   type ImportRun,
 } from '@lead-fennec-ai/shared';
 import { Download } from 'lucide-react';
+import Link from 'next/link';
 import { useState } from 'react';
 import { z } from 'zod';
 import { DataTable, type DataColumn } from '@/components/data/data-table';
@@ -34,6 +35,7 @@ import {
   runTitle,
 } from '@/lib/imports';
 import { IMPORT_RUN_POLL } from '@/lib/polling';
+import { companyProfileHref } from '@/lib/research';
 import { useApiMutation, useApiQuery } from '@/lib/query';
 import { useCursorTrail, useListParams } from '@/lib/use-list-params';
 import { useWorkspace } from '@/lib/workspace';
@@ -128,7 +130,7 @@ function saveReport(results: readonly ImportResult[], fileName: string) {
 }
 
 export function RunView({ importId }: { readonly importId: string }) {
-  const { current } = useWorkspace();
+  const { current, can } = useWorkspace();
   const workspaceId = current.workspace.id;
   const params = { workspaceId, importId };
   const [pollWhile, setPollWhile] = useState(true);
@@ -186,8 +188,21 @@ export function RunView({ importId }: { readonly importId: string }) {
       key: 'name',
       header: 'Company',
       rowHeader: true,
-      cell: (result) =>
-        result.name === null || result.name === '' ? '—' : result.name,
+      cell: (result) => {
+        const name =
+          result.name === null || result.name === '' ? '—' : result.name;
+        // A saved company opens its profile with its website research (task 09C).
+        return result.organizationId === null || !can('contacts.read') ? (
+          name
+        ) : (
+          <Link
+            href={companyProfileHref(workspaceId, result.organizationId)}
+            className="underline underline-offset-4"
+          >
+            {name}
+          </Link>
+        );
+      },
     },
     {
       key: 'domain',

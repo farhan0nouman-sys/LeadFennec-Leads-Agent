@@ -21,7 +21,7 @@ describe('model registry', () => {
     expect([...PLATFORM_MODELS, ...TENANT_MODELS].sort()).toEqual(
       [...all].sort(),
     );
-    expect(TENANT_MODELS).toHaveLength(44);
+    expect(TENANT_MODELS).toHaveLength(46);
     expect(isTenantModel('Contact')).toBe(true);
     expect(isTenantModel('User')).toBe(false);
     expect(isTenantModel('NoSuchModel')).toBe(false);

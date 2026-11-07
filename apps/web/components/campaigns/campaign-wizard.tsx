@@ -19,6 +19,7 @@ import { PageHeader } from '@/components/ui/typography';
 import { errorMessage } from '@/lib/api';
 import { stageFromParam, type StageKey } from '@/lib/campaign-wizard';
 import { formatTime } from '@/lib/format';
+import { leadsHref } from '@/lib/qualification';
 import { useApiMutation, useApiQuery } from '@/lib/query';
 import { useWorkspace } from '@/lib/workspace';
 import {
@@ -170,7 +171,17 @@ export function CampaignWizard({
         title={campaign.name}
         badge={<Status kind="campaign" value={campaign.status} />}
         description="Set the campaign up step by step. You can save at any point, leave, and come back later."
-        actions={back}
+        actions={
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href={leadsHref(workspaceId, campaignId)}
+              className={buttonVariants({ variant: 'outline' })}
+            >
+              Leads
+            </Link>
+            {back}
+          </div>
+        }
       />
       <p role="status" className="-mt-3 text-sm text-muted-foreground">
         {savedAt ?? ''}

@@ -16,8 +16,10 @@ import {
   CAMPAIGN_SECTIONS,
   createCampaignRequestSchema,
   DEFAULT_EXCLUSIONS,
+  DEFAULT_LEAD_SCORING_CONFIG,
   duplicateCampaignRequestSchema,
   exclusionsSchema,
+  leadScoringConfigSchema,
   offerSchema,
   updateCampaignRequestSchema,
   CAMPAIGN_OPTIONS_LIMIT,
@@ -208,6 +210,13 @@ function toConfig(row: CampaignRow): CampaignConfig {
       windowEndMinute: row.sendWindowEndMinute,
     },
     sequence: { steps },
+    scoring:
+      row.scoring === null
+        ? {
+            custom: false,
+            config: structuredClone(DEFAULT_LEAD_SCORING_CONFIG),
+          }
+        : { custom: true, config: leadScoringConfigSchema.parse(row.scoring) },
     readiness: campaignReadiness({ ...shaped, stepCount: steps.length }),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -517,6 +526,10 @@ export function createCampaignRepository(
     }
     if (input.approvalMode !== undefined) {
       data.approvalMode = input.approvalMode;
+    }
+    if (input.scoring !== undefined) {
+      // Validated by the request schema (weights add up to 100); null: the defaults again.
+      data.scoring = json(input.scoring);
     }
     return data;
   }
@@ -859,6 +872,7 @@ export function createCampaignRepository(
               offer: json(source.offer),
               audienceFilters: json(source.audienceFilters),
               exclusions: json(source.exclusions),
+              scoring: json(source.scoring),
               dailyNewLeadLimit: source.dailyNewLeadLimit,
               maxLeads: source.maxLeads,
             },

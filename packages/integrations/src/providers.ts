@@ -11,26 +11,8 @@ import type {
   OrganizationSearchFilters,
   SeniorityLevel,
 } from '@lead-fennec-ai/shared';
-
-/** OpenAI. `output` is untrusted: callers must validate it against their own schema. */
-export interface AiProvider {
-  generate(request: AiGenerateRequest): Promise<AiGenerateResult>;
-}
-
-export interface AiGenerateRequest {
-  readonly task: string;
-  readonly instructions: string;
-  readonly input: string;
-  readonly maxOutputTokens: number;
-}
-
-export interface AiGenerateResult {
-  readonly output: unknown;
-  readonly usage: {
-    readonly inputTokens: number;
-    readonly outputTokens: number;
-  };
-}
+import type { ModelProvider } from './model/types.js';
+import type { WebsiteFetcher } from './website/types.js';
 
 /**
  * Searching companies (task 07A, docs/decisions.md D-07A-02). Provider-neutral: a live adapter
@@ -107,6 +89,8 @@ export const PROVIDER_ERROR_CODES = [
   'timeout',
   /** The answer was not in the documented shape (task 07B); not retried. */
   'bad_response',
+  /** The caller cancelled the request (task 09B). */
+  'canceled',
 ] as const;
 
 export type ProviderErrorCode = (typeof PROVIDER_ERROR_CODES)[number];
@@ -120,6 +104,7 @@ const PROVIDER_ERROR_TEXT: Readonly<Record<ProviderErrorCode, string>> = {
   unavailable: 'The provider is not reachable.',
   timeout: 'The provider did not answer in time.',
   bad_response: "The provider's answer could not be read.",
+  canceled: 'The request was cancelled.',
 };
 
 /** Retrying later can help; the others need a person (credentials, plan, request). */
@@ -331,7 +316,8 @@ export interface TransactionalSendReceipt {
 }
 
 export interface ProviderSet {
-  readonly ai: AiProvider;
+  /** OpenAI (task 09B): answers only, never tools; its output is untrusted. */
+  readonly ai: ModelProvider;
   readonly peopleSearch: PeopleSearchProvider;
   readonly contactEnrichment: ContactEnrichmentProvider;
   readonly organizationSearch: OrganizationSearchProvider;
@@ -341,4 +327,6 @@ export interface ProviderSet {
   readonly crm: CrmProvider;
   readonly billing: BillingProvider;
   readonly mail: TransactionalMailProvider;
+  /** Public web pages (task 09A): the safe fetcher, or the synthetic fake. */
+  readonly websiteFetcher: WebsiteFetcher;
 }

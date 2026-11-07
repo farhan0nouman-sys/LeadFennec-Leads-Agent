@@ -86,6 +86,8 @@ model Tenant {
   research        Research[]
   evidence        Evidence[]
   scores          Score[]
+  scoreEvidence   ScoreEvidence[]
+  qualifications  LeadQualification[]
   verifications   Verification[]
 
   emailAccounts          EmailAccount[]
@@ -284,6 +286,11 @@ model TenantSettings {
   requireSendApproval    Boolean  @default(true) @map("require_send_approval")
   /// Real sending stays disabled until a tenant is explicitly enabled.
   outboundSendingEnabled Boolean  @default(false) @map("outbound_sending_enabled")
+  /// Which recipients' countries and which data sources may be emailed (task 10B,
+  /// sendPolicySchema). NULL: not set, so no lead is eligible without a person.
+  sendPolicy             Json?    @map("send_policy")
+  /// Raised by every save of the send policy (compare-and-set); 0 until the first.
+  sendPolicyVersion      Int      @default(0) @map("send_policy_version")
   updatedAt              DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -344,17 +351,18 @@ model Membership {
   createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant              Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  user                User           @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tenant                 Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user                   User                @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   /// A role cannot be deleted while memberships use it.
-  role                Role           @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  role                   Role                @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
   /// Draft versions this member wrote, and approval decisions this member made (audit).
-  draftsWritten       Draft[]
-  approvals           Approval[]
-  notifications       Notification[]
+  draftsWritten          Draft[]
+  approvals              Approval[]
+  qualificationDecisions LeadQualification[]
+  notifications          Notification[]
   /// Invitations this member sent, and the invitations that created or reactivated it.
-  invitationsSent     Invitation[]   @relation("InvitationInviter")
-  invitationsAccepted Invitation[]   @relation("InvitationAcceptedMembership")
+  invitationsSent        Invitation[]        @relation("InvitationInviter")
+  invitationsAccepted    Invitation[]        @relation("InvitationAcceptedMembership")
 
   @@id([tenantId, id])
   @@unique([tenantId, userId])
@@ -498,9 +506,9 @@ model Contact {
   createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   /// An organization cannot be deleted while contacts reference it.
-  organization    Organization?    @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  organization    Organization?       @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
   leadListMembers LeadListMember[]
   sourceRecords   SourceRecord[]
   research        Research[]
@@ -508,6 +516,7 @@ model Contact {
   scores          Score[]
   verifications   Verification[]
   campaignLeads   CampaignLead[]
+  qualifications  LeadQualification[]
 
   @@id([tenantId, id])
   @@unique([tenantId, normalizedEmail])
@@ -707,36 +716,88 @@ enum ResearchStatus {
   @@map("research_status")
 }
 
+/// How a research version came to be (task 09C, docs/decisions.md D-09C-02).
+enum ResearchOrigin {
+  /// The model read the extracts.
+  MODEL
+  /// The extracts were the same as an earlier version's: its findings were reused, no model call.
+  REUSED
+  /// A person corrected a field of the earlier version.
+  CORRECTION
+
+  @@map("research_origin")
+}
+
+/// The research agent's own outcome of a completed version (task 09C).
+enum ResearchResultStatus {
+  COMPLETED
+  /// Something was refused or flagged for a person.
+  REVIEW_REQUIRED
+  /// No page had text: the model wasn't called.
+  NO_CONTENT
+
+  @@map("research_result_status")
+}
+
 /// One research run about a contact and/or organization (AI-assisted or manual).
+/// Since 09C a completed or failed version never changes (trigger): refreshes and corrections
+/// are new versions, each pointing to the one it continues (basedOn).
 model Research {
-  tenantId       String         @map("tenant_id") @db.Uuid
-  id             String         @default(uuid(7)) @db.Uuid
-  contactId      String?        @map("contact_id") @db.Uuid
-  organizationId String?        @map("organization_id") @db.Uuid
-  icpId          String?        @map("icp_id") @db.Uuid
-  status         ResearchStatus @default(PENDING)
+  tenantId       String                @map("tenant_id") @db.Uuid
+  id             String                @default(uuid(7)) @db.Uuid
+  contactId      String?               @map("contact_id") @db.Uuid
+  organizationId String?               @map("organization_id") @db.Uuid
+  icpId          String?               @map("icp_id") @db.Uuid
+  status         ResearchStatus        @default(PENDING)
   /// Validated output only; raw model output is never stored here.
-  summary        String?        @db.Text
+  summary        String?               @db.Text
   findings       Json?
   model          String?
-  promptVersion  String?        @map("prompt_version")
-  inputTokens    Int?           @map("input_tokens")
-  outputTokens   Int?           @map("output_tokens")
+  promptVersion  String?               @map("prompt_version")
+  inputTokens    Int?                  @map("input_tokens")
+  outputTokens   Int?                  @map("output_tokens")
   /// Machine-readable failure code (never a raw provider message).
-  errorCode      String?        @map("error_code")
-  startedAt      DateTime?      @map("started_at") @db.Timestamptz(3)
-  completedAt    DateTime?      @map("completed_at") @db.Timestamptz(3)
-  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  errorCode      String?               @map("error_code")
+  startedAt      DateTime?             @map("started_at") @db.Timestamptz(3)
+  completedAt    DateTime?             @map("completed_at") @db.Timestamptz(3)
+  createdAt      DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+  /// Task 09C. Null for research recorded before it.
+  origin         ResearchOrigin?
+  resultStatus   ResearchResultStatus? @map("result_status")
+  /// The version this one continues (a refresh, a reuse or a correction).
+  basedOnId      String?               @map("based_on_id") @db.Uuid
+  /// The request asked to read the pages again.
+  refresh        Boolean               @default(false)
+  /// 1, 2, 3 ... per company, in the order versions were completed (task 09C): the current
+  /// version is the highest. Set under a per-company lock, so no clock decides it.
+  version        Int?
+  /// SHA-256 of everything the model would see (prompt, schema, model, fields, context,
+  /// extracts): equal inputs reuse a version instead of calling the model.
+  inputSha256    String?               @map("input_sha256") @db.Char(64)
+  /// SHA-256 of the campaign context (a snapshot is in findings, not a reference).
+  contextSha256  String?               @map("context_sha256") @db.Char(64)
+  promptSha256   String?               @map("prompt_sha256") @db.Char(64)
+  schemaVersion  String?               @map("schema_version")
+  modelProvider  String?               @map("model_provider")
+  /// Estimated, in millionths of a US dollar; null when unknown.
+  costMicroUsd   BigInt?               @map("cost_micro_usd")
 
   tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   contact      Contact?      @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
   organization Organization? @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
   icp          Icp?          @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  basedOn      Research?     @relation("ResearchVersions", fields: [tenantId, basedOnId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  continuedBy  Research[]    @relation("ResearchVersions")
   evidence     Evidence[]
   scores       Score[]
 
   @@id([tenantId, id])
+  /// One queued or running company research at a time (task 09C).
+  @@unique([tenantId, organizationId], name: "activeOrganizationResearch_partial", map: "research_one_active_per_organization_key", where: raw("((status = ANY (ARRAY['PENDING'::research_status, 'RUNNING'::research_status])) AND (contact_id IS NULL))"))
+  @@unique([tenantId, organizationId, version], name: "organizationResearchVersion_partial", map: "research_organization_version_key", where: raw("(version IS NOT NULL)"))
+  @@index([tenantId, organizationId, inputSha256])
+  @@index([tenantId, basedOnId])
   @@index([tenantId, contactId, createdAt(sort: Desc)])
   @@index([tenantId, organizationId, createdAt(sort: Desc)])
   @@index([tenantId, status])
@@ -767,13 +828,18 @@ model Evidence {
   /// Untrusted text: never executed or followed as instructions; escaped when rendered.
   excerpt        String       @db.Text
   capturedAt     DateTime     @default(now()) @map("captured_at") @db.Timestamptz(3)
+  /// The extract's id in its research (E1, E2 ...; task 09C).
+  extractLabel   String?      @map("extract_label")
+  /// SHA-256 of the page body the excerpt comes from (task 09A's contentSha256).
+  contentSha256  String?      @map("content_sha256") @db.Char(64)
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  contact      Contact?      @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
-  organization Organization? @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
-  research     Research?     @relation(fields: [tenantId, researchId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
-  sourceRecord SourceRecord? @relation(fields: [tenantId, sourceRecordId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  contact      Contact?        @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  organization Organization?   @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  research     Research?       @relation(fields: [tenantId, researchId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  sourceRecord SourceRecord?   @relation(fields: [tenantId, sourceRecordId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  scores       ScoreEvidence[]
 
   @@id([tenantId, id])
   @@index([tenantId, contactId])
@@ -791,36 +857,152 @@ enum ScoreMethod {
   @@map("score_method")
 }
 
-/// Fit of one contact or one organization against one ICP, with the reason.
-model Score {
-  tenantId       String      @map("tenant_id") @db.Uuid
-  id             String      @default(uuid(7)) @db.Uuid
-  icpId          String      @map("icp_id") @db.Uuid
-  contactId      String?     @map("contact_id") @db.Uuid
-  organizationId String?     @map("organization_id") @db.Uuid
-  researchId     String?     @map("research_id") @db.Uuid
-  /// 0-100.
-  value          Int
-  /// Human-readable reason for the score.
-  reason         String      @db.Text
-  method         ScoreMethod
-  methodVersion  String?     @map("method_version")
-  scoredAt       DateTime    @default(now()) @map("scored_at") @db.Timestamptz(3)
-  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+/// The band of a lead score (task 10A): High Priority 80-100, Review 60-79, Low Priority 0-59,
+/// after the campaign's missing-data policy (which can only move a lead to Review).
+enum ScoreBand {
+  HIGH_PRIORITY
+  REVIEW
+  LOW_PRIORITY
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  icp          Icp           @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
-  contact      Contact?      @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
-  organization Organization? @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  @@map("score_band")
+}
+
+/// Fit of one contact or one organization against one ICP, with the reason.
+/// Since 10A a score never changes (trigger): a new score is a new row. A lead score (a person
+/// scored for a campaign, docs/decisions.md D-10A-*) also keeps everything it was calculated
+/// from, so it can be recalculated and checked: the inputs, their hash, the campaign version,
+/// the email check, the research version and the evidence rows it cites (score_evidence).
+model Score {
+  tenantId        String      @map("tenant_id") @db.Uuid
+  id              String      @default(uuid(7)) @db.Uuid
+  /// The ICP scored against; for a lead score, the campaign's ICP if it has one.
+  icpId           String?     @map("icp_id") @db.Uuid
+  contactId       String?     @map("contact_id") @db.Uuid
+  organizationId  String?     @map("organization_id") @db.Uuid
+  researchId      String?     @map("research_id") @db.Uuid
+  /// 0-100.
+  value           Int
+  /// Human-readable reason for the score.
+  reason          String      @db.Text
+  method          ScoreMethod
+  methodVersion   String?     @map("method_version")
+  scoredAt        DateTime    @default(now()) @map("scored_at") @db.Timestamptz(3)
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  /// Task 10A. Null for scores recorded before it.
+  campaignId      String?     @map("campaign_id") @db.Uuid
+  /// The campaign version whose scoring configuration and targets were used.
+  campaignVersion Int?        @map("campaign_version")
+  /// The email check the contact-quality factor read, if any.
+  verificationId  String?     @map("verification_id") @db.Uuid
+  /// 1, 2, 3 ... per campaign and person, under a lock: the current score is the highest.
+  version         Int?
+  band            ScoreBand?
+  /// Validated leadScoreInputsSchema: configuration, facts read, assessments and versions.
+  inputs          Json?
+  /// SHA-256 of the canonical JSON of inputs.
+  inputSha256     String?     @map("input_sha256") @db.Char(64)
+
+  tenant         Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  icp            Icp?                @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  contact        Contact?            @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  organization   Organization?       @relation(fields: [tenantId, organizationId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
   /// Research cannot be deleted while scores derived from it exist.
-  research     Research?     @relation(fields: [tenantId, researchId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  research       Research?           @relation(fields: [tenantId, researchId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  /// A campaign's lead scores go with it.
+  campaign       Campaign?           @relation(fields: [tenantId, campaignId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  /// Goes with its email check: erasing a person must always succeed (D-10A-05).
+  verification   Verification?       @relation(fields: [tenantId, verificationId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  evidence       ScoreEvidence[]
+  qualifications LeadQualification[]
 
   @@id([tenantId, id])
+  /// One score per version number of a lead (task 10A).
+  @@unique([tenantId, campaignId, contactId, version], name: "leadScoreVersion_partial", map: "scores_lead_version_key", where: raw("(version IS NOT NULL)"))
   @@index([tenantId, icpId, value(sort: Desc)])
   @@index([tenantId, contactId, scoredAt(sort: Desc)])
   @@index([tenantId, organizationId, scoredAt(sort: Desc)])
   @@index([tenantId, researchId])
+  @@index([tenantId, campaignId, contactId, scoredAt(sort: Desc)])
+  @@index([tenantId, verificationId])
   @@map("scores")
+}
+
+/// A stored evidence row a lead score cites (task 10A): a real reference in the same workspace.
+/// Never changes (trigger). Erasing the evidence's owner removes the citation; the score's
+/// inputs still name the row, and recalculating it reports the evidence as gone (D-10A-05).
+model ScoreEvidence {
+  tenantId   String   @map("tenant_id") @db.Uuid
+  scoreId    String   @map("score_id") @db.Uuid
+  evidenceId String   @map("evidence_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  score    Score    @relation(fields: [tenantId, scoreId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  evidence Evidence @relation(fields: [tenantId, evidenceId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([tenantId, scoreId, evidenceId])
+  @@index([tenantId, evidenceId])
+  @@map("score_evidence")
+}
+
+enum QualificationState {
+  QUALIFIED
+  REVIEW
+  REJECTED
+
+  @@map("qualification_state")
+}
+
+enum QualificationOrigin {
+  /// Decided by the rules from the score, eligibility and the agent's outcome.
+  AUTOMATIC
+  /// Decided by a member, with a note.
+  PERSON
+
+  @@map("qualification_origin")
+}
+
+/// A lead's qualification for a campaign (task 10C, docs/decisions.md D-10C-*): append-only
+/// decisions, numbered per campaign and person; the current one is the highest version. Every
+/// decision keeps its reasons, the score it was made with and the eligibility status at the time.
+/// A person's decision also keeps who decided, their note and the eligibility review reasons they
+/// accepted (never a block). Never changes (trigger).
+model LeadQualification {
+  tenantId              String              @map("tenant_id") @db.Uuid
+  id                    String              @default(uuid(7)) @db.Uuid
+  campaignId            String              @map("campaign_id") @db.Uuid
+  contactId             String              @map("contact_id") @db.Uuid
+  version               Int
+  state                 QualificationState
+  origin                QualificationOrigin
+  /// The lead score it was decided with, if there was one.
+  scoreId               String?             @map("score_id") @db.Uuid
+  /// The person's own eligibility (lead checks only) when decided: eligible, review or blocked.
+  eligibilityStatus     String              @map("eligibility_status")
+  /// Validated qualificationReasonsSchema: [{ code, message, details }], at least one.
+  reasons               Json
+  /// Eligibility review reasons a person accepted (codes); empty otherwise.
+  acceptedReviewReasons String[]            @default([]) @map("accepted_review_reasons")
+  /// A person's reason for the decision (untrusted text).
+  note                  String?             @db.Text
+  decidedByMembershipId String?             @map("decided_by_membership_id") @db.Uuid
+  decidedAt             DateTime            @default(now()) @map("decided_at") @db.Timestamptz(3)
+
+  tenant    Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  campaign  Campaign    @relation(fields: [tenantId, campaignId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  contact   Contact     @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  /// Goes with its score (which goes with the person): erasing a person must always succeed.
+  score     Score?      @relation(fields: [tenantId, scoreId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  /// A member who decided cannot be deleted while their decisions exist.
+  decidedBy Membership? @relation(fields: [tenantId, decidedByMembershipId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  @@unique([tenantId, campaignId, contactId, version])
+  @@index([tenantId, contactId])
+  @@index([tenantId, campaignId, state])
+  @@index([tenantId, scoreId])
+  @@index([tenantId, decidedByMembershipId])
+  @@map("lead_qualifications")
 }
 
 /// Same values as EmailVerificationStatus in @lead-fennec-ai/integrations.
@@ -849,6 +1031,7 @@ model Verification {
 
   tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   contact Contact @relation(fields: [tenantId, contactId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  scores  Score[]
 
   @@id([tenantId, id])
   @@index([tenantId, contactId, checkedAt(sort: Desc)])
@@ -998,6 +1181,9 @@ model Campaign {
   /// Domains, addresses and lead lists this campaign never contacts, on top of the workspace's
   /// suppressions (which always apply).
   exclusions            Json?
+  /// How leads are scored (task 10A): factor weights adding up to 100 and the missing-data
+  /// policy (leadScoringConfigSchema). NULL: the defaults.
+  scoring               Json?
   /// Most leads enrolled per day, and in total. NULL: not set yet (the draft is incomplete).
   dailyNewLeadLimit     Int?                 @map("daily_new_lead_limit")
   maxLeads              Int?                 @map("max_leads")
@@ -1021,14 +1207,16 @@ model Campaign {
   createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt             DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  icp          Icp?           @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
-  leadList     LeadList?      @relation(fields: [tenantId, leadListId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  tenant         Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  icp            Icp?                @relation(fields: [tenantId, icpId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  leadList       LeadList?           @relation(fields: [tenantId, leadListId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
   /// A mailbox cannot be deleted while campaigns use it.
-  emailAccount EmailAccount?  @relation(fields: [tenantId, emailAccountId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
-  sequences    Sequence[]
-  leads        CampaignLead[]
-  jobSchedules JobSchedule[]
+  emailAccount   EmailAccount?       @relation(fields: [tenantId, emailAccountId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+  sequences      Sequence[]
+  leads          CampaignLead[]
+  jobSchedules   JobSchedule[]
+  scores         Score[]
+  qualifications LeadQualification[]
 
   @@id([tenantId, id])
   @@unique([tenantId, name])

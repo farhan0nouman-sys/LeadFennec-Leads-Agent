@@ -59,6 +59,21 @@ import {
   leadSummarySchema,
 } from './dashboard.js';
 import {
+  LEAD_PROFILE_ROUTES,
+  leadAssignmentRequestSchema,
+  leadCorrectionRequestSchema,
+  leadNoteRequestSchema,
+  leadTagsRequestSchema,
+} from './lead-profile.js';
+import {
+  LEAD_ROUTES,
+  leadDetailSchema,
+  leadEvidencePageSchema,
+  leadEvidenceQuerySchema,
+  leadSearchPageSchema,
+  leadSearchQuerySchema,
+} from './leads.js';
+import {
   ENRICHMENT_ROUTES,
   enrichmentAcceptedSchema,
   enrichmentRequestSchema,
@@ -145,6 +160,11 @@ export const ENDPOINT_TAGS = [
       'Website research of a company: versions with dated evidence, refreshes and corrections.',
   },
   {
+    name: 'leads',
+    description:
+      "Searching the workspace's people, one person in detail, and the evidence about them.",
+  },
+  {
     name: 'contacts',
     description:
       'People of the workspace: the quality of their data and the checks of their addresses.',
@@ -192,6 +212,9 @@ export const CACHE_RESOURCES = {
   importOptions: 'workspace',
   importResults: 'workspace',
   enrichmentResults: 'workspace',
+  leads: 'workspace',
+  lead: 'workspace',
+  leadEvidence: 'workspace',
   organizationResearch: 'workspace',
   researchVersion: 'workspace',
   sendPolicy: 'workspace',
@@ -832,6 +855,128 @@ export const API = {
       invalidates: ['importRun', 'importRuns', 'importResults', 'activity'],
     }),
   },
+  leads: {
+    search: endpoint({
+      id: 'leads.search',
+      method: 'GET',
+      path: LEAD_ROUTES.search(':workspaceId'),
+      tag: 'leads',
+      summary:
+        "Searches the workspace's people with allowlisted filters (text, company, contact, title, country, industry, source, campaign and its status, score, verification, eligibility, activity) and sorts (created, activity, name, company, score), one page at a time (at most 100). A cursor works only with the filters and sort it came from.",
+      access: 'workspace',
+      permission: 'contacts.read',
+      params: workspaceParams,
+      query: leadSearchQuerySchema,
+      status: 200,
+      response: leadSearchPageSchema,
+      cache: 'leads',
+    }),
+    lead: endpoint({
+      id: 'leads.lead',
+      method: 'GET',
+      path: LEAD_ROUTES.lead(':workspaceId', ':contactId'),
+      tag: 'leads',
+      summary:
+        'One person: their company, data quality, sources, address checks, campaigns (with score and qualification) and lead lists, each list capped.',
+      access: 'workspace',
+      permission: 'contacts.read',
+      params: contactParams,
+      status: 200,
+      response: leadDetailSchema,
+      cache: 'lead',
+    }),
+    evidence: endpoint({
+      id: 'leads.evidence',
+      method: 'GET',
+      path: LEAD_ROUTES.evidence(':workspaceId', ':contactId'),
+      tag: 'leads',
+      summary:
+        'The evidence about a person and their company (page excerpts, provider fields, extractions, notes), newest first, one page at a time.',
+      access: 'workspace',
+      permission: 'contacts.read',
+      params: contactParams,
+      query: leadEvidenceQuerySchema,
+      status: 200,
+      response: leadEvidencePageSchema,
+      cache: 'leadEvidence',
+    }),
+    correct: endpoint({
+      id: 'leads.correct',
+      method: 'PATCH',
+      path: LEAD_PROFILE_ROUTES.lead(':workspaceId', ':contactId'),
+      tag: 'leads',
+      summary:
+        "Corrects a person's data if `version` is the current one (409 otherwise), with a reason kept as a note. A material change (name, title, address, country) invalidates the person's drafts, cancels their scheduled sends and sends every campaign's decision back to Review with eligibility decided again. Audited without the values.",
+      access: 'workspace',
+      permission: 'contacts.write',
+      params: contactParams,
+      body: leadCorrectionRequestSchema,
+      status: 200,
+      response: leadDetailSchema,
+      errors: ['version_conflict', 'email_taken'],
+      invalidates: [
+        'lead',
+        'leads',
+        'leadEvidence',
+        'campaignLead',
+        'campaignLeads',
+        'activity',
+      ],
+    }),
+    tags: endpoint({
+      id: 'leads.tags',
+      method: 'PATCH',
+      path: LEAD_PROFILE_ROUTES.tags(':workspaceId', ':contactId'),
+      tag: 'leads',
+      summary:
+        "Replaces a person's tags (at most 20) if `version` is the current one (409 otherwise). Audited.",
+      access: 'workspace',
+      permission: 'contacts.write',
+      params: contactParams,
+      body: leadTagsRequestSchema,
+      status: 200,
+      response: leadDetailSchema,
+      errors: ['version_conflict'],
+      invalidates: ['lead', 'leads', 'activity'],
+    }),
+    note: endpoint({
+      id: 'leads.note',
+      method: 'POST',
+      path: LEAD_PROFILE_ROUTES.notes(':workspaceId', ':contactId'),
+      tag: 'leads',
+      summary:
+        'Adds a note to a person; notes never change. Audited without the text.',
+      access: 'workspace',
+      permission: 'contacts.write',
+      params: contactParams,
+      body: leadNoteRequestSchema,
+      status: 201,
+      response: leadDetailSchema,
+      invalidates: ['lead', 'activity'],
+    }),
+    assign: endpoint({
+      id: 'leads.assign',
+      method: 'POST',
+      path: LEAD_PROFILE_ROUTES.campaigns(':workspaceId', ':contactId'),
+      tag: 'leads',
+      summary:
+        "Adds a person to a campaign's lead list if `version` is the current one (409 otherwise). Refused (409 assignment_not_possible) for a campaign that has ended or has no lead list, and for a person who is archived, on the do-not-contact list or excluded by the campaign. Audited.",
+      access: 'workspace',
+      permission: 'campaigns.write',
+      params: contactParams,
+      body: leadAssignmentRequestSchema,
+      status: 200,
+      response: leadDetailSchema,
+      errors: ['version_conflict', 'assignment_not_possible'],
+      invalidates: [
+        'lead',
+        'leads',
+        'campaignLead',
+        'campaignLeads',
+        'activity',
+      ],
+    }),
+  },
   enrichment: {
     request: endpoint({
       id: 'enrichment.request',
@@ -1021,7 +1166,14 @@ export const API = {
       status: 201,
       response: leadQualificationViewSchema,
       errors: ['version_conflict', 'qualification_blocked'],
-      invalidates: ['campaignLead', 'campaignLeads', 'activity'],
+      // The lead's profile shows the decisions too (task 11B).
+      invalidates: [
+        'campaignLead',
+        'campaignLeads',
+        'lead',
+        'leads',
+        'activity',
+      ],
     }),
   },
   settings: {
@@ -1189,6 +1341,8 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
   qualification_blocked: 409,
   verification_unavailable: 409,
   no_email_address: 409,
+  email_taken: 409,
+  assignment_not_possible: 409,
 };
 
 /** Mutations need the session's CSRF token (and every non-GET route checks the origin). */

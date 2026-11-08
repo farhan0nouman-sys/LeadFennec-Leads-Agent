@@ -157,19 +157,13 @@ test('an admin sees every section, grouped, with pages not built yet marked', as
   );
   await expectAccessible(page);
 
-  // A page that isn't built yet (Leads; Campaigns is built since 06B, Imports since 07C).
+  // Leads is built since 11B (Campaigns since 06B, Imports since 07C): a new workspace has none.
   await nav.getByRole('link', { name: linkName('Leads') }).click();
   await expect(page).toHaveURL(`${WEB_URL}/workspaces/${workspaceId}/leads`);
   await expect(
     page.getByRole('heading', { level: 1, name: 'Leads' }),
   ).toBeVisible();
-  await expect(
-    page.getByText('Not available yet', { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Find leads' })).toBeDisabled();
-  await expect(
-    page.getByRole('heading', { name: 'This page is not available yet' }),
-  ).toBeVisible();
+  await expect(page.getByText('No leads yet', { exact: true })).toBeVisible();
   await expect(crumbs.getByRole('link', { name: mainName })).toHaveAttribute(
     'href',
     `/workspaces/${workspaceId}`,

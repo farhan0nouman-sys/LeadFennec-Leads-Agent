@@ -40,6 +40,10 @@ import {
   type EnrichmentRepository,
 } from './enrichment.js';
 import {
+  createLeadSearchRepository,
+  type LeadSearchRepository,
+} from './lead-search.js';
+import {
   createLeadScoringRepository,
   type LeadScoringRepository,
 } from './lead-scoring.js';
@@ -91,6 +95,8 @@ export interface TenantScope {
   readonly qualification: QualificationRepository;
   /** People found for discovered companies, their data quality and rechecks (task 08C). */
   readonly enrichment: EnrichmentRepository;
+  /** Searching the workspace's people, one lead in detail and its evidence (task 11A). */
+  readonly leads: LeadSearchRepository;
   readonly invitations: InvitationRepository;
   readonly members: MemberRepository;
   readonly notifications: NotificationRepository;
@@ -125,6 +131,7 @@ function buildScope(
     eligibility: createSendEligibilityService(prisma, tenantId, actor, now),
     qualification: createQualificationRepository(prisma, tenantId, actor, now),
     enrichment: createEnrichmentRepository(prisma, tenantId, actor, now),
+    leads: createLeadSearchRepository(prisma, tenantId, actor, now),
     invitations: createInvitationRepository(prisma, tenantId, actor, now),
     members: createMemberRepository(prisma, tenantId, actor),
     notifications: createNotificationRepository(prisma, tenantId, actor, now),

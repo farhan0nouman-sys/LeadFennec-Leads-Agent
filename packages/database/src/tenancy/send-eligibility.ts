@@ -18,6 +18,7 @@ import {
   type LeadSendDecision,
   type SendPolicy,
   type SendPolicySource,
+  type SendEligibilityResult,
   type SendPolicyState,
 } from '@lead-fennec-ai/shared';
 import type { z } from 'zod';
@@ -83,6 +84,185 @@ function storedPolicy(
 const isSource = (value: string): value is SendPolicySource =>
   (SEND_POLICY_SOURCES as readonly string[]).includes(value);
 
+/**
+ * The facts of one campaign and person at `asOf`, judged by the shared rules (task 10B), inside
+ * the caller's transaction. Lead changes (task 11B) call it after their change, in the same
+ * transaction, so the eligibility they record is that of the corrected data.
+ */
+export async function evaluateEligibilityFacts(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  campaignId: string,
+  contactId: string,
+  asOf: Date,
+): Promise<SendEligibilityResult> {
+  const campaign = await tx.campaign.findUnique({
+    where: { tenantId_id: { tenantId, id: campaignId } },
+    select: {
+      id: true,
+      status: true,
+      exclusions: true,
+      emailAccountId: true,
+    },
+  });
+  if (campaign === null) {
+    throw new RecordNotFoundError('campaign');
+  }
+  const contact = await tx.contact.findUnique({
+    where: { tenantId_id: { tenantId, id: contactId } },
+    select: {
+      id: true,
+      status: true,
+      normalizedEmail: true,
+      countryCode: true,
+      organizationId: true,
+    },
+  });
+  if (contact === null) {
+    throw new RecordNotFoundError('contact');
+  }
+  const mailbox =
+    campaign.emailAccountId === null
+      ? null
+      : await tx.emailAccount.findUnique({
+          where: {
+            tenantId_id: { tenantId, id: campaign.emailAccountId },
+          },
+          select: { status: true, secretRef: true },
+        });
+  const settings = await tx.tenantSettings.findUnique({
+    where: { tenantId },
+    select: { outboundSendingEnabled: true, sendPolicy: true },
+  });
+  const subscription = await findCurrentSubscription(tx, tenantId);
+  const planEntitled =
+    subscription !== null &&
+    (ENTITLED_SUBSCRIPTION_STATUSES as readonly string[]).includes(
+      subscription.status,
+    );
+  const emailsPerPeriod = planEntitled
+    ? await findEffectiveLimit(tx, tenantId, subscription.planId, 'EMAILS_SENT')
+    : 0n;
+  const organization =
+    contact.organizationId === null
+      ? null
+      : await tx.organization.findUnique({
+          where: {
+            tenantId_id: { tenantId, id: contact.organizationId },
+          },
+          select: { normalizedDomain: true, countryCode: true },
+        });
+  const email = contact.normalizedEmail;
+  const check =
+    email === null
+      ? null
+      : await tx.verification.findFirst({
+          where: { tenantId, contactId, normalizedEmail: email },
+          orderBy: [{ checkedAt: 'desc' }, { id: 'desc' }],
+          select: {
+            normalizedEmail: true,
+            provider: true,
+            status: true,
+            checkedAt: true,
+          },
+        });
+  const domains = [
+    email === null ? null : email.slice(email.lastIndexOf('@') + 1),
+    organization?.normalizedDomain ?? null,
+  ].filter((value): value is string => value !== null);
+  const suppressions =
+    email === null && domains.length === 0
+      ? []
+      : await tx.suppression.findMany({
+          where: {
+            tenantId,
+            OR: [
+              ...(email === null ? [] : [{ normalizedEmail: email }]),
+              { normalizedDomain: { in: domains } },
+            ],
+          },
+          select: { normalizedEmail: true, normalizedDomain: true },
+          take: 10,
+        });
+  const lists = await tx.leadListMember.findMany({
+    where: { tenantId, contactId },
+    select: { leadListId: true },
+    take: 1000,
+  });
+  // "Already in another campaign": pending or active there; finished ones don't count.
+  const otherCampaignEnrollments = await tx.campaignLead.count({
+    where: {
+      tenantId,
+      contactId,
+      campaignId: { not: campaignId },
+      status: { in: ['PENDING', 'ACTIVE'] },
+    },
+  });
+  const sources = await tx.sourceRecord.findMany({
+    where: { tenantId, contactId },
+    distinct: ['provider'],
+    select: { provider: true },
+  });
+  return evaluateSendEligibility({
+    asOf: asOf.toISOString(),
+    workspace: {
+      outboundSendingEnabled: settings?.outboundSendingEnabled ?? false,
+      planEntitled,
+      emailsPerPeriod: Number(emailsPerPeriod),
+      policy: storedPolicy(settings?.sendPolicy),
+    },
+    campaign: {
+      id: campaign.id,
+      status: campaign.status,
+      exclusions: exclusionsSchema.parse(
+        campaign.exclusions ?? DEFAULT_EXCLUSIONS,
+      ),
+      sender:
+        mailbox === null
+          ? null
+          : {
+              status: mailbox.status,
+              hasCredentials: mailbox.secretRef !== null,
+            },
+    },
+    contact: {
+      id: contact.id,
+      status: contact.status,
+      email,
+      countryCode: contact.countryCode,
+      organization:
+        organization === null
+          ? null
+          : {
+              domain: organization.normalizedDomain,
+              countryCode: organization.countryCode,
+            },
+    },
+    // As an email check; a provider the check's schema doesn't know isn't a check.
+    emailCheck:
+      check === null
+        ? null
+        : {
+            address: check.normalizedEmail,
+            status: CHECK_STATUS[check.status],
+            reason: null,
+            provider: check.provider.toUpperCase(),
+            checkedAt: check.checkedAt.toISOString(),
+          },
+    suppressions: {
+      emails: suppressions.flatMap((row) =>
+        row.normalizedEmail === null ? [] : [row.normalizedEmail],
+      ),
+      domains: suppressions.flatMap((row) =>
+        row.normalizedDomain === null ? [] : [row.normalizedDomain],
+      ),
+    },
+    leadListIds: lists.map((row) => row.leadListId),
+    otherCampaignEnrollments,
+    sources: sources.map((row) => row.provider).filter(isSource),
+  });
+}
+
 export function createSendEligibilityService(
   prisma: PrismaClient,
   tenantId: string,
@@ -118,178 +298,9 @@ export function createSendEligibilityService(
       requireReadPermissionOrSystem(actor, 'contacts.read');
       const campaignId = idOrNotFound(rawCampaignId, 'campaign');
       const contactId = idOrNotFound(rawContactId, 'contact');
-      const eligibility = await prisma.$transaction(async (tx) => {
-        const campaign = await tx.campaign.findUnique({
-          where: { tenantId_id: { tenantId, id: campaignId } },
-          select: {
-            id: true,
-            status: true,
-            exclusions: true,
-            emailAccountId: true,
-          },
-        });
-        if (campaign === null) {
-          throw new RecordNotFoundError('campaign');
-        }
-        const contact = await tx.contact.findUnique({
-          where: { tenantId_id: { tenantId, id: contactId } },
-          select: {
-            id: true,
-            status: true,
-            normalizedEmail: true,
-            countryCode: true,
-            organizationId: true,
-          },
-        });
-        if (contact === null) {
-          throw new RecordNotFoundError('contact');
-        }
-        const mailbox =
-          campaign.emailAccountId === null
-            ? null
-            : await tx.emailAccount.findUnique({
-                where: {
-                  tenantId_id: { tenantId, id: campaign.emailAccountId },
-                },
-                select: { status: true, secretRef: true },
-              });
-        const settings = await tx.tenantSettings.findUnique({
-          where: { tenantId },
-          select: { outboundSendingEnabled: true, sendPolicy: true },
-        });
-        const subscription = await findCurrentSubscription(tx, tenantId);
-        const planEntitled =
-          subscription !== null &&
-          (ENTITLED_SUBSCRIPTION_STATUSES as readonly string[]).includes(
-            subscription.status,
-          );
-        const emailsPerPeriod = planEntitled
-          ? await findEffectiveLimit(
-              tx,
-              tenantId,
-              subscription.planId,
-              'EMAILS_SENT',
-            )
-          : 0n;
-        const organization =
-          contact.organizationId === null
-            ? null
-            : await tx.organization.findUnique({
-                where: {
-                  tenantId_id: { tenantId, id: contact.organizationId },
-                },
-                select: { normalizedDomain: true, countryCode: true },
-              });
-        const email = contact.normalizedEmail;
-        const check =
-          email === null
-            ? null
-            : await tx.verification.findFirst({
-                where: { tenantId, contactId, normalizedEmail: email },
-                orderBy: [{ checkedAt: 'desc' }, { id: 'desc' }],
-                select: {
-                  normalizedEmail: true,
-                  provider: true,
-                  status: true,
-                  checkedAt: true,
-                },
-              });
-        const domains = [
-          email === null ? null : email.slice(email.lastIndexOf('@') + 1),
-          organization?.normalizedDomain ?? null,
-        ].filter((value): value is string => value !== null);
-        const suppressions =
-          email === null && domains.length === 0
-            ? []
-            : await tx.suppression.findMany({
-                where: {
-                  tenantId,
-                  OR: [
-                    ...(email === null ? [] : [{ normalizedEmail: email }]),
-                    { normalizedDomain: { in: domains } },
-                  ],
-                },
-                select: { normalizedEmail: true, normalizedDomain: true },
-                take: 10,
-              });
-        const lists = await tx.leadListMember.findMany({
-          where: { tenantId, contactId },
-          select: { leadListId: true },
-          take: 1000,
-        });
-        // "Already in another campaign": pending or active there; finished ones don't count.
-        const otherCampaignEnrollments = await tx.campaignLead.count({
-          where: {
-            tenantId,
-            contactId,
-            campaignId: { not: campaignId },
-            status: { in: ['PENDING', 'ACTIVE'] },
-          },
-        });
-        const sources = await tx.sourceRecord.findMany({
-          where: { tenantId, contactId },
-          distinct: ['provider'],
-          select: { provider: true },
-        });
-        return evaluateSendEligibility({
-          asOf: now().toISOString(),
-          workspace: {
-            outboundSendingEnabled: settings?.outboundSendingEnabled ?? false,
-            planEntitled,
-            emailsPerPeriod: Number(emailsPerPeriod),
-            policy: storedPolicy(settings?.sendPolicy),
-          },
-          campaign: {
-            id: campaign.id,
-            status: campaign.status,
-            exclusions: exclusionsSchema.parse(
-              campaign.exclusions ?? DEFAULT_EXCLUSIONS,
-            ),
-            sender:
-              mailbox === null
-                ? null
-                : {
-                    status: mailbox.status,
-                    hasCredentials: mailbox.secretRef !== null,
-                  },
-          },
-          contact: {
-            id: contact.id,
-            status: contact.status,
-            email,
-            countryCode: contact.countryCode,
-            organization:
-              organization === null
-                ? null
-                : {
-                    domain: organization.normalizedDomain,
-                    countryCode: organization.countryCode,
-                  },
-          },
-          // As an email check; a provider the check's schema doesn't know isn't a check.
-          emailCheck:
-            check === null
-              ? null
-              : {
-                  address: check.normalizedEmail,
-                  status: CHECK_STATUS[check.status],
-                  reason: null,
-                  provider: check.provider.toUpperCase(),
-                  checkedAt: check.checkedAt.toISOString(),
-                },
-          suppressions: {
-            emails: suppressions.flatMap((row) =>
-              row.normalizedEmail === null ? [] : [row.normalizedEmail],
-            ),
-            domains: suppressions.flatMap((row) =>
-              row.normalizedDomain === null ? [] : [row.normalizedDomain],
-            ),
-          },
-          leadListIds: lists.map((row) => row.leadListId),
-          otherCampaignEnrollments,
-          sources: sources.map((row) => row.provider).filter(isSource),
-        });
-      });
+      const eligibility = await prisma.$transaction((tx) =>
+        evaluateEligibilityFacts(tx, tenantId, campaignId, contactId, now()),
+      );
       // The fit is read apart and never given to the rules.
       const score = await scoring.current(campaignId, contactId);
       const fit: LeadFit | null =

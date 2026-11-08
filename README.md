@@ -539,6 +539,43 @@ Task 10C qualifies a campaign's leads (`docs/decisions.md` D-10C-01 to D-10C-06,
 - **The job:** `lead_qualification.run`, queued by "Qualify this lead"; in development run it
   with `node apps/worker/dist/run-task.js <task id>`.
 
+## Lead search
+
+Task 11A (`docs/api/leads.md`, `docs/decisions.md` D-11A-01 to D-11A-07) adds a search of the
+workspace's people.
+
+- **Search** (`GET /workspaces/:workspaceId/leads`):
+  - **Filters:** text, company, contact, title, country, industry, source, campaign and its
+    status, score, address check, recorded eligibility and activity;
+  - **Sorts:** created, activity, name, company and score.
+
+  Everything is allowlisted by `leadSearchQuerySchema`; anything else is a 400.
+
+- **Detail and evidence:** `…/leads/:contactId` and `…/leads/:contactId/evidence`.
+- **Pages:** keyset pages on (sort key, id), at most 100 rows. A cursor only works with the
+  search it came from. Each search is stopped by the database after 5 seconds.
+- **Workspace isolation:** every row read through a join is checked against the workspace
+  (`assertTenant`).
+- **Last activity:** `contacts.last_activity_at` is kept by database triggers (data, checks,
+  scores, qualifications, enrollments) for sorting and filtering.
+
+## Lead profile
+
+Task 11B (`docs/api/leads.md`, `docs/decisions.md` D-11B-01 to D-11B-05) builds the Leads
+list and each lead's profile.
+
+- **Why the lead exists:** its sources (linked to their import or page), evidence and company
+  research.
+- **What we know:** data quality and address checks, score history, campaigns and their
+  decisions, notes and tags.
+- **Changes:** members correct the data (with a reason), tag, note, approve or reject in a
+  campaign, and add the lead to a campaign's lead list.
+- **Versions:** every change but a note names the lead's version, so a stale page's edit is
+  refused instead of overwriting.
+- **Stale approvals:** a correction of a name, title, address or country (or of the company's
+  research) withdraws the lead's drafts and scheduled sends and sends every campaign's
+  decision back to Review.
+
 ## Screens
 
 The web app has the account and team screens (`docs/decisions.md` D-04C-*): sign-in,

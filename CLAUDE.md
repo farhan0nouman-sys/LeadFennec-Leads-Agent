@@ -310,6 +310,21 @@ if needed; next prompt ID.
   version check and an audit record without the note; a blocked person is never qualified. What
   may be sent comes only from `contactDecision`. Change the prompt or its schema only with a new
   version.
+- **Lead search** (`docs/decisions.md` D-11A-*): search people only through `scope.leads`.
+  Add a filter or sort only to `leadSearchQuerySchema` and the fixed SQL fragments in
+  `lead-search.ts`: every value a bind parameter, never request text in the SQL, text through
+  `likeContains`. Repeat the tenant in every join, and pass every row read back through
+  `assertTenant`. Pages are keyset pages on (sort key, id) with a cursor bound to its search;
+  keep the page cap and the statement timeout. Never write `contacts.last_activity_at`: its
+  triggers keep it. The recorded eligibility filter is not permission to send.
+- **Lead changes** (`docs/decisions.md` D-11B-*): change a lead only through `scope.leads`
+  (`correct`, `setTags`, `addNote`, `assign`). Every change but a note names `contacts.version`
+  (409 when stale) and raises it. A correction keeps its reason as a note, never in the audit
+  record. A material change (name, title, address, country, or a company research correction)
+  must call `markLeadsStale` in the same transaction: drafts INVALIDATED, scheduled sends
+  cancelled, decisions back to Review with eligibility decided again. Never keep an approval
+  of old data. Assignment checks the campaign in the workspace and refuses blocks that apply
+  before sending; add a refusal there, never in a page.
 - **Campaign wizard** (`docs/decisions.md` D-06B-*): a stage turns its form into the sections
   of a save and checks them with `updateCampaignRequestSchema` (`apps/web/lib/campaign-wizard.ts`);
   map every issue path, the page's or the API's, to a field of the stage, and never write a

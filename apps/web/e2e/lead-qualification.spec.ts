@@ -107,7 +107,11 @@ test.afterAll(async () => {
 
 test("the campaign's leads are listed, and a lead's page keeps fit, eligibility and qualification apart", async () => {
   await page.goto(`/workspaces/${workspaceId}/campaigns/${campaignId}`);
-  await page.getByRole('link', { name: 'Leads', exact: true }).click();
+  // The campaign page's own link (the navigation has a Leads link too, since 11B).
+  await page
+    .getByRole('main')
+    .getByRole('link', { name: 'Leads', exact: true })
+    .click();
   await expect(
     page.getByRole('heading', { name: 'Leads of Quill outreach' }),
   ).toBeVisible();

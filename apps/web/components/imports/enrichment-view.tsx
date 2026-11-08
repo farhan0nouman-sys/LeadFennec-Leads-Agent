@@ -15,7 +15,7 @@ import {
 } from '@lead-fennec-ai/shared';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import { DataTable, type DataColumn } from '@/components/data/data-table';
 import { FilterSelect, ListFilters } from '@/components/data/list-filters';
@@ -260,6 +260,16 @@ export function EnrichmentResults({ run }: { readonly run: ImportRun }) {
     },
     isRunning(run) ? { poll: IMPORT_RUN_POLL } : {},
   );
+  // Load the people once more when the run finishes (they stop refreshing with it).
+  const running = isRunning(run);
+  const wasRunning = useRef(running);
+  const refreshResults = results.retry;
+  useEffect(() => {
+    if (wasRunning.current && !running) {
+      refreshResults();
+    }
+    wasRunning.current = running;
+  }, [running, refreshResults]);
   const campaignId = run.enrichment?.campaignId ?? null;
   const columns: DataColumn<EnrichmentResult>[] = [
     { key: 'position', header: '#', cell: (result) => String(result.position) },

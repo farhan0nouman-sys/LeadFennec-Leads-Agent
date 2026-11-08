@@ -201,6 +201,8 @@ export const QUALIFICATION_REASON_CODES = [
   'agent_review',
   'agent_unavailable',
   'person_decision',
+  /** The lead's data or evidence changed after the last decision (task 11B). */
+  'lead_data_changed',
 ] as const;
 
 export type QualificationReasonCode =

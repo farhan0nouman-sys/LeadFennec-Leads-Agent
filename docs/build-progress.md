@@ -4,6 +4,256 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## 11B: Lead list and profile, corrections, tags, notes, assignment, stale data (2026-11-08)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL / CI:** PGlite only.
+- **No real drafts or sends:** draft generation and sending aren't built. Invalidation and
+  cancellation were tested on seeded drafts, approvals and scheduled sends.
+- **Plan:** the material fields, the staleness rules and the assignment refusals were chosen
+  without the missing plan (O-01, O-44).
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `c53fe39`, with 11A and the GIT-18
+  log entry.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `contracts/lead-profile.ts` (new): routes, limits, material fields, and the correction, tag, note and assignment requests, plus 2 error codes. Also changed: `contracts/leads.ts` (the detail's version, research, tags, notes, score history, activity, source URLs, decision versions), `lead-qualification.ts` (`lead_data_changed`), `endpoints.ts` (4 endpoints; the decision now also refreshes the lead), `workspaces.ts`, `navigation.ts` (Leads available), `index.ts`. Tests: `endpoints.test.ts` (59 → 63), `navigation.test.ts`. |
+| Database | `schema.prisma`: `contacts.version`, the tables `contact_notes` and `contact_tags`, `INVALIDATED` drafts and `LEAD_DATA_CHANGED` cancellations. Migrations: `20261108000400_lead_profile` (generated) and `…000500_lead_profile_checks` (checks, the immutability and append-only triggers). New: `tenancy/lead-changes.ts` (`correct`, `setTags`, `addNote`, `assign` and their errors) and `tenancy/lead-staleness.ts` (`markLeadsStale`). Changed: `send-eligibility.ts` (`evaluateEligibilityFacts`, run in the caller's transaction), `lead-search.ts` (the profile parts and the changes in `scope.leads`), `research.ts` (a correction makes its company's leads stale), `index.ts`. Fixtures: a note and a tag in each tenant. Tests: `lead-profile.integration.test.ts` (new, 7); tenant tables 46 → 48, relations 71 → 74, model registry 46 → 48. |
+| API | `workspaces/leads.controller.ts` (4 routes), `http/api-errors.ts` (4 errors, mapped and caught). Tests: `leads.integration.test.ts` (+1), `route-guards.test.ts` (4 routes). |
+| Web | `app/workspaces/[workspaceId]/leads/page.tsx` (the list, replacing the shell) and `leads/[contactId]/page.tsx` (new). `components/leads/lead-list.tsx`, `lead-profile.tsx` and `lead-forms.tsx` (new). `lib/leads.ts` (new) and its test (2). Browser tests: `e2e/lead-profile.spec.ts` (new, 3); `e2e/app-shell.spec.ts` (Leads is now a built page). |
+| Docs | `docs/decisions.md` D-11B-01 to 05 and O-44; `docs/api/leads.md` (Changes); `docs/api/openapi.json` (regenerated); `docs/security/authorization-review.md` (2 route rows, 2 service rows); README (Lead profile); `CLAUDE.md` (the lead changes rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 15/15 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 15/15 tasks, 0 cached; root ESLint OK |
+| `pnpm openapi --check` | Up to date (regenerated for the 4 routes) |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 12/12 tasks, 0 cached: shared **278**, integrations **381**, ai-agents **63**, web **45**, database **46 passed, 405 skipped**, worker **9 passed, 22 skipped**, api **31 passed, 81 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 12/12 tasks, 0 cached: shared **278**, integrations **381**, ai-agents **63**, database **449 passed, 2 skipped** (the PGlite concurrency skips), api **112**, web **45**, worker **31** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 33 migrations (2 new); up to date; no difference, exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **60 passed** (5.7 min), after a fix (see below). The first run failed 1 test (57 passed, 2 not run) |
+| `pnpm test:e2e` without it | **9 passed, 51 skipped** |
+| After the fix: `pnpm format:check`, web lint and typecheck | Exit 0; 5/5 tasks, 0 cached |
+| Reference repos / credential and personal-data scan of the 54 uncommitted files (11A and 11B) | 0 changes in each of the 9 / no matches (the only hits were this log's own descriptions of earlier scans) |
+
+**Earlier failures in this task (logged honestly):**
+1. **Tests that changed with the task:**
+   - the navigation test listed the built sections, and the OpenAPI test failed until
+     `pnpm openapi` ran (the decision endpoint now also refreshes the lead);
+   - the app shell browser test used Leads as its example of an unbuilt page. It now checks
+     the built Leads page; the unbuilt pages keep their own loop.
+2. **Lint:** one optional chain.
+3. **Tooling:**
+   - long shell heredocs failed twice before writing anything; the edits were made with script
+     files instead;
+   - one inline quoting slip (nothing written).
+4. **Browser test:** the 10C qualification test clicked the link named "Leads" on a campaign
+   page. Since Leads is a built page, the navigation has a link with the same name, so the click
+   was ambiguous and the test failed. It now clicks the campaign page's own link (inside the
+   main region). Rerun: 60 passed.
+
+### What 11B proves (local)
+
+- **Why a lead exists** is on its profile:
+  - its sources, linked to their import or page;
+  - the evidence about the person and their company, and the company's research;
+  - its data quality and every address check, its score history, campaigns and decisions;
+  - its notes and tags.
+- **Corrections without stale approvals:** a material correction, in one transaction:
+  - invalidates the approved draft (its approval kept, append-only, but unusable);
+  - cancels its scheduled send (`LEAD_DATA_CHANGED`);
+  - sends every campaign's decision back to Review with the reason, eligibility decided again
+    (a new, unchecked address: blocked).
+
+  In the browser, an approval made on the profile goes back to Review after a correction, and
+  the reason is kept as a note. A company research correction does the same for its leads. A
+  LinkedIn profile change reopens nothing.
+- **Stale edits fail safely:** a correction, a tag change or an assignment from an old version
+  is 409 and changes nothing. In the browser, a second, stale page's edit is refused without
+  overwriting.
+- **Unauthorized assignments fail safely:**
+  - refused for another workspace's campaign ("Not found in this workspace.", in the database
+    and over HTTP), an ended campaign, one without a lead list, and a lead on the do-not-contact
+    list;
+  - refused for a member without `campaigns.write`;
+  - another workspace's lead is 404; a change without a CSRF token is 403.
+- **Validation:** another lead's address, a malformed address, a lead left unidentifiable, more
+  than 20 tags, bad tag characters, and a missing reason are all refused. Notes never change.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL and CI; a screen-reader check of the new screens (axe only).
+- Real drafts and sends (not built).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No email verification service is selected (O-35).
+3. No Docker or Redis (O-06).
+4. Open: O-19 to O-34, O-36 to O-44.
+
+### Manual check
+
+1. In development, open Leads and pick a person.
+2. Check the profile: their source (with a link to the import), data quality, campaigns and
+   activity.
+3. Approve them in a campaign with a note.
+4. Correct their title with a reason. The activity now shows the campaign back in Review ("The
+   lead's data was corrected after this decision. Decide again."), and the reason is a note.
+5. Open the same profile in a second tab, change the tags in the first, then save tags in the
+   second: it says the lead changed since you opened it.
+
+### Next prompt
+
+11C, as sent: "Implement task 11C only." It waits for the go-ahead (one prompt at a time).
+
+---
+
+## 11A: Lead search, lead detail and evidence (2026-11-08)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL / CI:** PGlite only. The 5-second statement timeout is set, but no search was
+  slow enough to hit it locally. The planner checks ran on small tables.
+- **No screen:** the Leads section is still "not available"; the search is an API only (as the
+  prompt asks). No export exists.
+- **Plan:** the filters, sorts, limits and the meaning of "activity" and "eligibility" were
+  chosen without the missing plan (O-01, O-43).
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `c53fe39`, with the uncommitted
+  GIT-18 log entry.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `contracts/leads.ts` (new): routes, limits, the allowlisted sorts and filters, `leadSearchQuerySchema`, `leadSearchFilters`, `likeContains`, and the page, detail and evidence schemas. Also changed: `endpoints.ts` (3 endpoints, the `leads` tag, 3 cache resources) and `index.ts`. Tests: `leads.test.ts` (new, 4); `endpoints.test.ts` (56 → 59). |
+| Database | `schema.prisma`: `contacts.last_activity_at` and 2 indexes. Migrations: `20261108000200_lead_search` (generated) and `…000300_lead_search_activity` (backfill, the triggers, a check). `tenancy/lead-search.ts` (new): `scope.leads` with `search`, `detail` and `evidence`, plus `assertTenant` and `TenantLeakError`. Also changed: `access.ts`, `index.ts`. Tests: `lead-search.integration.test.ts` (new, 12); `schema.integration.test.ts` (+2 index checks). No new table or relation. |
+| API | `workspaces/leads.controller.ts` (new, 3 routes), `workspaces.module.ts`. Tests: `leads.integration.test.ts` (new, 4), `route-guards.test.ts` (3 routes). |
+| Web | `components/imports/run-view.tsx` and `enrichment-view.tsx`: a run's results load once more when the run finishes (a fix, see below). |
+| Docs | `docs/decisions.md` D-11A-01 to 07 and O-43; `docs/api/leads.md` (new); `docs/api/openapi.json` (regenerated); `docs/security/authorization-review.md` (2 route rows, 1 service row); README (Lead search); `CLAUDE.md` (the lead search rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 (after a fix, see below) |
+| `pnpm typecheck --force` | Exit 0; 15/15 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 15/15 tasks, 0 cached; root ESLint OK |
+| `pnpm openapi --check` | Up to date (regenerated for the 3 routes) |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 12/12 tasks, 0 cached: shared **274**, integrations **381**, ai-agents **63**, web **43**, database **46 passed, 394 skipped**, worker **9 passed, 22 skipped**, api **31 passed, 80 skipped**. This run was before the 4 shared `leads.test.ts` tests were added; the next row includes them |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 12/12 tasks, 0 cached: shared **278**, integrations **381**, ai-agents **63**, database **438 passed, 2 skipped** (the PGlite concurrency skips), api **111**, web **43**, worker **31** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 31 migrations (2 new); up to date; no difference, exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **57 passed**, after a fix (see below). The first two runs failed 1 test (52 passed, 4 not run). The web build came from the cache-free build plus the fix |
+| `pnpm test:e2e` without it | **9 passed, 48 skipped** |
+| After the fix: `pnpm format:check`, web lint, web unit tests | Exit 0; 4/4 lint tasks; **43** passed |
+| Reference repos / credential and personal-data scan of the 26 changed files | 0 changes in each of the 9 / no matches |
+
+**Earlier failures in this task (logged honestly):**
+1. **Lint** (fixed):
+   - a type parameter used once;
+   - an unnecessary assertion, `void` on a value, a ternary instead of `??`, and an unnecessary
+     `String()`;
+   - removing two unused fields: the first attempt hit read-only fields (a type error). The
+     cursor's filter hash now leaves the page out through a JSON replacer.
+2. **Format:** ESLint's automatic fixes left the new database test unformatted, and the first
+   `pnpm format:check` of the regression failed on it. It was reformatted; format and lint pass.
+3. **A results list that went stale (a defect, fixed):** the first two browser runs failed the
+   07C test "a search finds companies…": the run said "Finished" with 30 saved, but its results
+   table had no rows. The trace showed why. The results were loaded while the run was still
+   queued; when the run finished, the results stopped refreshing with it, so they were never
+   loaded again. The race existed since 07C and was won by earlier runs; the slightly slower job
+   (the new triggers) lost it both times. The run page, and the 08C people results, now load
+   their results once more when the run finishes. The third run passed (57).
+4. **Tooling:** generating the migration once failed because the database URL wasn't set in that
+   shell (nothing written); the files were then written with the Write tool.
+
+### What 11A proves (local)
+
+- **Stable, combined, without duplicates:**
+  - every sort (created, activity, name, company) in both orders, paged two at a time, returns
+    exactly the one-page result: each lead once, ties broken by id;
+  - the score sort pages one at a time;
+  - people added between pages don't repeat or shift anyone;
+  - combined filters (a campaign, an industry, a score floor, a verified address) narrow
+    correctly, and a combined search paged one at a time holds only matches, in order;
+  - the same over HTTP.
+- **No tenant leakage:**
+  - the other workspace holds the same company and person, and is never returned;
+  - its person's detail and evidence are 404, and so is its campaign as a filter;
+  - every row read through a join passes `assertTenant`, which throws on another tenant's row.
+- **No results:** an empty page with no cursor, in the database and over HTTP.
+- **Invalid input is refused (400):**
+  - invalid sort fields, including an injection attempt;
+  - an invalid order, unknown parameters and values, a too-large page;
+  - a score sort without a campaign;
+  - cursors of another sort, order or filter set, and malformed ones.
+
+  Text matches literally (`%`, `_`).
+- **Bounded:** at most 100 rows a page, capped detail lists, list and text limits, and a 5-second
+  statement timeout; there is no export.
+- **Indexes:** the planner uses the new activity and country indexes.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL and CI, with realistic workspace sizes (and the statement timeout).
+- A screen for the search (a later task).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No email verification service is selected (O-35).
+3. No Docker or Redis (O-06).
+4. Open: O-19 to O-34, O-36 to O-43.
+
+### Manual check
+
+In development, with a signed-in session, open:
+- `/api/workspaces/<workspace id>/leads?q=<text>&sort=name&order=asc&limit=2`: two people and a
+  `nextCursor`. Pass it back as `cursor` with the same parameters for the next page.
+- the same URL with `sort=email`: a 400 naming `sort`.
+- `/api/workspaces/<workspace id>/leads/<contact id>` and `…/evidence`.
+
+### Next prompt
+
+11A is the last prompt received. The plan is missing (O-01), so the user sends the next prompt.
+
+---
+
+## GIT-18: Push `feat/05a-app-shell` (2026-11-08)
+
+**Status: Done.** The request was `git push`.
+
+| Step | Actual result |
+|---|---|
+| Pushed | `feat/05a-app-shell` → `origin/feat/05a-app-shell`, `d0cecc4..c53fe39` (08B finished, 08C); the remote head is `c53fe39` (checked with `git ls-remote`) |
+| Remote | `github.com/farhan0nouman-sys/LeadFennec-Leads-Agent` (**public**); `main` unchanged at `7fc44f2`; `feat/04a-auth` unchanged at `3e0b418` |
+
+- **CI has not run:** the workflow runs on pushes to `main`, on pull requests and on manual
+  dispatch, not on pushes to other branches.
+- This entry is not in the pushed commit; it is a local change to the log.
+
+---
+
 ## GIT-17: Commit 08B and 08C (2026-11-08)
 
 **Status: Done (local commit only).** The request was `git commit`.

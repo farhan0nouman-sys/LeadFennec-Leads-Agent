@@ -222,6 +222,16 @@ describe.runIf(testDatabaseUrl !== undefined)(
           'contacts_tenant_id_status_created_at_idx',
         ],
         [
+          'leads by last activity, newest first (task 11A)',
+          `SELECT id FROM contacts WHERE tenant_id = ${t} ORDER BY last_activity_at DESC, id DESC LIMIT 26`,
+          'contacts_tenant_id_last_activity_at_id_idx',
+        ],
+        [
+          'leads in a country (task 11A)',
+          `SELECT id FROM contacts WHERE tenant_id = ${t} AND country_code = 'US'`,
+          'contacts_tenant_id_country_code_idx',
+        ],
+        [
           'organization by domain',
           `SELECT id FROM organizations WHERE tenant_id = ${t} AND normalized_domain = 'shared-prospect.test'`,
           'organizations_tenant_id_normalized_domain_key',

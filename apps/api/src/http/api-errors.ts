@@ -4,6 +4,10 @@ import type { ServerResponse } from 'node:http';
 import {
   ActorNotAllowedError,
   AlreadyMemberError,
+  AssignmentNotPossibleError,
+  EmailTakenError,
+  LeadCorrectionError,
+  LeadVersionConflictError,
   CampaignConfigurationError,
   CampaignNameTakenError,
   CampaignNotEditableError,
@@ -285,6 +289,36 @@ export function toApiException(error: unknown): ApiHttpException | null {
       { issues: error.issues },
     );
   }
+  if (error instanceof LeadVersionConflictError) {
+    return new ApiHttpException(
+      409,
+      'version_conflict',
+      'The lead changed since you opened it. Reload it, then make your change again.',
+    );
+  }
+  if (error instanceof EmailTakenError) {
+    return new ApiHttpException(
+      409,
+      'email_taken',
+      'Another lead in this workspace has this email address.',
+    );
+  }
+  if (error instanceof LeadCorrectionError) {
+    return new ApiHttpException(
+      400,
+      'validation_failed',
+      'The correction is invalid.',
+      { issues: error.issues },
+    );
+  }
+  if (error instanceof AssignmentNotPossibleError) {
+    return new ApiHttpException(
+      409,
+      'assignment_not_possible',
+      "The lead can't be added to this campaign.",
+      { issues: error.issues },
+    );
+  }
   if (error instanceof NoEmailAddressError) {
     return new ApiHttpException(
       409,
@@ -397,6 +431,10 @@ function send(
   NoEmailAddressError,
   VerificationUnavailableError,
   RecheckLimitError,
+  LeadVersionConflictError,
+  EmailTakenError,
+  LeadCorrectionError,
+  AssignmentNotPossibleError,
   CsvImportError,
   ImportNotCancellableError,
   ResearchNotPossibleError,

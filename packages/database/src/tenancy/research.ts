@@ -41,6 +41,7 @@ import {
   type TenantActor,
 } from './actors.js';
 import { writeAuditRecord } from './audit.js';
+import { markLeadsStale, STALE_CONTACTS_LIMIT } from './lead-staleness.js';
 import {
   RecordNotFoundError,
   requirePermission,
@@ -730,6 +731,24 @@ export function createResearchRepository(
             createdAt: at,
           },
         });
+        // The company's evidence changed: what was decided or written for its people from the
+        // old research is stale (task 11B).
+        const people = await tx.contact.findMany({
+          where: { tenantId, organizationId: orgId },
+          select: { id: true },
+          take: STALE_CONTACTS_LIMIT,
+        });
+        await markLeadsStale(
+          tx,
+          tenantId,
+          people.map((person) => person.id),
+          at,
+          {
+            recomputeEligibility: false,
+            message:
+              "The company's research was corrected after this decision. Decide again.",
+          },
+        );
         await writeAuditRecord(tx, tenantId, member, {
           action: 'research.corrected',
           targetType: 'research',

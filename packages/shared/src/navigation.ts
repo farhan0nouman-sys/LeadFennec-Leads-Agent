@@ -74,7 +74,7 @@ export const WORKSPACE_SECTIONS = [
     group: 'prospecting',
     path: 'leads',
     permission: 'contacts.read',
-    status: 'unavailable',
+    status: 'available',
     description:
       'Companies and contacts with their research, scores and email verification.',
     primaryAction: 'Find leads',

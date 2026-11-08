@@ -4244,6 +4244,232 @@ review, manual changes are tracked, and tests show score changes never erase sup
 - No bulk qualification of a whole lead list, and no automatic re-run when facts change.
 - No evaluation set for the qualification agent, only its tests, and no live model was run.
 
+## 11A: Lead search, lead detail and evidence (2026-11-08)
+
+**Basis.** The plan is still missing (O-01); this follows the 11A prompt:
+- "tenant-scoped search, cursor pagination, allowlisted sorting and filters for company, contact,
+  title, location, industry, source, score, verification, eligibility, campaign status and
+  activity";
+- "lead detail and evidence endpoints";
+- "appropriate indexes", no "unbounded exports or queries";
+- "validate that records returned through joins belong to the active tenant".
+
+The completion check: combined filters and pagination return stable results without duplicates
+or tenant leakage. The query tests include no results and invalid sort fields.
+
+### D-11A-01: What a lead is, and the routes
+
+- **A lead** is a person (`contacts`) of the workspace. The search is workspace-wide, not per
+  campaign. `campaignId` narrows it to one campaign's leads: on its lead list, or enrolled.
+- **Routes:**
+  - `GET /workspaces/:workspaceId/leads`;
+  - `…/leads/:contactId`;
+  - `…/leads/:contactId/evidence`.
+
+  All three need `contacts.read`; the repository (`scope.leads`) checks it again.
+- **Parts with their own permission:** scores need `scores.read`, campaign data and the
+  eligibility filter need `campaigns.read`, and lead lists need `lead_lists.read`. Without them,
+  those filters are refused (403) and those fields are left out. Platform admins read through
+  their audited scope.
+- **Route order:** `GET …/leads/summary` (05C) stays first: `LeadsController` is registered after
+  `DashboardController`.
+
+### D-11A-02: Allowlisted filters and sorts, as text
+
+- **One schema** (`leadSearchQuerySchema`, shared) names every parameter, and is strict:
+  - an unknown parameter is refused;
+  - a sort outside `created`, `activity`, `name`, `company`, `score` is refused;
+  - so is an order other than `asc`/`desc`, or a value outside a list.
+- **Lists** are one parameter with comma-separated values. The parsed query stays text, so the
+  web client serializes it back to the same URL; `leadSearchFilters` turns it into lists.
+- **Limits:**
+  - 20 values a list;
+  - 2–100 characters for `q`, at most 100 for any other text;
+  - scores 0–100, with the minimum no higher than the maximum;
+  - an activity window must run forwards;
+  - sorting by score needs a campaign.
+- **Meanings:**
+  - location is the person's country, else the company's;
+  - industry is matched case-insensitively;
+  - a score is the current one (the highest version), the campaign's or any campaign's;
+  - verification is the newest check of the current address, plus `unchecked` and
+    `no_address`;
+  - eligibility is the status recorded with the newest qualification decision, plus
+    `not_qualified`. It is a recorded fact used for finding leads, never permission to send:
+    the lead view decides eligibility from the facts when read (D-10B).
+
+### D-11A-03: One statement from fixed fragments, every row checked
+
+- **One SQL statement** (`Prisma.sql`), built in `lead-search.ts` from fixed fragments:
+  - every value is a bind parameter;
+  - sort expressions and directions come from a table, never from request text;
+  - text filters escape `%`, `_` and `\` (`likeContains`), so typed text matches literally.
+- **Tenant scoping:** every join and subquery repeats the contact's `tenant_id`.
+- **Rows read back:** every row, and every row of the follow-up reads (company, sources, checks,
+  scores, qualifications, campaigns, lists, evidence), goes through `assertTenant`. A row of
+  another tenant throws `TenantLeakError`, and nothing is returned (a generic 500). Composite
+  foreign keys already make such a row impossible; the check makes the guarantee explicit.
+- **Bounded:**
+  - at most 100 rows a page;
+  - the detail's lists are capped (20 sources, 20 checks, 50 campaigns, 50 lists), and
+    `truncated` says which;
+  - a search runs in a transaction with `statement_timeout` at 5 seconds (`set_config`, local
+    to the transaction);
+  - there is no export route.
+
+### D-11A-04: Stable keyset pages
+
+- **Order:** by the sort key, then the id. The cursor carries:
+  - the last row's key and id;
+  - the sort and order;
+  - a hash of the filters (everything but the page).
+- **The next page** is `(key, id) < / > (cursor key, cursor id)`. People added while you page
+  don't repeat or shift earlier people.
+- **Wrong cursors:** a cursor of another sort, order or filter set, or a malformed one, is
+  `InvalidCursorError` (400 `cursor`).
+- **Sort keys:**
+  - text keys compare with `COLLATE "C"`, so the database's locale can't change the order
+    between pages;
+  - a person without a company sorts as an empty name;
+  - an unscored person sorts as score −1 (last when descending).
+
+### D-11A-05: Last activity, kept by the database
+
+- **New column:** `contacts.last_activity_at` (NOT NULL, backfilled).
+- **Triggers keep it:**
+  - a new contact's is its creation;
+  - an insert into `source_records` (`fetched_at`), `verifications` (`checked_at`), `scores`
+    (`scored_at`) or `lead_qualifications` (`decided_at`), and an insert or update of
+    `campaign_leads` (`updated_at`), move it to the event's time if later, never back.
+
+  Application code never writes it. A check keeps it no earlier than the creation.
+- **Why a column:** activity has to be filtered and sorted with an index; working it out in each
+  query couldn't use one. Outreach events (sends, replies) will count through enrollments and
+  their updates when sending is built.
+
+### D-11A-06: Indexes
+
+- **New:**
+  - `contacts (tenant_id, last_activity_at DESC, id)`, for activity sorts and windows;
+  - `contacts (tenant_id, country_code)`, for countries.
+
+  The schema test checks the planner uses both.
+- **Already there:**
+  - created sorts use `(tenant_id, status, created_at DESC)`;
+  - scores use their version index;
+  - checks use `(tenant_id, contact_id, checked_at)`;
+  - sources and lead list members their contact indexes.
+- **No index:** text contains-matching and case-insensitive industry matching have none. They
+  are bounded by the workspace, the page size and the timeout. A trigram index (`pg_trgm`) would
+  need an extension that the local test database can't load (O-43).
+
+### D-11A-07: Tests
+
+| File | What it shows |
+|---|---|
+| `packages/database/src/lead-search.integration.test.ts` (12) | Last activity: creation, later events, never back. Every sort in both orders paged two at a time equals one page, each lead once, ties broken by id, and nothing of the other workspace (which has the same company and person). Pages stay stable while people are added. Every filter alone and combined, and a combined search paged one at a time. Result fields (company, sources, check, score, qualification). No results. Literal wildcards. Refused sorts (including an injection attempt), orders, parameters, values and cursors (another sort, order, filters, malformed), and another workspace's campaign. Permissions per part. Detail. Evidence (the company's, never another person's). `assertTenant` |
+| `packages/database/src/schema.integration.test.ts` (+2) | The planner uses the activity and country indexes |
+| `apps/api/src/workspaces/leads.integration.test.ts` (4) | Combined filters paged over HTTP (no duplicates, no other workspace); no results; 400s for an unknown sort, a score sort without a campaign, an unknown parameter, an unknown value, a too-large page and a reused cursor; 404 for another workspace's campaign; detail and evidence, and 404s for another workspace |
+| `packages/shared/src/contracts/endpoints.test.ts`, `apps/api/src/http/*` | 3 endpoints in the list (56 → 59), their guards and schemas |
+
+## 11B: Lead list and profile, corrections, tags, notes, assignment, stale data (2026-11-08)
+
+**Basis.** The plan is still missing (O-01); this follows the 11B prompt:
+- "the lead list and profile UI with source links, research, score history, verification, notes,
+  tags and campaign activity";
+- "validated corrections, approval/rejection and campaign assignment with ownership checks and
+  optimistic concurrency";
+- "recompute affected eligibility or invalidate drafts when material contact or evidence data
+  changes".
+
+The completion check: users can inspect why a lead exists and correct it without silently
+retaining stale approvals. Unauthorized assignments and stale edits fail safely.
+
+### D-11B-01: The screens
+
+- **Leads list:** the Leads section is now available. It is a search (11A) with text, address
+  check and sort filters in the address bar.
+- **Profile** (`/workspaces/:workspaceId/leads/:contactId`):
+  - why the lead exists: each source, with a link to its import or its page (http(s) only), and
+    the evidence about the person and their company;
+  - the company's research, linking to the company profile (09C);
+  - the contact data's quality and the recheck (08C);
+  - every address check, the score history and the campaigns;
+  - the decisions' activity, notes and tags.
+- **Forms** for members with the permissions:
+  - correct, tag and note (`contacts.write`);
+  - assign, approve or reject in a campaign (`campaigns.write`).
+- **Untrusted text:** everything from imports, providers, pages and notes is shown as text only.
+- **The detail** (11A) gained:
+  - `version`, `research`, `tags`, `notes`, `scoreHistory`, `activity`;
+  - each source's `url`;
+  - each campaign decision's `version`.
+
+  Each list is capped at 20, and `truncated` says which were cut.
+
+### D-11B-02: Changes and optimistic concurrency
+
+- **Routes** (all audited):
+  - `PATCH …/leads/:contactId`: correct;
+  - `PATCH …/leads/:contactId/tags`: replace the tags;
+  - `POST …/leads/:contactId/notes`: add a note;
+  - `POST …/leads/:contactId/campaigns`: assign.
+- **`contacts.version`** (new) is named by every change but a note. Under a row lock, a stale
+  version is refused with `409 version_conflict` and nothing changes; a change raises it.
+- **Corrections:**
+  - names, title, address, country and LinkedIn profile, validated by the shared schema (address
+    and profile shapes, two-letter countries);
+  - the address stays unique in the workspace (`409 email_taken`);
+  - the person stays identifiable: an address, a profile or a company domain;
+  - the reason (required) is kept as a note, never in the audit record, which holds the field
+    names only.
+- **Notes** never change (a trigger refuses updates).
+- **Tags:** lower case, at most 20, letters, digits, spaces, `-` and `_`.
+- **Approval and rejection** are the 10C decisions, with their own version check. Saving one now
+  also refreshes the lead's profile.
+
+### D-11B-03: Stale data is never kept silently
+
+- **Material change:** a correction of the name, title, address or country. Inside the same
+  transaction (`markLeadsStale`):
+  - **Drafts:** every live draft of the person (awaiting approval or approved) becomes
+    `INVALIDATED`, a new draft status. Its approval stays as it was (append-only), but no intent
+    can use it.
+  - **Sends:** every send scheduled from those drafts is `CANCELLED`, with the new reason
+    `LEAD_DATA_CHANGED`. Sends already under way or sent are left alone.
+  - **Decisions:** each campaign's newest decision gets an automatic successor, `REVIEW`, with
+    the reason `lead_data_changed` ("decide again"), under the decision's own lock. Its
+    eligibility status is decided again from the corrected facts (`evaluateEligibilityFacts`,
+    taken out of the 10B service so it runs in the caller's transaction).
+- **Evidence change:** a correction of a company's research (09C) makes its people stale the same
+  way (at most 1,000 people), with their eligibility kept, since research isn't an eligibility
+  fact.
+- **LinkedIn profile** changes aren't material: nothing is reopened.
+- **Eligibility** itself is never stored as permission: it is decided again whenever it's read.
+
+### D-11B-04: Assignment, and its ownership checks
+
+- **What it does:** adds the person to a campaign's lead list (the campaign's leads, 10C). It
+  needs `campaigns.write`.
+- **Refused** (`409 assignment_not_possible`, one issue per reason):
+  - another workspace's campaign, or a missing one: "Not found in this workspace.";
+  - a campaign that has ended, or has no lead list;
+  - a person whose own eligibility has a block that applies before sending: archived, on the
+    do-not-contact list (address or domain), or excluded by the campaign (address, domain or lead
+    list). These reasons are the eligibility rules' own, decided from the facts now.
+- **Not refused at assignment:** other reasons (an unchecked address, a country or source the
+  policy doesn't name) are left to sending, where they block or need a person.
+- **Repeats:** assigning again changes nothing.
+
+### D-11B-05: Tests
+
+| File | What it shows |
+|---|---|
+| `packages/database/src/lead-profile.integration.test.ts` (7) | The profile shows sources, decisions, notes, tags and score history. A correction is version-checked, kept as a note and audited without values; another lead's address, a malformed one and an unidentifiable lead are refused. A material correction invalidates the approved draft, cancels its scheduled send and sends the decision back to Review, with eligibility decided again (a new, unchecked address: blocked); a LinkedIn change reopens nothing. Tags are version-checked and normalized; notes never change. Assignment refuses another workspace's campaign, an ended one, one without a list, a member without `campaigns.write`, a stale version and a suppressed lead, and is idempotent. A research correction makes its company's leads stale |
+| `apps/api/src/workspaces/leads.integration.test.ts` (+1) | Over HTTP: a correction (200), a stale edit (409), another lead's address (409), no reason (400), no CSRF token (403); tags; a note (201); another workspace's campaign (409, "Not found in this workspace."), a stale assignment (409) and a good one; another workspace's lead (404) |
+| `apps/web/e2e/lead-profile.spec.ts` (3) | The list finds the lead (and a filter that matches nothing); the profile shows its source, data, campaigns and research; an approval goes back to Review after a correction, with the reason and the note; a second, stale page's edit is refused without overwriting; tags, a note and an assignment are saved; axe on every screen |
+| `apps/web/lib/leads.test.ts` (2) | Only changed fields are sent; tags read from text |
+
 ## Open choices (need a decision from the user)
 
 | ID | Choice | Current state | Options |
@@ -4290,3 +4516,5 @@ review, manual changes are tracked, and tests show score changes never erase sup
 | O-40 | Send eligibility rules and the send policy (10B) | Chosen without the plan (D-10B-01 to D-10B-05): which reasons block and which need a person; an unchecked address is blocked; a stale check (over 30 days), a risky or unknown one needs a person; the recipient's own country decides and unnamed countries can never be allowed; unnamed sources need a person and the strictest source wins; "in another campaign" counts pending and active enrollments only. No region or source is allowed until a workspace sets a policy, and no screen sets it yet (the API does). `BUILT_SERVICES.eligibility` stays false until leads are checked when they join a campaign. | Confirm the block and review split and the 30-day window against the plan and legal advice; decide the default policy for new workspaces (none today), whether a company's country should ever count, and how enrollment calls the checks (10C or later). |
 | O-41 | Lead qualification (10C) | Chosen without the plan (D-10C-01 to D-10C-06): the agent rates only supported need and timing; the order of the state rules (a lead block rejects, a Low Priority score rejects unless the agent failed, High Priority with review reasons goes to Review); research.run to request a run, campaigns.write to decide and drafts.approve to accept review reasons; a person's note is never audited as text; a new run replaces a person's current decision (the history keeps it). The agent's prompt was tested with the fake model only; it has no evaluation set or live baseline. | Confirm the state rules and the permissions against the plan. Decide whether a run should keep a person's decision current, whether Low Priority should reject or go to Review, and when leads are re-qualified (on research refresh, in bulk). Build an evaluation set for the agent like 09C's and run a live baseline once a model is chosen and a run is authorized. |
 | O-42 | Contact enrichment (08C) | Chosen without the plan (D-08C-01 to D-08C-07): 25 companies a run, 5 people a company (3 by default), a 30-day reuse window, rechecks once a day per contact and 50 a day per workspace; location judged per company (a company whose country is unknown is looked up); people go to a lead list only through a campaign (no screen manages lead lists yet); `LEAD_ENRICHMENTS` counts the people looked up. No live Apollo run has been made: the adapters were tested with fixtures only (08B). | Confirm the limits and the location rule against the plan. Decide whether enrichment should also start from lead lists or single companies. Authorize a live Apollo run (it spends credits), then compare its credits with the counted usage. |
+| O-43 | Lead search (11A) | Chosen without the plan (D-11A-01 to D-11A-06): a lead is a person of the workspace; the filters, sorts and their meanings (location falls back to the company's country; eligibility is the status recorded with the newest qualification, not a live decision); 100 rows a page and a 5-second statement timeout; last activity counts data, checks, scores, qualifications and enrollments. Text search has no trigram index (`pg_trgm` can't be loaded by the local test database), so contains-matching scans the workspace's people. No screen uses the search yet, and there is no export. | Confirm the filters, sorts and limits against the plan. Decide whether to enable `pg_trgm` in staging and production (and its index) once the workspace sizes are known, and how an export should be bounded (rows, rate, audit) when one is needed. |
+| O-44 | Lead profile and corrections (11B) | Chosen without the plan (D-11B-01 to D-11B-04): which fields are material (name, title, address, country; not the LinkedIn profile); a material correction or a company research correction invalidates live drafts, cancels scheduled sends and sends every campaign's decision back to Review; assignment adds to a campaign's lead list and is refused only for blocks that apply before sending (archived, do-not-contact, campaign exclusions); tags are free labels (20 a lead). No screen manages lead lists or removes a lead from a campaign yet. | Confirm the material fields and the staleness rules against the plan, and whether a correction should also rescore the lead. Decide whether assignment should also enroll (when enrollment is built), how a lead leaves a campaign, and whether tags need a workspace vocabulary. |

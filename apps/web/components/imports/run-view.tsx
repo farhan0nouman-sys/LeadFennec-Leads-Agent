@@ -14,7 +14,7 @@ import {
 } from '@lead-fennec-ai/shared';
 import { Download } from 'lucide-react';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import { DataTable, type DataColumn } from '@/components/data/data-table';
 import { FilterSelect, ListFilters } from '@/components/data/list-filters';
@@ -184,6 +184,16 @@ export function RunView({ importId }: { readonly importId: string }) {
     },
     { enabled: companies, ...(pollWhile ? { poll: IMPORT_RUN_POLL } : {}) },
   );
+  // The results stop refreshing with the run: load them once more when it finishes, or the
+  // records saved after the last refresh would never show.
+  const wasRunning = useRef(running);
+  const refreshResults = results.retry;
+  useEffect(() => {
+    if (wasRunning.current && !running) {
+      refreshResults();
+    }
+    wasRunning.current = running;
+  }, [running, refreshResults]);
   const cancel = useApiMutation(API.imports.cancel);
   const [reportError, setReportError] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);

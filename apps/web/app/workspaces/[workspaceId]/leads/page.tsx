@@ -1,13 +1,14 @@
 import { findWorkspaceSection } from '@lead-fennec-ai/shared';
-import { UnavailableSection } from '@/components/section-states';
+import { Suspense } from 'react';
+import { LeadList } from '@/components/leads/lead-list';
+import { Skeleton } from '@/components/ui/skeleton';
 import { WorkspacePage } from '../workspace-page';
 
 const leads = findWorkspaceSection('leads');
 
 /**
- * The Leads list isn't built yet (packages/shared/src/navigation.ts): the same shell as every
- * unavailable section. This folder exists because a company's profile sits below it (task 09C),
- * and a static folder takes the path from the [section] route.
+ * The workspace's leads (tasks 11A and 11B): the Leads section's check first (contacts.read),
+ * then the search. A company's profile (task 09C) and a lead's profile sit below this folder.
  */
 export default async function LeadsPage({
   params,
@@ -23,11 +24,9 @@ export default async function LeadsPage({
       workspaceId={workspaceId}
       section={leads}
       render={() => (
-        <UnavailableSection
-          title={leads.label}
-          description={leads.description}
-          primaryAction={leads.primaryAction}
-        />
+        <Suspense fallback={<Skeleton className="h-64" />}>
+          <LeadList />
+        </Suspense>
       )}
     />
   );

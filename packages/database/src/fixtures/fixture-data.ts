@@ -194,6 +194,9 @@ export interface FixtureTenant extends FixtureOutreach, FixtureBilling {
   readonly scoreEvidence: Prisma.ScoreEvidenceCreateManyInput[];
   /** A person's qualification decision on that score (task 10C). */
   readonly leadQualifications: Prisma.LeadQualificationCreateManyInput[];
+  /** A member's note and a tag on the shared contact (task 11B). */
+  readonly contactNotes: Prisma.ContactNoteCreateManyInput[];
+  readonly contactTags: Prisma.ContactTagCreateManyInput[];
 }
 
 /** Ids of every fixture row, for tests that need to reference them. */
@@ -224,6 +227,8 @@ export function fixtureIds(key: FixtureKey) {
     scoreOrg: fixtureId(g, 111),
     leadScore: fixtureId(g, 112),
     leadQualification: fixtureId(g, 113),
+    contactNote: fixtureId(g, 114),
+    contactTag: fixtureId(g, 115),
     verification: fixtureId(g, 120),
     emailAccount: fixtureId(g, 130),
     templateIntro: fixtureId(g, 140),
@@ -1052,7 +1057,14 @@ function buildLeadScore(
   key: FixtureKey,
   ids: ReturnType<typeof fixtureIds>,
   criteria: IcpCriteria,
-): Pick<FixtureTenant, 'leadScores' | 'scoreEvidence' | 'leadQualifications'> {
+): Pick<
+  FixtureTenant,
+  | 'leadScores'
+  | 'scoreEvidence'
+  | 'leadQualifications'
+  | 'contactNotes'
+  | 'contactTags'
+> {
   const alpha = key === 'alpha';
   const tenantId = ids.tenant;
   const scoredAt = new Date('2026-10-10T09:00:00Z');
@@ -1154,6 +1166,25 @@ function buildLeadScore(
         note: 'Waiting for the research to be refreshed (fixture).',
         decidedByMembershipId: ids.membershipAdmin,
         decidedAt: new Date('2026-10-10T10:00:00Z'),
+      },
+    ],
+    contactNotes: [
+      {
+        tenantId,
+        id: ids.contactNote,
+        contactId: ids.contactShared,
+        body: 'Met at the fixture conference (fixture note).',
+        createdByMembershipId: ids.membershipAdmin,
+        createdAt: new Date('2026-10-10T11:00:00Z'),
+      },
+    ],
+    contactTags: [
+      {
+        tenantId,
+        id: ids.contactTag,
+        contactId: ids.contactShared,
+        tag: alpha ? 'decision maker' : 'clinic owner',
+        createdAt: new Date('2026-10-10T11:00:00Z'),
       },
     ],
   };

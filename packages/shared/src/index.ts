@@ -10,6 +10,8 @@ export * from './contracts/lead-discovery.js';
 export * from './contracts/lead-scoring.js';
 export * from './contracts/lead-scoring-rules.js';
 export * from './contracts/lead-qualification.js';
+export * from './contracts/leads.js';
+export * from './contracts/lead-profile.js';
 export * from './contracts/website-research.js';
 export * from './contracts/research.js';
 export * from './contracts/send-eligibility.js';

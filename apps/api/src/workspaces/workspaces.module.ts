@@ -5,6 +5,7 @@ import { CampaignsController } from './campaigns.controller.js';
 import { DashboardController } from './dashboard.controller.js';
 import { DiscoveryController } from './discovery.controller.js';
 import { EnrichmentController } from './enrichment.controller.js';
+import { LeadsController } from './leads.controller.js';
 import {
   contactProvider,
   emailVerificationProvider,
@@ -32,6 +33,8 @@ import { WorkspacesController } from './workspaces.controller.js';
     SendPolicyController,
     QualificationController,
     EnrichmentController,
+    // After DashboardController: GET …/leads/summary must match before …/leads/:contactId.
+    LeadsController,
   ],
   providers: [
     WorkspaceGuard,

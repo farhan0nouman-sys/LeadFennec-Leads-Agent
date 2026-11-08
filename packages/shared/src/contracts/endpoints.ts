@@ -59,6 +59,15 @@ import {
   leadSummarySchema,
 } from './dashboard.js';
 import {
+  ENRICHMENT_ROUTES,
+  enrichmentAcceptedSchema,
+  enrichmentRequestSchema,
+  enrichmentResultPageSchema,
+  enrichmentResultsQuerySchema,
+  recheckAcceptedSchema,
+  recheckRequestSchema,
+} from './enrichment-runs.js';
+import {
   DISCOVERY_ROUTES,
   discoveryAcceptedSchema,
   discoveryRequestSchema,
@@ -136,6 +145,11 @@ export const ENDPOINT_TAGS = [
       'Website research of a company: versions with dated evidence, refreshes and corrections.',
   },
   {
+    name: 'contacts',
+    description:
+      'People of the workspace: the quality of their data and the checks of their addresses.',
+  },
+  {
     name: 'settings',
     description:
       "Workspace settings: the send policy (which recipients' countries and which data sources may be emailed).",
@@ -177,6 +191,7 @@ export const CACHE_RESOURCES = {
   importRuns: 'workspace',
   importOptions: 'workspace',
   importResults: 'workspace',
+  enrichmentResults: 'workspace',
   organizationResearch: 'workspace',
   researchVersion: 'workspace',
   sendPolicy: 'workspace',
@@ -262,6 +277,9 @@ const leadParams = z
   .strict();
 const importParams = z
   .object({ workspaceId: z.uuid(), importId: z.uuid() })
+  .strict();
+const contactParams = z
+  .object({ workspaceId: z.uuid(), contactId: z.uuid() })
   .strict();
 const organizationParams = z
   .object({ workspaceId: z.uuid(), organizationId: z.uuid() })
@@ -814,6 +832,58 @@ export const API = {
       invalidates: ['importRun', 'importRuns', 'importResults', 'activity'],
     }),
   },
+  enrichment: {
+    request: endpoint({
+      id: 'enrichment.request',
+      method: 'POST',
+      path: ENRICHMENT_ROUTES.request(':workspaceId', ':importId'),
+      tag: 'imports',
+      summary:
+        "Queues a contact enrichment run for the companies a completed run saved (at most 25), with the ICP's titles, seniorities and countries and the campaign's exclusions; answers with the run id. Needs contacts.write too.",
+      access: 'workspace',
+      permission: 'imports.create',
+      params: importParams,
+      body: enrichmentRequestSchema,
+      status: 202,
+      response: enrichmentAcceptedSchema,
+      invalidates: ['importRun', 'importRuns', 'activity'],
+    }),
+    contacts: endpoint({
+      id: 'enrichment.contacts',
+      method: 'GET',
+      path: ENRICHMENT_ROUTES.contacts(':workspaceId', ':importId'),
+      tag: 'imports',
+      summary:
+        'What each person an enrichment run found became, in order (created, matched, excluded or failed, with the reasons, the role match and the check), and the companies it skipped.',
+      access: 'workspace',
+      permission: 'imports.create',
+      params: importParams,
+      query: enrichmentResultsQuerySchema,
+      status: 200,
+      response: enrichmentResultPageSchema,
+      cache: 'enrichmentResults',
+    }),
+    recheck: endpoint({
+      id: 'enrichment.recheck',
+      method: 'POST',
+      path: ENRICHMENT_ROUTES.recheck(':workspaceId', ':contactId'),
+      tag: 'contacts',
+      summary:
+        "Queues a new check of a contact's address: once a contact in 24 hours and 50 a workspace in 24 hours (429 with Retry-After otherwise). Repeating it while queued changes nothing. Audited.",
+      access: 'workspace',
+      permission: 'verifications.run',
+      params: contactParams,
+      body: recheckRequestSchema,
+      status: 202,
+      response: recheckAcceptedSchema,
+      errors: [
+        'verification_unavailable',
+        'no_email_address',
+        'too_many_requests',
+      ],
+      invalidates: ['campaignLead', 'campaignLeads', 'activity'],
+    }),
+  },
   research: {
     organization: endpoint({
       id: 'research.organization',
@@ -1117,6 +1187,8 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
   import_not_cancellable: 409,
   research_not_possible: 409,
   qualification_blocked: 409,
+  verification_unavailable: 409,
+  no_email_address: 409,
 };
 
 /** Mutations need the session's CSRF token (and every non-GET route checks the origin). */

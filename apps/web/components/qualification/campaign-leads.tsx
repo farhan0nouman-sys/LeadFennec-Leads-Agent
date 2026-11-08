@@ -52,6 +52,18 @@ export function CampaignLeads({ campaignId }: { readonly campaignId: string }) {
     { key: 'title', header: 'Title', cell: (item) => item.title ?? '—' },
     { key: 'company', header: 'Company', cell: (item) => item.company ?? '—' },
     {
+      key: 'quality',
+      header: 'Contact data',
+      cell: (item) => (
+        <span className="inline-flex flex-wrap items-center gap-2">
+          <Status kind="contactQuality" value={item.quality.level} />
+          {item.quality.emailState === null ? null : (
+            <Status kind="emailState" value={item.quality.emailState} />
+          )}
+        </span>
+      ),
+    },
+    {
       key: 'score',
       header: 'Score',
       cell: (item) =>

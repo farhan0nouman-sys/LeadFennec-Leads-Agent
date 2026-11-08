@@ -4,6 +4,262 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## GIT-17: Commit 08B and 08C (2026-11-08)
+
+**Status: Done (local commit only).** The request was `git commit`.
+
+| Step | Actual result |
+|---|---|
+| Branch and author | `feat/05a-app-shell` (on top of `d0cecc4`); author `LeadFennec-Leads-Agent` with the GitHub `noreply` address |
+| Content | 08B's finish (its decisions D-08B-01 to 06, O-35, the README and `CLAUDE.md` notes and its final entry; its code was already in `1fe897d` and `d0cecc4`), 08C (contact enrichment runs, deduplication, contact quality and rechecks: code, 2 migrations, tests, docs) and this log entry |
+| Checks before committing | 08C's cache-free regression on the whole tree (see its entry): format, typecheck, lint, all unit and PGlite suites, migrations and drift, build, OpenAPI, and the browser tests with and without a database, all passing. Then `pnpm format:check` and a scan of the staged changes (results below). |
+| Commit | The commit that contains this entry (`git log`) |
+
+- **Results:**
+  - `pnpm format:check` exit 0;
+  - 58 files staged (this entry is in `docs/build-progress.md`, one of them), none of them env
+    files, build output, generated code or reference repos;
+  - the scan of the staged diff found no credentials, no personal emails and no Apollo-style
+    24-hex ids.
+- **Not pushed.**
+- **Still open:** no live Apollo, model, verification service, Redis or CI run; the decisions
+  O-01 and O-19 to O-42.
+
+---
+
+## 08C: Contact enrichment jobs, deduplication, contact quality and rechecks (2026-11-08)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **No live provider:** people were found with the deterministic fakes only. A live Apollo run
+  spends credits and needs an authorized key and run (O-42).
+- **No verification service** (O-35): only the fake checks addresses. Outside development and
+  test, enrichment leaves addresses unverified, and a recheck is refused (409) or fails closed.
+- **No Redis:** the enrichment queue (BullMQ) and the worker process weren't started. The jobs
+  ran through `run-task` and the job tests (O-33).
+- **Nothing is sent:** no lead is enrolled or emailed; `BUILT_SERVICES` is unchanged.
+- **Plan:** the limits, the location rule and the destination were chosen without the missing
+  plan (O-01, O-42).
+- **Real PostgreSQL / CI:** PGlite only.
+- **Not committed:** on branch `feat/05a-app-shell`, on top of `d0cecc4`, with the uncommitted
+  08B documents.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | `contracts/enrichment-runs.ts` (new): routes, limits, the request, run info and targets, results, `contactQuality` and its schemas, recheck schemas, 2 error codes. Also changed: `lead-discovery.ts` (the run's `enrichment` and its source), `lead-qualification.ts` (`quality` in the lead view and list), `endpoints.ts` (3 endpoints, the `contacts` tag, 1 cache resource, 2 error statuses), `workspaces.ts`, `index.ts`. Tests: `enrichment-runs.test.ts` (new, 7); `endpoints.test.ts` (53 → 56). |
+| Integrations | `contact-enrichment.ts`: the agent's `known` callback (reused people are never looked up), `reused`, `records`, `usage.reused`. `registry.ts`: `contactDataDeclaration`, `emailVerificationAvailable`. The attributions are exported from `apollo-people.ts` and `fake-contacts.ts`. Tests: `contact-enrichment.test.ts` (+1, and one assertion widened), `apollo-people.test.ts` (the `reused` count), `registry.test.ts` (+1). |
+| Database | `schema.prisma`: `CONTACT_ENRICHMENT`, `contacts.name_key` and 2 indexes (one replaces the `(tenant, organization)` index it prefixes), `source_records.confidence`, `verifications.reason`. Migrations `20261108000000_contact_enrichment` (generated, plus the dropped index) and `…000100_contact_enrichment_checks` (the import and outcome checks rewritten, the destination trigger, new checks). New files: `tenancy/enrichment.ts` (`scope.enrichment`), `contact-store.ts` (`saveContacts`), `contact-quality.ts` (`contactQualities`, `RECHECK_TASK_TYPE`), `enrichment-metadata.ts`. Changed: `usage.ts` (`settleReservation`, run in the caller's transaction), `discovery.ts` (`runView`, `runViews`; the enrichment info and skipped companies; lenient issue fields), `qualification.ts` (quality in the view and list), `access.ts`, `index.ts`. Tests: `enrichment.integration.test.ts` (new, 8); `schema.integration.test.ts` (the index now used for "contacts of an organization"). No new table or relation, so the tenancy counts are unchanged. |
+| Worker | `jobs/contact-enrichment.ts` (new): the `contact_enrichment` worker, for `contact_enrichment.run` and `contact_verification.recheck`. Also changed: `main.ts` (its queue, providers and verifier, failing closed), `queue.ts` (`ENRICHMENT_QUEUE_NAME`), `run-task.ts` (a list of runners tried in turn). Test: `jobs/contact-enrichment.integration.test.ts` (new, 6). |
+| API | `workspaces/enrichment.controller.ts` (new, 3 routes), `enrichment-provider.ts` (new: the provider and verification declarations), `workspaces.module.ts`, `http/api-errors.ts` (4 errors, mapped and caught). Tests: `enrichment.integration.test.ts` (new, 4), `route-guards.test.ts` (3 routes), `qualification.integration.test.ts` (quality in the list). |
+| Web | `components/imports/enrichment-view.tsx` (new): the "Find people" form, the progress and the people table. `components/qualification/contact-quality.tsx` (new): contact data and the recheck. Also changed: `components/imports/run-view.tsx`, `components/qualification/lead-qualification.tsx` and `campaign-leads.tsx` (the Contact data column), `components/data/status-label.tsx` (3 kinds), `lib/imports.ts` (`canFindPeople`, titles, an error text) and its test (+1). Browser tests: `e2e/contact-enrichment.spec.ts` (new, 3); `e2e/support/db.ts` (4 helpers). |
+| Docs | `docs/decisions.md` D-08C-01 to 08 and O-42; `docs/api/enrichment.md` (new); `docs/api/openapi.json` (regenerated); `docs/security/authorization-review.md` (3 route rows, 3 service rows); README (Contact enrichment); `CLAUDE.md` (the contact enrichment rule). This entry. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 15/15 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 15/15 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 12/12 tasks, 0 cached: shared **274**, integrations **381**, ai-agents **63**, web **43**, database **46 passed, 380 skipped**, worker **9 passed, 22 skipped**, api **31 passed, 76 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 12/12 tasks, 0 cached: shared **274**, integrations **381**, ai-agents **63**, database **424 passed, 2 skipped** (the PGlite concurrency skips), api **107**, web **43**, worker **31** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 29 migrations (2 new); up to date; no difference, exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm openapi --check` | Up to date (regenerated for the 3 routes) |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **57 passed** (3 new: find people from a finished search with progress and outcomes; asking again matches people; contact data on the lead page and in the leads list, a recheck, then the daily limit). The e2e task ran; its 11 build dependencies came from the cache-free build just before |
+| `pnpm test:e2e` without it | **9 passed, 48 skipped** |
+| Reference repos / credential and personal-data scan of the 58 changed files | 0 changes in each of the 9 / no new matches (only the public repository name and synthetic ids, already committed) |
+
+**Earlier failures in this task (logged honestly):**
+1. **A planner change caught by the schema test:** the new `(tenant, organization, name key)`
+   index made the `(tenant, organization)` index redundant: the planner chose the new one. The
+   old index was dropped in the new migration, and the test expects the new name.
+2. **Tests built on the old shapes:** three tests compared whole objects that now carry more,
+   and were updated:
+   - the 08B agent run (`reused`, `records`) and its usage (`reused: 0`);
+   - the 10C leads list (`quality`).
+3. **Test setup:** a finished job task needs its start and finish times (the database's check);
+   the test data was fixed.
+4. **Lint and types:**
+   - non-null assertions in a test;
+   - two optional chains, and an always-true branch;
+   - `expect.any` / `expect.arrayContaining` inside matchers (unsafe `any`);
+   - a discriminated union TypeScript didn't narrow (a type guard now);
+   - **dead code:** the paid-verifier reservations could never run, since only the free fake
+     verifier exists. They were removed; the worker and D-08C-04 say a live verifier must
+     reserve first.
+5. **Tooling:** a long shell heredoc failed before writing anything (the files were written with
+   the Write tool), and a stray `cat` waited on input until it was stopped. Neither wrote
+   anything.
+
+### What 08C proves (local)
+
+- **Repeated enrichment doesn't duplicate contacts:**
+  - a second run over the same companies leaves the number of contacts unchanged, and every
+    person comes back MATCHED (the database, job and browser tests);
+  - a person found with another provider id but the same address is matched to them;
+  - a repeated save of a company (a retry) saves nothing.
+- **Repeated enrichment doesn't charge twice:**
+  - on a paid provider, the second run sent nobody to enrichment and checked no address again;
+    the `LEAD_ENRICHMENTS` ledger didn't move, and its three holds were released;
+  - a company's usage is committed in the transaction that saves it. A repeated save releases
+    its hold. A rate-limited company's hold is released, and on the retry the ledger equals the
+    sum of the committed holds.
+- **Ineligible results are kept with reasons but can't enter sending:**
+  - people on the do-not-contact list are recorded as EXCLUDED with the reason and not saved;
+  - people whose address doesn't accept email are saved with the reason, never added to the
+    campaign's lead list, and blocked by send eligibility (`email_invalid`, not overridable);
+  - companies outside the targeted countries, or on the do-not-contact list, are skipped with the
+    reason before anything is paid.
+- **Bounded and isolated:**
+  - 25 companies and 5 people a company at most, inputs immutable (triggers);
+  - only the worker saves;
+  - another workspace's run, campaign or contact is not found;
+  - rechecks: once a contact a day, 50 a workspace a day, 429 with Retry-After, 409 without an
+    address or a verifier.
+- **Quality:** decided from stored facts (source, role match, newest check); a provider's claim is
+  never a check. Shown on the lead page and in the leads list; the lead page passes axe.
+
+### Incomplete live checks (not passed)
+
+- A live Apollo people search and enrichment with an authorized key (it spends credits).
+- A live email verification service (none chosen, O-35).
+- The BullMQ enrichment queue with Redis.
+- Real PostgreSQL and CI; a screen-reader check of the new screens (axe only).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No email verification service is selected (O-35).
+3. No Docker or Redis (O-06).
+4. Open: O-19 to O-34, O-36 to O-42.
+
+### Manual check
+
+1. In development, open a finished company search (Imports).
+2. In "Find people at these companies", choose a campaign and press "Find people".
+3. Run the queued task: `node apps/worker/dist/run-task.js <task id>`, using the newest
+   `contact_enrichment.run` in `job_tasks`.
+4. The run page then shows:
+   - the companies done and skipped, and the targets;
+   - each person's outcome, role match, check and reasons.
+5. Press "Find people" again and run its task: everyone is "Already saved", and the contact
+   count doesn't change.
+6. Open a person: "Contact data" shows the source, the role match and the address's check.
+   "Check the address again" works once a day.
+
+### Next prompt
+
+08C is the last prompt received. The plan is missing (O-01), so the user sends the next prompt.
+
+---
+
+## 08B: Apollo people lookup and contact enrichment (2026-11-06, finished 2026-11-08)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **No live Apollo call:** the adapters were tested against recorded-shape fixtures only. A live
+  run spends enrichment credits and needs an authorized key and run. Apollo's documentation was
+  checked on 2026-11-06 (D-08B-01).
+- **No verification service** (the user's answer): the fake stays, and live verification fails
+  closed (O-35).
+- **Not wired into the app:** nothing stores contacts, queues enrichment or shows them yet (08C).
+- **Plan:** chosen without the missing plan (O-01).
+- **Commits:** the code is in `1fe897d`, which was pushed as "08B in progress". This finish adds
+  the decisions, the README and `CLAUDE.md` notes and this entry; they aren't committed yet.
+- This entry replaces the "in progress" entry of 2026-11-06, which is kept in git history.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Integrations | `apollo-client.ts` (new: the Apollo HTTP client, moved out of 07B's adapter and shared), `apollo-people.ts` (new: `ApolloPeopleSearchProvider`, `ApolloContactEnrichmentProvider`), `providers.ts` (a batched `ContactEnrichmentProvider`, partial `ProviderPerson` records), `fake-contacts.ts` (partial records, repeated ids, guessed addresses, enrichment and verification failures), `contact-enrichment.ts` (the agent's usage report, failed checks as retryable or permanent), `registry.ts` (`createContactDataProviders`, `createEmailVerificationProvider`), `fixtures/apollo/` (people search pages, a bulk match, 401, 403 and three kinds of 429). Tests: `apollo-people.test.ts` (new, 7), `contact-enrichment.test.ts` (8), `fakes.test.ts`, `registry.test.ts`. |
+| Docs | `docs/decisions.md` D-08B-01 to 06 and O-35; README (Contact enrichment: Apollo, failing closed); `CLAUDE.md` (the Contacts rule). This entry. |
+
+### Passed local checks
+
+Only documentation changed since `d0cecc4`, and the 08B code is used by the integrations package
+alone (checked by search). So the checks below were run now, and the database, API, worker and
+browser suites were not run again.
+
+| Command | Actual result |
+|---|---|
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 15/15 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 15/15 tasks, 0 cached; root ESLint OK |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 12/12 tasks, 0 cached: shared **267**, integrations **379**, ai-agents **63**, web **42**, database **46 passed, 372 skipped**, worker **9 passed, 16 skipped**, api **31 passed, 72 skipped** |
+| The 08B test files (`apollo-people`, `contact-enrichment`, `registry`, `fakes`) | 4 files, **25 passed** |
+| Not run again for 08B: the PGlite suites, migrations, build and browser tests | The same code (`d0cecc4`, plus docs) passed them cache-free at the end of 10C (see the 10C entry): database 416 passed and 2 skipped, api 103, worker 25; 27 migrations with no drift; build 11/11; browser tests 54 passed with a database, and 9 passed with 45 skipped without one |
+| Scan of the 08B files and fixtures | No credentials and no personal data. The 24-hex ids are synthetic (`6a1f…b001`), and the addresses are `.example`. Reference repos: 0 changes in each of the 9 |
+
+**The completion check, test by test:**
+
+| Required | Where it is shown |
+|---|---|
+| Missing emails | Enrichment keeps missing addresses apart from claims; the agent skips (and doesn't pay for) people the search says have no address; missing addresses are reported |
+| Partial records | Search returns partial records (no address, shortened last name); enrichment completes them; a record left partial is refused |
+| Quota exhaustion | A 429 for the day's allowance is `quota_exceeded` (permanent); platform load is `rate_limited` with the suggested 60 s; another 429 follows Retry-After |
+| Repeated provider IDs | Kept once, sent to enrichment once, counted in the usage |
+| Verification failures | Each failed check is recorded with its code and as retryable or permanent; the address stays unverified |
+| Unconfigured live adapters fail closed | Without `APOLLO_API_KEY`, `LiveProvidersUnavailableError`; live verification always fails closed |
+| Never guess and label verified | Extrapolated (guessed) and malformed addresses are dropped; Apollo's email status is only a claim |
+
+**Earlier failures in this task (logged honestly):**
+1. **The first session stopped at the usage limit** after the integrations package passed (48
+   tests then). Its regression and records were missing; this finish ran the checks and wrote
+   them.
+2. **A test count:** the decisions first said `apollo-people.test.ts` has 6 tests; it has 7
+   (corrected).
+3. **The first scan's file list** missed the fixtures subfolder (a shell glob); the fixtures
+   were then scanned recursively.
+
+### Incomplete live checks (not passed)
+
+- A live Apollo run with an authorized key (people search and paid enrichment).
+- A live email verification service (none chosen, O-35).
+- CI.
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No email verification service is selected (O-35): no address can be verified live.
+3. No Docker or Redis (O-06).
+4. Open: O-19 to O-34, O-36 to O-41.
+
+### Manual check
+
+None in the app: 08B adds no screen or job. The adapters' behavior is shown by the fixture tests
+above.
+
+### Next prompt
+
+08C (queue bounded enrichment for discovered organizations), as sent earlier.
+
+---
+
+## GIT-16: Push `feat/05a-app-shell` (2026-11-08)
+
+**Status: Done.** The request was `git push`.
+
+| Step | Actual result |
+|---|---|
+| Pushed | `feat/05a-app-shell` → `origin/feat/05a-app-shell`, `1fe897d..d0cecc4` (09A to 10C); the remote head is `d0cecc4` (checked with `git ls-remote`) |
+| Remote | `github.com/farhan0nouman-sys/LeadFennec-Leads-Agent` (**public**); `main` unchanged at `7fc44f2`; `feat/04a-auth` unchanged at `3e0b418` |
+
+- **08B is still in progress** in the pushed branch; 08C waits.
+- **CI has not run:** the workflow runs on pushes to `main`, on pull requests and on manual
+  dispatch, not on pushes to other branches.
+- This entry is not in the pushed commit; it is a local change to the log.
+
+---
+
 ## GIT-15: Commit 09A to 10C (2026-11-08)
 
 **Status: Done (local commit only).** The request was `git commit`.
@@ -851,42 +1107,6 @@ Finish 08B (its decisions and final entry), then 08C (sent and waiting). The pla
 | Commit | The commit that contains this entry (`git log`) |
 
 - **Not pushed.** 08B stays "in progress" until its regression passes.
-
----
-
-## 08B: Apollo people lookup and contact enrichment (2026-11-06)
-
-**Status: In progress (stopped at the usage limit). Not passed.**
-
-### Done so far
-
-- **Docs checked 2026-11-06:** Apollo People API Search (`POST /api/v1/mixed_people/api_search`,
-  0 credits, partial records, no addresses), People Enrichment and Bulk People Enrichment
-  (`POST /api/v1/people/bulk_match`, up to 10 people, `credits_consumed`, `null` for no match).
-- **Integrations:** `apollo-client.ts` (the shared Apollo HTTP client, moved out of 07B's
-  adapter); `apollo-people.ts` (`ApolloPeopleSearchProvider`, `ApolloContactEnrichmentProvider`:
-  documented fields only, guessed and malformed addresses dropped, Apollo's email status kept as
-  an untrusted claim, repeated provider ids sent once, credits as reported); batched
-  `ContactEnrichmentProvider` and partial `ProviderPerson` records in `providers.ts`; fakes
-  (partial records, repeated ids, guessed addresses, enrichment and verification failures);
-  `ContactEnrichmentAgent` reports usage (requests, credits, repeated ids, skipped, unmatched,
-  dropped); `checkContactEmails` records failed checks as retryable or permanent;
-  `createContactDataProviders` / `createEmailVerificationProvider` (fakes locally; Apollo with a
-  key elsewhere; fail closed without a key, and always for verification).
-- **Verification service:** none chosen (the user's answer): the fake stays, live use fails
-  closed. Live integration blocker (to record as O-35).
-- **Checks run:** `packages/integrations` typecheck and lint clean; its tests **48 passed**
-  (07B's 14 Apollo organization search tests unchanged after the refactor).
-
-### Not done yet
-
-- The full cache-free regression (other packages' typecheck, lint and tests; database, API,
-  worker; build; browser tests), the credential scan, and the decisions (D-08B-*, O-35), README
-  and CLAUDE.md updates.
-
-### Next prompt
-
-Finish 08B (above), then 08C (sent and waiting).
 
 ---
 

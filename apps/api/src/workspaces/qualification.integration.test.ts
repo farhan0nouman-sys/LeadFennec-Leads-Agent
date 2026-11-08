@@ -181,6 +181,8 @@ describe.runIf(testDatabaseUrl !== undefined)(
           company: 'Widgets (synthetic)',
           score: expect.objectContaining({ band: 'LOW_PRIORITY' }) as unknown,
           state: 'REVIEW',
+          // A fresh verified check of the address (task 08C).
+          quality: { level: 'good', emailState: 'eligible' },
         },
       ]);
       const view = leadQualificationViewSchema.parse((await lead(member)).json);

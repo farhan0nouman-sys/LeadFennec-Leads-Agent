@@ -96,8 +96,9 @@ const ROLES: readonly (readonly [string, SeniorityLevel])[] = [
 
 export const FAKE_PEOPLE_PER_COMPANY = 8;
 
-const ATTRIBUTION =
+export const FAKE_PEOPLE_ATTRIBUTION =
   'Synthetic people from the Lead Fennec test directory, not real people.';
+const ATTRIBUTION = FAKE_PEOPLE_ATTRIBUTION;
 
 const pick = <T>(list: readonly T[], index: number): T => {
   // Hash arithmetic can go negative: wrap into the list.

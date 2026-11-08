@@ -208,7 +208,8 @@ describe.runIf(testDatabaseUrl !== undefined)(
         [
           'contacts of an organization',
           `SELECT id FROM contacts WHERE tenant_id = ${t} AND organization_id = '${alpha.orgShared}'`,
-          'contacts_tenant_id_organization_id_idx',
+          // Since 08C, the name-identity index serves it (its first two columns).
+          'contacts_tenant_id_organization_id_name_key_idx',
         ],
         [
           'contacts by email domain',

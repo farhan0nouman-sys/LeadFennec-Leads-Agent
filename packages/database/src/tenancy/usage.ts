@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import {
   UsageMetric,
+  type Prisma,
   type PrismaClient,
   type UsageReservation,
 } from '../generated/prisma/client.js';
@@ -137,6 +138,68 @@ async function entitledSubscription(db: DbClient, tenantId: string) {
   return subscription;
 }
 
+/**
+ * Settles a HELD reservation inside the caller's transaction (task 08C, D-08C-04): paid work
+ * whose result is saved in the same transaction commits its usage there, so the work is counted
+ * exactly when it is saved, and a retry that saves nothing never counts. Repeating an identical
+ * settlement returns the settled row.
+ */
+export async function settleReservation(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  reservationId: string,
+  status: 'COMMITTED' | 'RELEASED',
+  used: bigint | null,
+  settledAt: Date,
+): Promise<UsageReservation> {
+  const id = uuidSchema.parse(reservationId);
+  const reservation = await tx.usageReservation.findUnique({
+    where: { tenantId_id: { tenantId, id } },
+  });
+  if (reservation === null) {
+    throw new ReservationStateError('Reservation not found');
+  }
+  if (reservation.status !== 'HELD') {
+    if (
+      reservation.status === status &&
+      reservation.committedQuantity === used
+    ) {
+      return reservation;
+    }
+    throw new ReservationStateError(
+      `Reservation is ${reservation.status.toLowerCase()}`,
+    );
+  }
+  if (used !== null && used > reservation.quantity) {
+    throw new ReservationStateError('Used quantity exceeds the reservation');
+  }
+  // The status condition makes a concurrent settlement update nothing.
+  const { count } = await tx.usageReservation.updateMany({
+    where: { tenantId, id, status: 'HELD' },
+    data: { status, committedQuantity: used, settledAt },
+  });
+  if (count !== 1) {
+    throw new ReservationStateError('Reservation was settled concurrently');
+  }
+  if (used !== null && used > 0n) {
+    await tx.usageLedgerEntry.create({
+      data: {
+        tenantId,
+        metric: reservation.metric,
+        periodStart: reservation.periodStart,
+        kind: 'USAGE',
+        quantity: used,
+        reservationId: id,
+        idempotencyKey: `reservation:${id}`,
+        occurredAt: settledAt,
+      },
+    });
+  }
+  return tx.usageReservation.findUniqueOrThrow({
+    where: { tenantId_id: { tenantId, id } },
+  });
+}
+
 export function createUsageRepository(
   prisma: PrismaClient,
   tenantId: string,
@@ -155,57 +218,9 @@ export function createUsageRepository(
     status: 'COMMITTED' | 'RELEASED',
     used: bigint | null,
   ): Promise<UsageReservation> {
-    const id = uuidSchema.parse(reservationId);
-    return prisma.$transaction(async (tx) => {
-      const reservation = await tx.usageReservation.findUnique({
-        where: { tenantId_id: { tenantId, id } },
-      });
-      if (reservation === null) {
-        throw new ReservationStateError('Reservation not found');
-      }
-      if (reservation.status !== 'HELD') {
-        if (
-          reservation.status === status &&
-          reservation.committedQuantity === used
-        ) {
-          return reservation;
-        }
-        throw new ReservationStateError(
-          `Reservation is ${reservation.status.toLowerCase()}`,
-        );
-      }
-      if (used !== null && used > reservation.quantity) {
-        throw new ReservationStateError(
-          'Used quantity exceeds the reservation',
-        );
-      }
-      const settledAt = now();
-      // The status condition makes a concurrent settlement update nothing.
-      const { count } = await tx.usageReservation.updateMany({
-        where: { tenantId, id, status: 'HELD' },
-        data: { status, committedQuantity: used, settledAt },
-      });
-      if (count !== 1) {
-        throw new ReservationStateError('Reservation was settled concurrently');
-      }
-      if (used !== null && used > 0n) {
-        await tx.usageLedgerEntry.create({
-          data: {
-            tenantId,
-            metric: reservation.metric,
-            periodStart: reservation.periodStart,
-            kind: 'USAGE',
-            quantity: used,
-            reservationId: id,
-            idempotencyKey: `reservation:${id}`,
-            occurredAt: settledAt,
-          },
-        });
-      }
-      return tx.usageReservation.findUniqueOrThrow({
-        where: { tenantId_id: { tenantId, id } },
-      });
-    });
+    return prisma.$transaction((tx) =>
+      settleReservation(tx, tenantId, reservationId, status, used, now()),
+    );
   }
 
   return {

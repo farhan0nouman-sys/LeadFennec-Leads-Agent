@@ -3,6 +3,7 @@
 // creates. Searching finds companies only; finding people and enriching contacts are later
 // steps. Provider-neutral: no field or limit here comes from a provider's API. Pure zod.
 import { z } from 'zod';
+import { enrichmentRunInfoSchema } from './enrichment-runs.js';
 
 export const DISCOVERY_ROUTES = {
   request: (workspaceId: string) =>
@@ -260,8 +261,18 @@ const count = z.number().int().min(0);
 export const importRunSchema = z
   .object({
     id: z.uuid(),
-    source: z.enum(['CSV', 'APOLLO', 'ORGANIZATION_SEARCH']),
+    source: z.enum([
+      'CSV',
+      'APOLLO',
+      'ORGANIZATION_SEARCH',
+      'CONTACT_ENRICHMENT',
+    ]),
     status: z.enum(IMPORT_STATUSES),
+    /**
+     * Contact enrichment runs only (task 08C): the source run, targets, destination and the
+     * companies done. Their counts are people: found, saved, excluded, failed.
+     */
+    enrichment: enrichmentRunInfoSchema.nullable(),
     /** Organization searches only. */
     search: z
       .object({

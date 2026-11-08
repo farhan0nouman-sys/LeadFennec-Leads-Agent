@@ -226,7 +226,7 @@ describe('ContactEnrichmentAgent (tasks 08A, 08B)', () => {
         targeting: TARGETING,
         maxContacts: 3,
       }),
-    ).toEqual({ result, usage });
+    ).toMatchObject({ result, usage, reused: [] });
   });
 
   it('completes partial search records through enrichment, and keeps a repeated provider id once', async () => {
@@ -444,5 +444,59 @@ describe('ContactEnrichmentAgent (tasks 08A, 08B)', () => {
       failure: { code: 'unauthorized', retryable: false },
       eligibility: { automatic: false, state: 'unverified' },
     });
+  });
+});
+
+describe('ContactEnrichmentAgent reuse (task 08C)', () => {
+  it('never looks up (or pays for) people the workspace looked up recently', async () => {
+    const { agent, enrichment } = agentWith();
+    const input = { organization: ORG, targeting: TARGETING, maxContacts: 3 };
+    const first = await agent.run(input);
+    if (!first.result.ok) {
+      throw new Error('refused');
+    }
+    const chosen = first.result.contacts.map(
+      (contact) => contact.provenance.externalId ?? '',
+    );
+    expect(chosen.length).toBeGreaterThan(1);
+    expect(first.reused).toEqual([]);
+    expect([...first.records.keys()].sort()).toEqual([...chosen].sort());
+    const lookups = enrichment.requests.length;
+
+    // The workspace knows the first chosen person: only the others are looked up.
+    const [known, ...others] = chosen;
+    const asked: string[][] = [];
+    const second = await agent.run(input, {
+      known: (ids) => {
+        asked.push([...ids]);
+        return Promise.resolve(new Set([known ?? '']));
+      },
+    });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.sort()).toEqual([...chosen].sort());
+    expect(second.reused.map((r) => r.person.externalId)).toEqual([known]);
+    expect(second.reused[0]?.relevance.score).toBeGreaterThan(0);
+    expect(second.usage.reused).toBe(1);
+    expect(enrichment.requests).toHaveLength(lookups + 1);
+    expect(
+      enrichment.requests
+        .at(-1)
+        ?.map((request) => request.externalId)
+        .sort(),
+    ).toEqual([...others].sort());
+    expect([...second.records.keys()].sort()).toEqual([...others].sort());
+    expect(second.usage.enrichmentCredits).toBe(others.length);
+
+    // Everyone known: the enrichment provider isn't asked at all.
+    const third = await agent.run(input, {
+      known: (ids) => Promise.resolve(new Set(ids)),
+    });
+    expect(enrichment.requests).toHaveLength(lookups + 1);
+    expect(third.usage).toMatchObject({
+      enrichmentRequests: 0,
+      enrichmentCredits: null,
+      reused: chosen.length,
+    });
+    expect(third.result).toMatchObject({ ok: true, contacts: [] });
   });
 });

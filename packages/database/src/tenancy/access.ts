@@ -36,6 +36,10 @@ import {
   type DiscoveryRepository,
 } from './discovery.js';
 import {
+  createEnrichmentRepository,
+  type EnrichmentRepository,
+} from './enrichment.js';
+import {
   createLeadScoringRepository,
   type LeadScoringRepository,
 } from './lead-scoring.js';
@@ -85,6 +89,8 @@ export interface TenantScope {
   readonly eligibility: SendEligibilityService;
   /** Qualification decisions for campaign leads (task 10C). */
   readonly qualification: QualificationRepository;
+  /** People found for discovered companies, their data quality and rechecks (task 08C). */
+  readonly enrichment: EnrichmentRepository;
   readonly invitations: InvitationRepository;
   readonly members: MemberRepository;
   readonly notifications: NotificationRepository;
@@ -118,6 +124,7 @@ function buildScope(
     scoring: createLeadScoringRepository(prisma, tenantId, actor, now),
     eligibility: createSendEligibilityService(prisma, tenantId, actor, now),
     qualification: createQualificationRepository(prisma, tenantId, actor, now),
+    enrichment: createEnrichmentRepository(prisma, tenantId, actor, now),
     invitations: createInvitationRepository(prisma, tenantId, actor, now),
     members: createMemberRepository(prisma, tenantId, actor),
     notifications: createNotificationRepository(prisma, tenantId, actor, now),

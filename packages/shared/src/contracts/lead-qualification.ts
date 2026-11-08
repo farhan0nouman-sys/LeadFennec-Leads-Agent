@@ -16,6 +16,10 @@ import { z } from 'zod';
 import { businessProfileSchema, offerSchema } from './campaigns.js';
 import { CAMPAIGN_STATUSES } from './dashboard.js';
 import {
+  contactQualitySchema,
+  contactQualitySummarySchema,
+} from './enrichment-runs.js';
+import {
   LEAD_SCORE_AGENT_STATUSES,
   type LeadScoreAgentStatus,
 } from './lead-scoring-rules.js';
@@ -549,6 +553,8 @@ export const leadQualificationViewSchema = z.strictObject({
     email: z.string().nullable(),
     company: z.strictObject({ id: z.uuid(), name: z.string() }).nullable(),
   }),
+  /** How good the contact's data is: source, role match, the address's newest check (08C). */
+  quality: contactQualitySchema,
   /** The current score with its explanations and evidence; null before the first. */
   fit: leadFitViewSchema.nullable(),
   /** Decided now, without the score. */
@@ -578,6 +584,8 @@ export const leadListItemSchema = z.strictObject({
     })
     .nullable(),
   state: z.enum(QUALIFICATION_STATES).nullable(),
+  /** The contact's data quality, short form (08C). */
+  quality: contactQualitySummarySchema,
 });
 
 export const leadPageSchema = z.strictObject({

@@ -4,9 +4,11 @@ import {
   ApolloOrganizationSearchProvider,
 } from './apollo-organization-search.js';
 import {
+  APOLLO_PEOPLE_ATTRIBUTION,
   ApolloContactEnrichmentProvider,
   ApolloPeopleSearchProvider,
 } from './apollo-people.js';
+import { FAKE_PEOPLE_ATTRIBUTION } from './fake-contacts.js';
 import { FAKE_ORGANIZATION_SEARCH_CAPABILITIES } from './fake-organization-search.js';
 import { createFakeProviders } from './fakes.js';
 import type {
@@ -134,6 +136,24 @@ export function createContactDataProviders(
     peopleSearch: new ApolloPeopleSearchProvider(options),
     contactEnrichment: new ApolloContactEnrichmentProvider(options),
   };
+}
+
+/**
+ * Which people provider this environment's worker uses, without credentials (task 08C, D-08C-01):
+ * the API records it on an enrichment run, and the worker refuses a run made for another one.
+ */
+export function contactDataDeclaration(appEnv: AppEnv) {
+  return isLocal(appEnv)
+    ? ({ source: 'FAKE', attribution: FAKE_PEOPLE_ATTRIBUTION } as const)
+    : ({ source: 'APOLLO', attribution: APOLLO_PEOPLE_ATTRIBUTION } as const);
+}
+
+/**
+ * Whether this environment can check addresses (task 08C): only the fake in development and
+ * test, as createEmailVerificationProvider; staging and production fail closed (O-35).
+ */
+export function emailVerificationAvailable(appEnv: AppEnv): boolean {
+  return isLocal(appEnv);
 }
 
 /**

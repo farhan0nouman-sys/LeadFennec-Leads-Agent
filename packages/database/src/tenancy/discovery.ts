@@ -50,6 +50,7 @@ import {
   requirePermission,
   requireReadPermission,
 } from './authorization.js';
+import { enrichmentInfo } from './enrichment-metadata.js';
 import {
   saveOrganizations,
   type IncomingOrganization,
@@ -197,10 +198,18 @@ const displaySchema = z.looseObject({
   domain: z.string().nullish(),
 });
 
+const ISSUE_FIELDS = [...ORGANIZATION_IMPORT_FIELDS, 'row'] as const;
+/** Issues as stored; a field this contract doesn't name (an enrichment run's) reads as "row". */
 const issuesSchema = z.array(
   z
     .object({
-      field: z.enum([...ORGANIZATION_IMPORT_FIELDS, 'row']),
+      field: z
+        .string()
+        .transform((field) =>
+          (ISSUE_FIELDS as readonly string[]).includes(field)
+            ? (field as (typeof ISSUE_FIELDS)[number])
+            : 'row',
+        ),
       message: z.string(),
     })
     .strict(),
@@ -220,7 +229,11 @@ const REJECTED_RECORD = {
   message: 'The provider sent a record without a usable name or id.',
 } as const;
 
-function toRun(row: Import, created: number): DiscoveryRun {
+function toRun(
+  row: Import,
+  created: number,
+  skippedCompanies: number,
+): DiscoveryRun {
   let search: DiscoveryRun['search'] = null;
   if (row.source === 'ORGANIZATION_SEARCH') {
     const metadata = sourceMetadataSchema.parse(row.sourceMetadata);
@@ -238,6 +251,10 @@ function toRun(row: Import, created: number): DiscoveryRun {
     id: row.id,
     source: row.source,
     status: row.status,
+    enrichment:
+      row.source === 'CONTACT_ENRICHMENT'
+        ? enrichmentInfo(row, skippedCompanies)
+        : null,
     search,
     fileName: row.fileName,
     counts: {
@@ -271,6 +288,58 @@ function recordOf(outcome: SaveOutcome) {
       };
 }
 
+/** Runs as the contract describes them, with their created and skipped counts. */
+export async function runViews(
+  db: Prisma.TransactionClient | PrismaClient,
+  tenantId: string,
+  rows: readonly Import[],
+): Promise<DiscoveryRun[]> {
+  if (rows.length === 0) {
+    return [];
+  }
+  const ids = rows.map((row) => row.id);
+  const created = await db.sourceRecord.groupBy({
+    by: ['importId'],
+    where: { tenantId, importId: { in: ids }, outcome: 'CREATED' },
+    _count: { _all: true },
+  });
+  // Companies an enrichment run skipped before asking the provider (task 08C).
+  const enrichmentIds = rows
+    .filter((row) => row.source === 'CONTACT_ENRICHMENT')
+    .map((row) => row.id);
+  const skipped =
+    enrichmentIds.length === 0
+      ? []
+      : await db.sourceRecord.groupBy({
+          by: ['importId'],
+          where: {
+            tenantId,
+            importId: { in: enrichmentIds },
+            payload: { path: ['kind'], equals: 'company' },
+          },
+          _count: { _all: true },
+        });
+  const countOf = (
+    groups: readonly { importId: string | null; _count: { _all: number } }[],
+    id: string,
+  ) => groups.find((group) => group.importId === id)?._count._all ?? 0;
+  return rows.map((row) =>
+    toRun(row, countOf(created, row.id), countOf(skipped, row.id)),
+  );
+}
+
+export async function runView(
+  db: Prisma.TransactionClient | PrismaClient,
+  tenantId: string,
+  row: Import,
+): Promise<DiscoveryRun> {
+  const [run] = await runViews(db, tenantId, [row]);
+  if (run === undefined) {
+    throw new Error('runViews returned no run');
+  }
+  return run;
+}
+
 export function createDiscoveryRepository(
   prisma: PrismaClient,
   tenantId: string,
@@ -291,28 +360,8 @@ export function createDiscoveryRepository(
     return parsed.data;
   };
 
-  async function createdCounts(
-    db: Prisma.TransactionClient | PrismaClient,
-    ids: readonly string[],
-  ): Promise<Map<string, number>> {
-    if (ids.length === 0) {
-      return new Map();
-    }
-    const rows = await db.sourceRecord.groupBy({
-      by: ['importId'],
-      where: { tenantId, importId: { in: [...ids] }, outcome: 'CREATED' },
-      _count: { _all: true },
-    });
-    return new Map(rows.map((r) => [r.importId ?? '', r._count._all]));
-  }
-
-  async function runOf(
-    db: Prisma.TransactionClient | PrismaClient,
-    row: Import,
-  ): Promise<DiscoveryRun> {
-    const created = await createdCounts(db, [row.id]);
-    return toRun(row, created.get(row.id) ?? 0);
-  }
+  const runOf = (db: Prisma.TransactionClient | PrismaClient, row: Import) =>
+    runView(db, tenantId, row);
 
   /** The import row, locked for this transaction; not found otherwise. */
   async function locked(
@@ -406,7 +455,7 @@ export function createDiscoveryRepository(
             maxResults: plan.maxResults,
           },
         });
-        return toRun(row, 0);
+        return toRun(row, 0, 0);
       });
     },
 
@@ -431,13 +480,9 @@ export function createDiscoveryRepository(
           take: keyset.take,
         }),
       );
-      const created = await createdCounts(
-        prisma,
-        result.items.map((row) => row.id),
-      );
       return {
         nextCursor: result.nextCursor,
-        items: result.items.map((row) => toRun(row, created.get(row.id) ?? 0)),
+        items: await runViews(prisma, tenantId, result.items),
       };
     },
 
@@ -696,7 +741,7 @@ export function createDiscoveryRepository(
               failed: count('FAILED'),
             },
           });
-          return toRun(completed, count('CREATED'));
+          return toRun(completed, count('CREATED'), 0);
         },
         { timeout: 120_000, maxWait: 10_000 },
       );

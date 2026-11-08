@@ -395,6 +395,27 @@ Task 08A defines how people are found for a company and when an address may be u
 - **Sending:** an address is never "verified" by its shape or by a provider's claim. Only a
   fresh `verified` check makes it automatically eligible (`emailSendEligibility`); `risky` and
   `unknown` always need a person.
+- **Apollo** (task 08B, `docs/decisions.md` D-08B-01 to D-08B-06): People API Search finds
+  people (0 credits, partial records), and Bulk People Enrichment completes the chosen ones (up
+  to 10 per call, credits as reported). Guessed addresses are dropped, and Apollo's email status
+  stays a claim. Each run reports its requests, credits, repeated ids and skipped people;
+  failures are retryable or permanent.
+- **Live providers fail closed:** without `APOLLO_API_KEY`, staging and production have no
+  people provider. No email verification service is selected, so live verification always fails
+  closed (O-35).
+- **Finding people for discovered companies** (task 08C, `docs/api/enrichment.md`,
+  `docs/decisions.md` D-08C-01 to D-08C-08): "Find people" on a finished company run queues a
+  `CONTACT_ENRICHMENT` run. It covers at most 25 companies and 5 people a company, for the
+  ICP's titles, seniorities and countries and an optional campaign's exclusions. The
+  `contact_enrichment` worker (queue `lead-fennec-enrichment`) saves one company per
+  transaction, with the usage it paid for.
+  - **No duplicates:** people are matched by the provider's id, address, LinkedIn profile, or
+    name at the same company. Anyone looked up in the last 30 days is reused, not looked up or
+    charged again.
+  - **People who can't be emailed** are kept with the reasons and stay off the campaign's lead
+    list.
+  - **Quality:** the lead page shows each contact's data quality (source, role match, the
+    address's newest check). The address can be rechecked once a day (`verifications.run`).
 
 ## Website fetching
 

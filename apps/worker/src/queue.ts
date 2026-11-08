@@ -18,6 +18,8 @@ export const JOB_QUEUE_NAME = 'lead-fennec-jobs';
 export const RESEARCH_QUEUE_NAME = 'lead-fennec-research';
 /** Lead qualification (task 10C): its own queue too. */
 export const QUALIFICATION_QUEUE_NAME = 'lead-fennec-qualification';
+/** Contact enrichment and address rechecks (task 08C). */
+export const ENRICHMENT_QUEUE_NAME = 'lead-fennec-enrichment';
 
 export type PublishJob = (envelope: JobEnvelope) => Promise<void>;
 

@@ -1,8 +1,12 @@
 // Development and test only (task 07C, docs/decisions.md D-07C-01): runs one queued task (a
-// search, a website research since 09C, a lead qualification since 10C) directly, without Redis. `node dist/run-task.js <taskId>` prints the outcome. The browser
-// tests use it to run the real job against their database. Elsewhere it refuses to run.
+// search, a website research since 09C, a lead qualification since 10C, a contact enrichment or
+// an address recheck since 08C) directly, without Redis. `node dist/run-task.js <taskId>` prints
+// the outcome. The browser tests use it to run the real job against their database. Elsewhere it
+// refuses to run.
 import { createPrismaClient, JobRejectedError } from '@lead-fennec-ai/database';
 import {
+  createContactDataProviders,
+  createEmailVerificationProvider,
   createModelProvider,
   createOrganizationSearchProvider,
   createWebsiteFetcher,
@@ -10,6 +14,7 @@ import {
 import { describeStartupError } from '@lead-fennec-ai/shared';
 import { z } from 'zod';
 import { loadWorkerEnv, modelConfig } from './env.js';
+import { runEnrichmentTask } from './jobs/contact-enrichment.js';
 import { runDiscoveryTask } from './jobs/lead-discovery.js';
 import { runQualificationTask } from './jobs/lead-qualification.js';
 import { runResearchTask } from './jobs/website-research.js';
@@ -32,40 +37,43 @@ async function run(): Promise<void> {
     maxConnections: 1,
   });
   const message = { v: 1, taskId: taskId.data };
-  try {
-    let outcome: string;
-    try {
-      outcome = await runDiscoveryTask(prisma, message, {
+  const fetcher = createWebsiteFetcher(env.APP_ENV, {
+    blockedHosts: env.WEBSITE_FETCH_BLOCKED_HOSTS,
+    allowedHosts: env.WEBSITE_FETCH_ALLOWED_HOSTS,
+  });
+  const model = () => createModelProvider(env.APP_ENV, modelConfig(env));
+  // Each runner refuses a task of another worker before claiming anything ("wrong_worker"),
+  // so the next one is tried.
+  const runners: (() => Promise<string>)[] = [
+    () =>
+      runDiscoveryTask(prisma, message, {
         provider: () => createOrganizationSearchProvider(env.APP_ENV, {}),
-      });
-    } catch (error) {
-      // Not a search: claimJob refuses it before claiming anything, so try research.
-      if (
-        !(error instanceof JobRejectedError) ||
-        error.reason !== 'wrong_worker'
-      ) {
-        throw error;
-      }
-      const fetcher = createWebsiteFetcher(env.APP_ENV, {
-        blockedHosts: env.WEBSITE_FETCH_BLOCKED_HOSTS,
-        allowedHosts: env.WEBSITE_FETCH_ALLOWED_HOSTS,
-      });
-      const model = () => createModelProvider(env.APP_ENV, modelConfig(env));
+      }),
+    () => runResearchTask(prisma, message, { fetcher: () => fetcher, model }),
+    () => runQualificationTask(prisma, message, { model }),
+    () =>
+      runEnrichmentTask(prisma, message, {
+        providers: () => createContactDataProviders(env.APP_ENV, {}),
+        verifier: () => createEmailVerificationProvider(env.APP_ENV),
+      }),
+  ];
+  try {
+    let outcome: string | null = null;
+    for (const runner of runners) {
       try {
-        outcome = await runResearchTask(prisma, message, {
-          fetcher: () => fetcher,
-          model,
-        });
-      } catch (inner) {
-        // Not a research either: a qualification, or refused for its own reason.
+        outcome = await runner();
+        break;
+      } catch (error) {
         if (
-          !(inner instanceof JobRejectedError) ||
-          inner.reason !== 'wrong_worker'
+          !(error instanceof JobRejectedError) ||
+          error.reason !== 'wrong_worker'
         ) {
-          throw inner;
+          throw error;
         }
-        outcome = await runQualificationTask(prisma, message, { model });
       }
+    }
+    if (outcome === null) {
+      throw new JobRejectedError('wrong_worker');
     }
     console.log(outcome);
   } finally {

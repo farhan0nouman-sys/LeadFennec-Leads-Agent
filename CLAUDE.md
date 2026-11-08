@@ -246,7 +246,22 @@ if needed; next prompt ID.
   `parseContactEnrichmentOutput` (provenance required) before use. An address's status comes
   only from an email check; never add a "verified" field or treat a provider's claim as one.
   Automatic sending needs `emailSendEligibility(...).automatic`: `risky` and `unknown` never
-  qualify.
+  qualify. The Apollo people adapters (`docs/decisions.md` D-08B-01 to D-08B-06) send only
+  documented parameters and never request personal emails or phone numbers. They drop guessed
+  (extrapolated) addresses, keep Apollo's email status as a claim, and count credits as Apollo
+  reports them. Live verification has no provider and must keep failing closed until one is
+  chosen (O-35).
+- **Contact enrichment** (`docs/decisions.md` D-08C-*): people are found only through
+  `scope.enrichment.request`, as a `CONTACT_ENRICHMENT` run of at most 25 companies. Its targets
+  and exclusions are copied in and never change. Save people only through `saveContacts`
+  (do-not-contact list, exclusions, the identity match; never a second contact for a known
+  person). Save a company only through `saveCompany`, in one transaction with the hold of the
+  usage it paid for (`settleReservation`): a paid lookup reserves first, a retry never charges
+  twice, and a person looked up within 30 days is reused (the agent's `known` callback), not
+  looked up again. People who can't be emailed are kept with reasons and never added to a
+  campaign's list. Contact quality comes only from `contactQuality` and is never stored or
+  treated as permission. Rechecks go through `scope.enrichment.requestRecheck` (limits, failing
+  closed). A live verifier must reserve `EMAIL_VERIFICATIONS` the same way.
 - **Website fetching** (`docs/decisions.md` D-09A-*): fetch public pages only through a
   `WebsiteFetcher` from `createWebsiteFetcher` (the fake in development and tests); never
   call `fetch` or `http.request` on a URL from a page, a provider or a user. It checks every

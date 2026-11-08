@@ -15,6 +15,7 @@ import {
   type AcceptedContact,
   type EmailCheck,
   type ParsedEnrichment,
+  type RoleRelevance,
   type SendEligibility,
   type SeniorityLevel,
 } from '@lead-fennec-ai/shared';
@@ -49,11 +50,46 @@ export interface EnrichmentUsage {
   readonly unmatched: number;
   /** Addresses the provider sent that were not kept (guessed or malformed). */
   readonly droppedEmails: number;
+  /** Chosen people the workspace already had fresh data for: not looked up, so not paid for. */
+  readonly reused: number;
+}
+
+/** What a run is told about the workspace (task 08C, D-08C-03). */
+export interface EnrichmentRunOptions {
+  /**
+   * Of these people-search ids, the ones the workspace looked up recently. They are reused: never
+   * sent to the enrichment provider again, so never paid for twice.
+   */
+  readonly known?: (
+    externalIds: readonly string[],
+  ) => Promise<ReadonlySet<string>>;
+}
+
+/** A chosen person the workspace already has: as the search returned them, ranked. */
+export interface ReusedPerson {
+  readonly person: ProviderPerson;
+  readonly relevance: RoleRelevance;
+  readonly retrievedAt: Date;
+}
+
+/** What the providers sent about one chosen person, kept as provenance (never executed). */
+export interface PersonRecord {
+  /** As the people search returned them (its raw record included). */
+  readonly person: ProviderPerson;
+  readonly retrievedAt: Date;
+  readonly enrichment: Readonly<Record<string, unknown>> | null;
+  /** The enrichment provider's claim about the address. Untrusted: never a check. */
+  readonly providerClaim: EnrichedPerson['providerClaim'];
+  readonly emailDropped: EnrichedPerson['emailDropped'];
 }
 
 export interface EnrichmentRun {
   readonly result: ParsedEnrichment;
   readonly usage: EnrichmentUsage;
+  /** Chosen people who were reused instead of looked up (in the order chosen). */
+  readonly reused: readonly ReusedPerson[];
+  /** By people-search id: what was received about each person looked up. */
+  readonly records: ReadonlyMap<string, PersonRecord>;
 }
 
 const addCredits = (total: number | null, credits: number | null) =>
@@ -77,6 +113,7 @@ export class ContactEnrichmentAgent {
   /** The most relevant people at the company, with addresses to check. Provider errors propagate. */
   async run(
     rawInput: z.input<typeof contactEnrichmentInputSchema>,
+    options: EnrichmentRunOptions = {},
   ): Promise<EnrichmentRun> {
     const input = contactEnrichmentInputSchema.parse(rawInput);
     const seniorities = input.targeting.seniorities
@@ -141,6 +178,23 @@ export class ContactEnrichmentAgent {
       )
       .slice(0, input.maxContacts);
 
+    // People the workspace already looked up recently are reused, not looked up (or paid for)
+    // again; the rest are enriched.
+    const known =
+      options.known === undefined || chosen.length === 0
+        ? new Set<string>()
+        : await options.known(chosen.map(({ person }) => person.externalId));
+    const reused = chosen
+      .filter(({ person }) => known.has(person.externalId))
+      .map(({ person, relevance, retrievedAt }) => ({
+        person,
+        relevance,
+        retrievedAt,
+      }));
+    const toEnrich = chosen.filter(
+      ({ person }) => !known.has(person.externalId),
+    );
+
     // Enrichment in the provider's batches, only when the company's domain is known.
     const enriched = new Map<
       string,
@@ -152,8 +206,8 @@ export class ContactEnrichmentAgent {
     let droppedEmails = 0;
     const domain = input.organization.domain;
     if (domain !== null) {
-      for (let i = 0; i < chosen.length; i += this.#enrichment.maxBatchSize) {
-        const batch = chosen.slice(i, i + this.#enrichment.maxBatchSize);
+      for (let i = 0; i < toEnrich.length; i += this.#enrichment.maxBatchSize) {
+        const batch = toEnrich.slice(i, i + this.#enrichment.maxBatchSize);
         const answer = await this.#enrichment.enrichContacts(
           batch.map(({ person }) => ({
             externalId: person.externalId,
@@ -182,8 +236,16 @@ export class ContactEnrichmentAgent {
       }
     }
 
-    const contacts = chosen.map(({ person, retrievedAt }) => {
+    const records = new Map<string, PersonRecord>();
+    const contacts = toEnrich.map(({ person, retrievedAt }) => {
       const found = enriched.get(person.externalId);
+      records.set(person.externalId, {
+        person,
+        retrievedAt,
+        enrichment: found?.match.raw ?? null,
+        providerClaim: found?.match.providerClaim ?? null,
+        emailDropped: found?.match.emailDropped ?? null,
+      });
       const match = found?.match ?? null;
       return {
         firstName: match?.firstName ?? person.firstName,
@@ -223,7 +285,10 @@ export class ContactEnrichmentAgent {
         skippedWithoutEmail,
         unmatched,
         droppedEmails,
+        reused: reused.length,
       },
+      reused,
+      records,
     };
   }
 }

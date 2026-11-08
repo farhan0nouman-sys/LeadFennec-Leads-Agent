@@ -29,6 +29,7 @@ export const RUN_ERROR_TEXT: Readonly<Record<string, string>> = {
     'The search was asked of a provider this environment does not use.',
   invalid_payload: 'The queued search was not valid.',
   internal_error: 'Something went wrong while searching.',
+  provider_unavailable: 'The people provider isn’t set up in this environment.',
 };
 
 export function runErrorText(code: string): string {
@@ -43,8 +44,17 @@ export function runTitle(run: ImportRun): string {
   if (run.source === 'CSV') {
     return run.fileName === null ? 'CSV import' : `CSV import: ${run.fileName}`;
   }
+  if (run.source === 'CONTACT_ENRICHMENT') {
+    return 'People search';
+  }
   return run.search === null ? 'Import' : 'Company search';
 }
+
+/** A finished company run whose people can be looked for (task 08C). */
+export const canFindPeople = (run: ImportRun) =>
+  run.source !== 'CONTACT_ENRICHMENT' &&
+  !isRunning(run) &&
+  run.counts.saved > 0;
 
 const HEADER_PATTERNS: Readonly<Record<OrganizationImportField, RegExp>> = {
   name: /^(company( name)?|name|organi[sz]ation( name)?|account( name)?|business( name)?)$/i,

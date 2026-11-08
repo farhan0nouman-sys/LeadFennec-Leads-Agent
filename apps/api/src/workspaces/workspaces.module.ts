@@ -4,6 +4,11 @@ import { campaignServicesProvider } from './campaign-services.js';
 import { CampaignsController } from './campaigns.controller.js';
 import { DashboardController } from './dashboard.controller.js';
 import { DiscoveryController } from './discovery.controller.js';
+import { EnrichmentController } from './enrichment.controller.js';
+import {
+  contactProvider,
+  emailVerificationProvider,
+} from './enrichment-provider.js';
 import { ResearchController } from './research.controller.js';
 import { QualificationController } from './qualification.controller.js';
 import { SendPolicyController } from './send-policy.controller.js';
@@ -26,12 +31,15 @@ import { WorkspacesController } from './workspaces.controller.js';
     ResearchController,
     SendPolicyController,
     QualificationController,
+    EnrichmentController,
   ],
   providers: [
     WorkspaceGuard,
     PermissionGuard,
     campaignServicesProvider,
     organizationSearchProvider,
+    contactProvider,
+    emailVerificationProvider,
   ],
 })
 export class WorkspacesModule {}

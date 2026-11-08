@@ -20,6 +20,7 @@ import {
   qualifyRequestSchema,
   researchFindingsSchema,
   SEND_ELIGIBILITY_REASON_CODES,
+  summarizeQuality,
   type BusinessProfile,
   type LeadEvidenceView,
   type LeadFitView,
@@ -47,6 +48,7 @@ import {
   type TenantActor,
 } from './actors.js';
 import { writeAuditRecord } from './audit.js';
+import { contactQualities } from './contact-quality.js';
 import {
   RecordNotFoundError,
   requirePermission,
@@ -439,6 +441,17 @@ export function createQualificationRepository(
     };
   }
 
+  /** The contact's data quality, decided now (task 08C). */
+  async function qualityOf(contactId: string) {
+    const quality = (
+      await contactQualities(prisma, tenantId, [contactId], now())
+    ).get(contactId);
+    if (quality === undefined) {
+      throw new RecordNotFoundError('contact');
+    }
+    return quality;
+  }
+
   async function view(
     campaignId: string,
     contactId: string,
@@ -478,6 +491,7 @@ export function createQualificationRepository(
             ? null
             : { id: contact.organization.id, name: contact.organization.name },
       },
+      quality: await qualityOf(contact.id),
       fit: score === null ? null : await fitView(score),
       eligibility: decision.eligibility,
       qualification: current,
@@ -785,6 +799,7 @@ export function createQualificationRepository(
         orderBy: { version: 'desc' },
         select: { contactId: true, state: true },
       });
+      const qualities = await contactQualities(prisma, tenantId, ids, now());
       return {
         leadListId,
         items: contacts.items.map((contact) => {
@@ -801,6 +816,10 @@ export function createQualificationRepository(
             state:
               decisions.find((item) => item.contactId === contact.id)?.state ??
               null,
+            quality: ((quality) =>
+              quality === undefined
+                ? { level: 'unusable' as const, emailState: null }
+                : summarizeQuality(quality))(qualities.get(contact.id)),
           };
         }),
         nextCursor: contacts.nextCursor,

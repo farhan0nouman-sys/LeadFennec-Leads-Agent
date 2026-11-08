@@ -455,6 +455,59 @@ export class E2eDatabase {
     return id;
   }
 
+  /** A lead list of the workspace (task 08C). */
+  async seedLeadList(workspaceId: string, name: string): Promise<string> {
+    const id = randomUUID();
+    await this.client.query(
+      `INSERT INTO lead_lists (tenant_id, id, name, updated_at)
+       VALUES ($1, $2, $3, now())`,
+      [workspaceId, id, name],
+    );
+    return id;
+  }
+
+  /** The queued job task of a contact enrichment run (task 08C). */
+  async enrichmentTaskId(
+    workspaceId: string,
+    importId: string,
+  ): Promise<string> {
+    const { rows } = await this.client.query<{ id: string }>(
+      `SELECT id FROM job_tasks
+       WHERE tenant_id = $1 AND task_type = 'contact_enrichment.run' AND idempotency_key = $2`,
+      [workspaceId, `import:${importId}`],
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) {
+      throw new Error('No task for this enrichment run');
+    }
+    return id;
+  }
+
+  /** The newest queued recheck of a contact's address (task 08C). */
+  async recheckTaskId(workspaceId: string, contactId: string): Promise<string> {
+    const { rows } = await this.client.query<{ id: string }>(
+      `SELECT id FROM job_tasks
+       WHERE tenant_id = $1 AND task_type = 'contact_verification.recheck'
+         AND idempotency_key LIKE $2 AND status = 'PENDING'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [workspaceId, `contact_recheck:${contactId}:%`],
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) {
+      throw new Error('No queued recheck');
+    }
+    return id;
+  }
+
+  /** How many contacts the workspace has (task 08C). */
+  async contactCount(workspaceId: string): Promise<number> {
+    const { rows } = await this.client.query<{ count: string }>(
+      'SELECT count(*) AS count FROM contacts WHERE tenant_id = $1',
+      [workspaceId],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
   /** An address the workspace must never contact (task 10C). */
   async seedSuppressedEmail(workspaceId: string, email: string) {
     await this.client.query(

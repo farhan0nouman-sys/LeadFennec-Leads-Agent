@@ -11,13 +11,16 @@ import {
   CampaignVersionConflictError,
   CsvImportError,
   DiscoveryRequestError,
+  EnrichmentRequestError,
   ImportNotCancellableError,
   InvalidCursorError,
   InvitationError,
   LastAdminError,
+  NoEmailAddressError,
   PermissionDeniedError,
   QualificationBlockedError,
   QualificationVersionConflictError,
+  RecheckLimitError,
   RecordNotFoundError,
   ResearchCorrectionError,
   ResearchNotPossibleError,
@@ -25,6 +28,7 @@ import {
   SendPolicyVersionConflictError,
   SlugTakenError,
   TenantAccessDeniedError,
+  VerificationUnavailableError,
 } from '@lead-fennec-ai/database';
 import type { ApiErrorCode, ApiErrorResponse } from '@lead-fennec-ai/shared';
 import {
@@ -272,6 +276,32 @@ export function toApiException(error: unknown): ApiHttpException | null {
       { issues: error.issues },
     );
   }
+  if (error instanceof EnrichmentRequestError) {
+    // One issue per reason: the run (importId), the campaign (campaignId) or its ICP (icpId).
+    return new ApiHttpException(
+      400,
+      'validation_failed',
+      "People can't be found for this run as asked.",
+      { issues: error.issues },
+    );
+  }
+  if (error instanceof NoEmailAddressError) {
+    return new ApiHttpException(
+      409,
+      'no_email_address',
+      'This contact has no email address to check.',
+    );
+  }
+  if (error instanceof VerificationUnavailableError) {
+    return new ApiHttpException(
+      409,
+      'verification_unavailable',
+      "Email addresses can't be checked yet: no verification service is set up.",
+    );
+  }
+  if (error instanceof RecheckLimitError) {
+    return tooManyRequests(error.retryAfterSeconds);
+  }
   if (error instanceof CsvImportError) {
     // The file (content) or the mapping (mapping.<field>): one issue per reason.
     return new ApiHttpException(
@@ -363,6 +393,10 @@ function send(
   CampaignNotReadyError,
   CampaignConfigurationError,
   DiscoveryRequestError,
+  EnrichmentRequestError,
+  NoEmailAddressError,
+  VerificationUnavailableError,
+  RecheckLimitError,
   CsvImportError,
   ImportNotCancellableError,
   ResearchNotPossibleError,

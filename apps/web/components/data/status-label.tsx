@@ -114,6 +114,25 @@ export const STATUS_LABELS = {
     EXCLUDED: { label: 'Excluded', tone: 'warning' },
     FAILED: { label: 'Failed', tone: 'danger' },
   },
+  // A contact's data quality and its address's state (task 08C).
+  contactQuality: {
+    good: { label: 'Good', tone: 'success' },
+    review: { label: 'Needs review', tone: 'warning' },
+    unusable: { label: "Can't be emailed", tone: 'danger' },
+  },
+  emailState: {
+    eligible: { label: 'Verified', tone: 'success' },
+    needs_review: { label: 'Needs a person', tone: 'warning' },
+    stale: { label: 'Check is old', tone: 'warning' },
+    unverified: { label: 'Not checked', tone: 'neutral' },
+    blocked: { label: "Doesn't accept email", tone: 'danger' },
+  },
+  emailCheck: {
+    verified: { label: 'Verified', tone: 'success' },
+    risky: { label: 'Risky', tone: 'warning' },
+    unknown: { label: 'Unknown', tone: 'warning' },
+    invalid: { label: 'Invalid', tone: 'danger' },
+  },
   integration: {
     not_connected: { label: 'Not connected', tone: 'neutral' },
     connecting: { label: 'Connecting', tone: 'info' },

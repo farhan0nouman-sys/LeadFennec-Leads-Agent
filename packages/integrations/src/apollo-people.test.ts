@@ -397,6 +397,7 @@ describe('ContactEnrichmentAgent on Apollo (task 08B)', () => {
       skippedWithoutEmail: 1,
       unmatched: 1,
       droppedEmails: 0,
+      reused: 0,
     });
     if (!result.ok) {
       throw new Error('expected an answer');

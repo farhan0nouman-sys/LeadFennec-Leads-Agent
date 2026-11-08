@@ -1,10 +1,16 @@
-import { parseCsv, ORGANIZATION_IMPORT_LIMITS } from '@lead-fennec-ai/shared';
+import {
+  parseCsv,
+  ORGANIZATION_IMPORT_LIMITS,
+  type ImportRun,
+} from '@lead-fennec-ai/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  canFindPeople,
   errorReportCsv,
   guessMapping,
   mappingFrom,
   runErrorText,
+  runTitle,
 } from './imports';
 
 // The import screens' logic (task 07C).
@@ -119,5 +125,58 @@ describe('import screens', () => {
     expect(runErrorText('something_new')).toBe(
       'The search stopped because of an error.',
     );
+  });
+});
+
+// Finding people for a run's companies (task 08C).
+describe('people search', () => {
+  const run = (overrides: Partial<ImportRun>): ImportRun => ({
+    id: '0190f5c2-7d1e-7c3a-9c1e-4f6a8b2d3e10',
+    source: 'ORGANIZATION_SEARCH',
+    status: 'COMPLETED',
+    enrichment: null,
+    search: null,
+    fileName: null,
+    counts: {
+      found: 3,
+      saved: 3,
+      created: 3,
+      excluded: 0,
+      failed: 0,
+      repeated: 0,
+    },
+    pagesFetched: 1,
+    errorCode: null,
+    createdAt: '2026-11-08T09:00:00.000Z',
+    startedAt: null,
+    completedAt: null,
+    ...overrides,
+  });
+
+  it('is offered for finished runs that saved companies, never for people searches', () => {
+    expect(canFindPeople(run({}))).toBe(true);
+    expect(canFindPeople(run({ source: 'CSV', status: 'COMPLETED' }))).toBe(
+      true,
+    );
+    expect(canFindPeople(run({ status: 'PROCESSING' }))).toBe(false);
+    expect(
+      canFindPeople(
+        run({
+          counts: {
+            found: 2,
+            saved: 0,
+            created: 0,
+            excluded: 2,
+            failed: 0,
+            repeated: 0,
+          },
+        }),
+      ),
+    ).toBe(false);
+    expect(canFindPeople(run({ source: 'CONTACT_ENRICHMENT' }))).toBe(false);
+    expect(runTitle(run({ source: 'CONTACT_ENRICHMENT' }))).toBe(
+      'People search',
+    );
+    expect(runErrorText('provider_unavailable')).toMatch(/people provider/);
   });
 });

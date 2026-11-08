@@ -3038,6 +3038,265 @@ migration: contracts and fakes only. No provider-specific detail was implemented
 | `packages/integrations/src/contact-enrichment.test.ts` (6) | Fixed synthetic staff with no addresses or profiles, paged; addresses on the company domain only, with both claims; all four statuses, the same every time, and the rules; the agent's ranked, attributed answer, addresses only for the chosen people, the same twice; no domain gives no lookups; unattributed provider records refused; eligibility follows the check, not the provider's claim |
 | `packages/integrations/src/fakes.test.ts` | The provider set's new keys |
 
+## 08B: Apollo people lookup and contact enrichment (2026-11-06, finished 2026-11-08)
+
+**Basis.** The plan is still missing (O-01); this follows the 08B prompt:
+- "the authorized provider's people lookup and separate contact enrichment stage using current
+  official documentation";
+- "add the chosen verification service behind its interface; if no service is selected, retain
+  the fake adapter and record a live integration blocker";
+- "track costs, provider IDs and retryable versus permanent failures";
+- "never guess email addresses and label them verified".
+
+The completion check asks that provider fixture tests cover missing emails, partial records,
+quota exhaustion, repeated provider IDs and verification failures, and that unconfigured live
+adapters fail closed. The code was committed in `1fe897d` and `d0cecc4`; this records it.
+
+### D-08B-01: The provider and its documentation
+
+- **Provider:** Apollo, the provider authorized for 07B.
+- **Documentation checked on 2026-11-06:**
+  - People API Search: https://docs.apollo.io/reference/people-api-search (page updated
+    2026-09-29);
+  - Bulk People Enrichment: https://docs.apollo.io/reference/bulk-people-enrichment (page updated
+    2026-11-04);
+  - People Enrichment: https://docs.apollo.io/reference/people-enrichment.
+- **API version:** Apollo's REST API v1, called over HTTPS with no SDK. The 07B client was moved
+  into `apollo-client.ts`, and both adapters share it: the key in the `x-api-key` header only,
+  redirects refused, a deadline per request and bounded retries (D-07B-04).
+- **Endpoints:**
+  - `POST /api/v1/mixed_people/api_search`: 0 credits, partial records (no address, a shortened
+    last name); at most 100 per page, 500 pages and 50,000 records. Sent: `person_titles[]`,
+    `person_seniorities[]`, `q_organization_domains_list[]`, `page` and `per_page`;
+  - `POST /api/v1/people/bulk_match`: up to 10 people per call; `credits_consumed`; `null` in
+    place for a person it can't match.
+- **Never requested:** personal emails, phone numbers or waterfall enrichment (no `reveal_*` or
+  waterfall parameters).
+
+### D-08B-02: Two separate stages
+
+- **People lookup** (`ApolloPeopleSearchProvider`) finds people at one company for the targeted
+  titles and seniorities. Its records are partial (`ProviderPerson`).
+- **Contact enrichment** (`ApolloContactEnrichmentProvider`) completes the chosen people, in
+  batches of at most 10. It is a separate provider behind its own interface.
+- **The ContactEnrichmentAgent** runs both:
+  1. search;
+  2. rank by `rankRoleRelevance` (08A, application code);
+  3. enrich the chosen few;
+  4. check the answer with `parseContactEnrichmentOutput`.
+
+  A repeated provider id is kept once and sent once. A person the search says has no address
+  isn't looked up, so isn't paid for. A record still partial after enrichment is refused.
+
+### D-08B-03: Addresses are never guessed, and never verified by a claim
+
+- An address Apollo extrapolated (`extrapolated_email_confidence` present) is a guess, and is
+  dropped. So are malformed addresses and addresses outside the company's domain (D-08A-02).
+- Apollo's `email_status` is kept only as the provider's claim. An address's status comes only
+  from an email check (D-08A-04), and a missing address stays missing.
+
+### D-08B-04: Costs, provider ids and failures
+
+- **Costs per run** (`EnrichmentUsage`):
+  - search and enrichment requests;
+  - credits summed as Apollo reports them (fractions kept; null when never reported);
+  - repeated provider ids, people skipped without an address, unmatched people and dropped
+    addresses.
+- **Provider ids:** every person keeps Apollo's id, so a later run can recognize them.
+- **Failures** (`ProviderError`):
+
+  | Answer | Code |
+  |---|---|
+  | 401 | `unauthorized` |
+  | 403 (no API access on the plan, or a key not scoped to the endpoint) | `forbidden` |
+  | 429, platform load | `rate_limited`, retry after the suggested time (60 s documented) |
+  | 429, the day's allowance used | `quota_exceeded` |
+  | other 429 | `rate_limited`, with Retry-After |
+  | 5xx | `unavailable` |
+  | an answer that doesn't line up with the request | `bad_response` |
+
+  `rate_limited`, `unavailable` and `timeout` are retryable; every other code is permanent and
+  needs a person.
+- **Email checks:** `checkContactEmails` records each failed check with its code and whether it
+  is retryable. The address stays unverified.
+
+### D-08B-05: The verification service, and failing closed
+
+- **No verification service is selected** (the user's answer, 2026-11-06). The fake stays.
+  Outside development and test, `createEmailVerificationProvider` throws
+  `LiveProvidersUnavailableError`, so no address can be checked or become automatically
+  eligible (O-35).
+- `createContactDataProviders`: the fakes in development and test; Apollo with `APOLLO_API_KEY`
+  in staging and production; without a key, `LiveProvidersUnavailableError`.
+- **Fakes** can produce every case the tests need: partial records, repeated ids, guessed
+  addresses, people without addresses, enrichment failures and verification failures.
+- **Not in 08B:** storing contacts, queuing enrichment, budgets and screens (08C).
+
+### D-08B-06: Tests
+
+| File | What it shows |
+|---|---|
+| `packages/integrations/src/apollo-people.test.ts` (7) | The documented search endpoint and parameters, partial records, empty results, no company domain refused before any call; one enrichment call with provider ids, claims and missing addresses apart and credits counted; guessed and malformed addresses dropped, fractional credits kept; quota exhaustion, bad keys and misaligned answers; the agent on Apollo (repeated ids once, people without an address skipped, unmatched refused); fakes locally, Apollo with a key, failing closed without one |
+| `packages/integrations/src/contact-enrichment.test.ts` (8) | Fakes and the agent: partial search records completed through enrichment, a repeated id kept once, records left partial refused, missing and guessed addresses reported, provider failures passed on, only verified addresses automatically eligible, failed checks recorded as retryable or permanent |
+| `packages/integrations/src/registry.test.ts` | No live provider set for staging or production |
+
+## 08C: Contact enrichment jobs, deduplication, contact quality and rechecks (2026-11-08)
+
+**Basis.** The plan is still missing (O-01); this follows the 08C prompt:
+- "queue bounded enrichment work for discovered organizations using target roles, seniority,
+  location and exclusions";
+- "deduplicate contacts by tenant-scoped normalized identity and provider mappings";
+- "store source, confidence, verification result and freshness";
+- "add job progress and a manual recheck action with limits";
+- "expose contact quality in the lead API and UI".
+
+The completion check: repeated enrichment doesn't duplicate contacts or charge the same logical
+usage event twice; ineligible results are kept with reasons but can't enter sending.
+
+### D-08C-01: A run is an import: bounded, with its inputs copied in
+
+- **What a run is:** an `imports` row with the new source `CONTACT_ENRICHMENT` (its enum value
+  has its own migration). A member asks for one from a finished company run (a search or a CSV
+  import): `POST /workspaces/:workspaceId/imports/:importId/enrichment`. The route needs
+  `imports.create`; the repository also checks `contacts.write`.
+- **Bounds:**
+  - the first 25 companies the run saved (created or matched, in the run's order); companies
+    beyond that are counted (`beyondLimit`), not covered;
+  - at most 5 people a company (3 by default).
+- **Targets:** the ICP's titles, seniorities and countries, copied into `search_filters`. The
+  ICP is the run's, or the campaign's for a CSV import.
+- **Campaign (optional):** its exclusions, normalized, are copied into `source_metadata`. Its
+  lead list is where people go (`lead_list_id`).
+- **Immutable:** the 07A trigger already covers the ICP, provider, targets, company count, input
+  hash and inputs. A new trigger covers `lead_list_id`. Checks:
+  - the search fields are present for both kinds of run;
+  - at most 25 companies;
+  - the companies done never exceed the total.
+- **Provider:** `contactDataDeclaration` gives the fakes in development and test, and Apollo in
+  staging and production. The API records it without credentials. The worker refuses a run made
+  for another provider (`provider_mismatch`).
+- **Progress:**
+  - `pages_fetched` counts the companies done;
+  - the row counts are people: found, saved, excluded, failed;
+  - a company skipped before the provider is asked is a source record whose payload has
+    `kind: "company"`, counted as `companies.skipped`.
+
+  `GET /workspaces/:workspaceId/imports/:importId` shows it all (`importRunSchema.enrichment`).
+
+### D-08C-02: One person, one contact
+
+- **Saving:** people are saved through `saveContacts` (`contact-store.ts`), inside the company's
+  transaction, under an advisory lock per workspace.
+- **Matching order:**
+  1. **Provider mapping:** an earlier source record of the same provider and person id that
+     points at a contact.
+  2. The normalized address.
+  3. The LinkedIn profile.
+  4. The same name at the same company, when one of the two has no address.
+- **New column** `contacts.name_key` (from `normalizeContactIdentity`), with an index on
+  (tenant, organization, name key). That index replaced the one on (tenant, organization),
+  which is its prefix; the schema test now expects it. Another new index covers
+  (tenant, LinkedIn URL).
+- **Matched contacts:** only missing details are filled in. An address another contact holds
+  stays with that contact.
+- **Every person gets a source record:**
+  - the provider and its id for the person;
+  - the payload: name, title, company, address, the provider's claim, the address's provenance,
+    the role match and its reasons, the check made, and what was received;
+  - `confidence`, a new column: the role match, 0–100 (`rankRoleRelevance`, application code);
+  - `fetched_at`: the data's freshness.
+- **Outcome check (relaxed):** a saved person's record may carry reasons, and an excluded
+  person's record still names the company.
+
+### D-08C-03: Repeated enrichment doesn't look people up again
+
+- **Reusing people:** the agent takes a `known(ids)` callback. Before enrichment, it asks which
+  chosen people the workspace looked up in the last 30 days: a created or matched record of the
+  same provider and id, not itself a reuse. Those people are never sent to enrichment, so never
+  paid for again. They are recorded as matched with `reused: true`. A reuse doesn't make the
+  data fresher.
+- **Checks:** an address checked in the last 30 days isn't checked again (`freshChecks`).
+- **Within a run:** each company is saved once. Under a row lock, `saveCompany` compares the
+  run's count of companies done with the company's index, so a repeated save saves nothing.
+
+### D-08C-04: Usage counted when the company is saved
+
+- **Reserving:** a paid people provider (anything but the fake) reserves `LEAD_ENRICHMENTS`
+  before a company is looked up. The quantity is the people asked for; the key names the run,
+  the company and the attempt.
+- **Settling:** the hold is settled in the transaction that saves the company. `settleReservation`
+  was taken out of the usage repository for this:
+  - **committed** with the people looked up: the provider's reported credits, rounded up, at
+    most the hold;
+  - **released** when nothing was used, and when a company's save repeats, is cancelled or fails.
+
+  So a company of a run is charged exactly once, and a retry's earlier hold never counts.
+- **Verification:** only the free fake exists (O-35). A live verifier must reserve
+  `EMAIL_VERIFICATIONS` the same way; the worker says where.
+
+### D-08C-05: Location, exclusions, and people who can't be emailed
+
+- **Location** is decided per company:
+  - a company known to be outside the ICP's countries is skipped before the provider is asked
+    (excluded, nothing paid);
+  - a company whose country is unknown is looked up, and send eligibility decides on the
+    person's country later (10B).
+- **Other company skips:**
+  - no domain: failed, because its people can't be matched or emailed at work;
+  - its domain, or a parent domain, on the do-not-contact list or among the campaign's
+    excluded domains: excluded.
+- **Excluded people:** an address, or its domain, on the do-not-contact list or among the
+  campaign's excluded addresses and domains. The person is excluded with the reason and not
+  saved.
+- **People on an excluded lead list:** someone on a lead list the campaign excludes is saved, but
+  not added to the campaign's list.
+- **People who can't be emailed:** saved people without an address, or whose address doesn't
+  accept email, are kept with the reasons (on their record). They are never added to the
+  campaign's lead list. Send eligibility blocks them (`no_email`, `email_invalid`), and a block
+  can never be overridden.
+- **People who need a decision:** risky, unknown and unchecked addresses are added to the list
+  and need a person's decision (review).
+
+### D-08C-06: Contact quality
+
+- **Decided** by `contactQuality` (shared), from stored facts:
+  - the newest lookup record (not a reuse), with its confidence and the provider's claim;
+  - the newest check of the current address;
+  - the rechecks.
+- **Levels:**
+  - `good`: a fresh verified check, from a fresh source;
+  - `review`;
+  - `unusable`: no address, or an invalid one.
+- **Shown** in full in the lead view (`quality`), and in short in the leads list.
+- **Never** stored, cached or treated as permission. It doesn't decide sending: eligibility does
+  (10B).
+
+### D-08C-07: Rechecks
+
+- **Route:** `POST /workspaces/:workspaceId/contacts/:contactId/recheck`, which needs
+  `verifications.run` (only Client Admins by default). Audited.
+- **Limits** (429 with Retry-After): once a contact in 24 hours, and 50 a workspace in 24 hours.
+  They are counted from job tasks and serialized by an advisory lock.
+- **Other answers:**
+  - repeated while queued: `already_queued`;
+  - no address: 409 `no_email_address`;
+  - no verification service in this environment: 409 `verification_unavailable`
+    (`emailVerificationAvailable`). The job also fails closed with that code.
+- **The job:** `contact_verification.recheck` runs on the `contact_enrichment` worker, with
+  `contact_enrichment.run`, on its own queue (`lead-fennec-enrichment`). Its result counts only
+  if the contact still has that address.
+
+### D-08C-08: Tests
+
+| File | What it shows |
+|---|---|
+| `packages/shared/src/contracts/enrichment-runs.test.ts` (7) | Quality: good only with a fresh verified check from a fresh source; a provider's claim is never a check; risky, unknown, old checks and old sources need review; no address or an invalid one is unusable; another address's check is ignored; when the next recheck may be asked for; the request's bounds |
+| `packages/integrations/src/contact-enrichment.test.ts` (+1) | People the workspace knows are never looked up or paid for; with everyone known, the enrichment provider isn't asked |
+| `packages/database/src/enrichment.integration.test.ts` (8) | Refused requests; inputs copied and immutable; a company saved once with its people, checks, reasons and usage, and a repeated save that saves and charges nothing; country and do-not-contact skips; matching instead of duplicating, reuse of recent lookups; quality in the lead views; recheck limits and failing closed; workspace isolation |
+| `apps/worker/src/jobs/contact-enrichment.integration.test.ts` (6) | The real agent with the fakes: people saved with source, checks and quality; repeated enrichment on a paid provider that neither duplicates, looks up nor charges again; a retried run that resumes and charges each company once; people who can't be emailed kept with reasons, off the list and blocked; rechecks and failing closed; provider mismatch and cancellation |
+| `apps/api/src/workspaces/enrichment.integration.test.ts` (4) | 202 with progress; validation and other workspaces (404); the people list and quality in the lead views; recheck permissions, limits (429 with Retry-After), 409s |
+| `apps/web/e2e/contact-enrichment.spec.ts` (3) | Find people from a finished search, progress and outcomes; asking again matches people; quality on the lead page and in the leads list; a recheck, then the daily limit; axe on every screen |
+
 ## 09A: Safe website fetching (2026-11-06)
 
 **Basis.** The plan is still missing (O-01); this follows the 09A prompt ("a server-side fetch
@@ -4023,9 +4282,11 @@ review, manual changes are tracked, and tests show score changes never erase sup
 | O-32 | Apollo organization search (07B) | Built from the official docs only (D-07B-01 to D-07B-05); no live request was made, so the mapping is unproven against real answers. Not known: the account's plan, and whether it has a REST API key with organization search access (the endpoint answers 403 without it). Apollo matches exact industry names, so free-text ICP industries may find nothing; country names come from the runtime's English names (Intl), unverified against Apollo's location names. The response documents no industry, employee count or country, so found companies have none. The `accounts` array (companies the team already saved) is ignored. A retried timeout may cost a second credit. | Create a key scoped to `api/v1/mixed_companies/search` and run one authorized live page (1 credit) in staging. Decide whether ICP industries should be picked from Apollo's list, whether saved accounts count as results, and whether to fill industry and size from an enrichment step (separate provider, official docs first). |
 | O-33 | Search jobs and CSV imports (07C) | Chosen without the plan (D-07C-01 to D-07C-06): the 5-second relay, one job at a time, 3 provider attempts per task (5 task attempts), the suppression rule (a parent domain excludes subdomains), matching without a domain by name key only among companies without a domain, fill-in of missing details only, CSV limits (256 KB, 1000 rows) and fields, and the error report columns. The BullMQ transport has run only against its documentation: there is no Redis on this machine, so the queue and the worker process were not started; the job itself ran through run-task. Organizations saved before 07C have no name key, so a domainless one can be matched only after it gets one. Contacts are not imported (companies only). | Run the worker against Redis (CI or Docker) before relying on it. Confirm the rules and limits against the plan. Decide whether imports should also bring in contacts (08A), whether name matching should consider the country, and whether old organizations need their name keys backfilled. |
 | O-34 | Contact enrichment (08A) | Contracts and fakes only (D-08A-01 to D-08A-05). Chosen without the plan: the seniority levels, the relevance weights (title 70, seniority 30), the 30-day freshness of a verified check, dropping addresses at other domains, and the identity key order (email, LinkedIn, company and name). No email verification provider is chosen, and no live people-search or enrichment adapter exists (Apollo people search is separate from 07B and needs its own docs check). Nothing is stored yet: contacts, checks and the send rule are used by later tasks. | Confirm the rules against the plan. Choose a verification provider (official docs first) and whether Apollo people search and enrichment are used. Decide whether a person may approve a risky or unknown address for sending, and how that approval is recorded. |
+| O-35 | Email verification service (08B) | None selected (the user's answer, 2026-11-06). Only the fake checks addresses. Outside development and test, `createEmailVerificationProvider` fails closed, so no address can be checked or become eligible for automatic sending. Apollo's own email status is kept as a claim only (D-08B-03). | Choose a verification provider. Check its official documentation (endpoints, authentication, statuses and their meaning, rate limits, pricing), then add its adapter behind `EmailVerificationProvider`, map its statuses to verified, risky, unknown and invalid, and add it to `EMAIL_VERIFICATION_PROVIDERS`. |
 | O-36 | Website fetching (09A) | Chosen without the plan (D-09A-01 to D-09A-05): the limits and their ceilings, HTML and plain text only (no PDF), ports 80 and 443, reading "configured access restrictions" as the operator's block and allow lists plus robots.txt, an unreachable robots.txt as "try later" (retryable) rather than a permanent refusal, the user agent `LeadFennecBot/0.1` without a contact URL, and per-host concurrency inside one worker process (not per registrable domain, not across workers). Never run against the internet: every test uses a local fixture server, and TLS ran only against a server that does not speak it (no certificate fixture). Nothing is stored and no job fetches pages yet. O-35 is kept for 08B's verification blocker, written when 08B is finished. | Confirm the limits and the reading of the restrictions against the plan. Add a contact URL to the user agent. Decide on a shared per-domain limit (Redis) and a public suffix list. Run one authorized live fetch in staging. Store pages as `source_records` and `evidence` in the research task. |
 | O-37 | Model use (09B) | Chosen without the plan (D-09B-02 to D-09B-05): the 12 research fields and their descriptions, the limits (8 extracts, 6000 and 30,000 characters, 4000 output tokens), the confidence rules, the instruction patterns, at most one OpenAI retry, and no default model. No live call was made: the adapter is tested only against scripted answers shaped like the documentation, so the real answers, the schema's acceptance in strict mode and the models' behaviour are unproven. Prices are configuration, not checked against billing. No `safety_identifier` is sent. Prompts carry public page text, which can include names from team pages. Nothing is stored and no job runs the agent yet. | Choose the model (e.g. `gpt-6-luna`, the cheapest listed) and its reasoning effort with a small authorized staging run, and set the prices from the pricing page. Decide whether to send a `safety_identifier` (e.g. a hashed workspace id). Confirm the fields and limits against the plan. Record `AI_TOKENS` usage and store results with their evidence in 09C. |
 | O-38 | Website research jobs and evaluation (09C) | Chosen without the plan (D-09C-01 to D-09C-06): at most 4 pages (the start page and 3 links chosen by path words), 30-day freshness for research and 7-day for pages, reuse when the input hash matches, corrections carried into later versions, `research.run` for corrections, and the profile page under Leads (whose list is still unbuilt). The evaluation set is 8 synthetic English cases, reviewed by the author only; a person has not reviewed it. Known limits: a conflict is caught only when the model reports both values; value support is word-level; the instruction patterns are English-only. No live model or site was used: the BullMQ path is untested here (no Redis), and the profile was checked with axe, not a screen reader. | Review the cases and their expectations, then add real-site and live-model baselines once a model is chosen and a run is authorized. Decide whether conflicts should also be searched for by code, and which further fields have one value. Confirm the page choice, the freshness windows and the permissions against the plan. Run the worker against Redis. |
 | O-39 | Lead scoring model (10A) | Chosen without the plan (D-10A-01 to D-10A-06): five levels per factor, points rounded down, targets from the campaign's lead filters else its ICP, the word-matching and role rules, contact quality from the newest email check, and the default policy (required industry, decision-maker and supported need; at most 30 missing; the band follows the score). Supported need and timing are not assessed until 10C, so no lead reaches High Priority yet. Weights are set through the campaign API only (no wizard stage), and nothing calculates scores outside the tests until 10C adds the job. | Confirm the levels, the rules, the defaults and whether too little data should go to Review by default. Decide where people set weights (a wizard stage or the campaign page) and who may (a permission). Review the industry matching against real provider industries. |
 | O-40 | Send eligibility rules and the send policy (10B) | Chosen without the plan (D-10B-01 to D-10B-05): which reasons block and which need a person; an unchecked address is blocked; a stale check (over 30 days), a risky or unknown one needs a person; the recipient's own country decides and unnamed countries can never be allowed; unnamed sources need a person and the strictest source wins; "in another campaign" counts pending and active enrollments only. No region or source is allowed until a workspace sets a policy, and no screen sets it yet (the API does). `BUILT_SERVICES.eligibility` stays false until leads are checked when they join a campaign. | Confirm the block and review split and the 30-day window against the plan and legal advice; decide the default policy for new workspaces (none today), whether a company's country should ever count, and how enrollment calls the checks (10C or later). |
 | O-41 | Lead qualification (10C) | Chosen without the plan (D-10C-01 to D-10C-06): the agent rates only supported need and timing; the order of the state rules (a lead block rejects, a Low Priority score rejects unless the agent failed, High Priority with review reasons goes to Review); research.run to request a run, campaigns.write to decide and drafts.approve to accept review reasons; a person's note is never audited as text; a new run replaces a person's current decision (the history keeps it). The agent's prompt was tested with the fake model only; it has no evaluation set or live baseline. | Confirm the state rules and the permissions against the plan. Decide whether a run should keep a person's decision current, whether Low Priority should reject or go to Review, and when leads are re-qualified (on research refresh, in bulk). Build an evaluation set for the agent like 09C's and run a live baseline once a model is chosen and a run is authorized. |
+| O-42 | Contact enrichment (08C) | Chosen without the plan (D-08C-01 to D-08C-07): 25 companies a run, 5 people a company (3 by default), a 30-day reuse window, rechecks once a day per contact and 50 a day per workspace; location judged per company (a company whose country is unknown is looked up); people go to a lead list only through a campaign (no screen manages lead lists yet); `LEAD_ENRICHMENTS` counts the people looked up. No live Apollo run has been made: the adapters were tested with fixtures only (08B). | Confirm the limits and the location rule against the plan. Decide whether enrichment should also start from lead lists or single companies. Authorize a live Apollo run (it spends credits), then compare its credits with the counted usage. |

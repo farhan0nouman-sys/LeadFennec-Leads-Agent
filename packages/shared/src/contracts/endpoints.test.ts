@@ -27,7 +27,7 @@ describe('endpoint list (task 05B)', () => {
     const routes = ALL_ENDPOINTS.map((e) => `${e.method} ${e.path}`);
     expect(new Set(ids).size).toBe(ids.length);
     expect(new Set(routes).size).toBe(routes.length);
-    expect(ALL_ENDPOINTS).toHaveLength(53);
+    expect(ALL_ENDPOINTS).toHaveLength(56);
   });
 
   it('declares a schema key for every path parameter', () => {

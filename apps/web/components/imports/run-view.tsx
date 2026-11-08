@@ -3,7 +3,9 @@
 // One import or search (task 07C, docs/decisions.md D-07C-06): its status and counts (saved,
 // excluded, failed, from the API), why it failed, cancelling a queued or running search, and
 // what happened to each record, filtered by outcome, with a downloadable error report whose
-// cells can't run as formulas. A running search refreshes itself (lib/polling.ts).
+// cells can't run as formulas. A running search refreshes itself (lib/polling.ts). A people
+// search (task 08C) shows its progress and its people instead, and a finished company run offers
+// to find people at its companies.
 import {
   API,
   IMPORT_RESULT_OUTCOMES,
@@ -28,6 +30,12 @@ import { PageHeader } from '@/components/ui/typography';
 import { callApi, errorMessage } from '@/lib/api';
 import { formatCount } from '@/lib/format';
 import {
+  EnrichmentProgress,
+  EnrichmentResults,
+  FindPeopleCard,
+} from '@/components/imports/enrichment-view';
+import {
+  canFindPeople,
   errorReportCsv,
   isRunning,
   outcomeText,
@@ -76,6 +84,23 @@ function Counts({ run }: { readonly run: ImportRun }) {
 }
 
 function statusSentence(run: ImportRun): string {
+  if (run.enrichment !== null) {
+    const { done, total } = run.enrichment.companies;
+    switch (run.status) {
+      case 'PENDING':
+        return 'Queued: the people search starts shortly.';
+      case 'PROCESSING':
+        return run.errorCode === null
+          ? `Running: ${String(done)} of ${String(total)} companies done.`
+          : `Waiting to try again. ${runErrorText(run.errorCode)}`;
+      case 'COMPLETED':
+        return 'Finished.';
+      case 'CANCELLED':
+        return 'Cancelled. People saved before that were kept.';
+      case 'FAILED':
+        return 'Stopped. People saved before that were kept.';
+    }
+  }
   switch (run.status) {
     case 'PENDING':
       return 'Queued: the search starts shortly.';
@@ -146,6 +171,7 @@ export function RunView({ importId }: { readonly importId: string }) {
   }
   const view = useListParams(viewSchema);
   const pages = useCursorTrail(`${importId}:${view.viewKey}`);
+  const companies = data?.enrichment === null;
   const results = useApiQuery(
     API.imports.results,
     {
@@ -156,7 +182,7 @@ export function RunView({ importId }: { readonly importId: string }) {
         ...(pages.cursor === undefined ? {} : { cursor: pages.cursor }),
       },
     },
-    pollWhile ? { poll: IMPORT_RUN_POLL } : {},
+    { enabled: companies, ...(pollWhile ? { poll: IMPORT_RUN_POLL } : {}) },
   );
   const cancel = useApiMutation(API.imports.cancel);
   const [reportError, setReportError] = useState<string | null>(null);
@@ -237,9 +263,11 @@ export function RunView({ importId }: { readonly importId: string }) {
       <PageHeader
         title={runTitle(data)}
         description={
-          data.search === null
-            ? 'What happened to each row of the file.'
-            : `${data.search.attribution} Companies only; people are found later.`
+          data.enrichment !== null
+            ? 'People at the companies of an earlier run, for the profile’s roles. Nobody is emailed.'
+            : data.search === null
+              ? 'What happened to each row of the file.'
+              : `${data.search.attribution} Companies only; people are found later.`
         }
         actions={
           isRunning(data) ? (
@@ -248,7 +276,9 @@ export function RunView({ importId }: { readonly importId: string }) {
               confirm={{
                 title: 'Cancel this search?',
                 description:
-                  'The search stops before its next page. Companies already saved stay in the workspace.',
+                  data.enrichment === null
+                    ? 'The search stops before its next page. Companies already saved stay in the workspace.'
+                    : 'The search stops before its next company. People already saved stay in the workspace.',
                 confirmLabel: 'Cancel search',
                 cancelLabel: 'Keep searching',
                 pendingLabel: 'Cancelling…',
@@ -283,7 +313,11 @@ export function RunView({ importId }: { readonly importId: string }) {
               </AlertDescription>
             </Alert>
           ) : null}
-          <Counts run={data} />
+          {data.enrichment === null ? (
+            <Counts run={data} />
+          ) : (
+            <EnrichmentProgress run={data} />
+          )}
           {run.polling?.stopped == null ? null : (
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <span>Automatic updates stopped.</span>
@@ -295,95 +329,103 @@ export function RunView({ importId }: { readonly importId: string }) {
         </CardContent>
       </Card>
 
-      <section aria-labelledby="results-heading" className="grid gap-4">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <h2 id="results-heading" className="text-lg font-semibold">
-            Results
-          </h2>
-          {hasProblems ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={preparing}
-              onClick={() => {
-                setPreparing(true);
-                setReportError(null);
-                problemRecords(workspaceId, importId)
-                  .then((records) => {
-                    saveReport(records, `import-${importId}-errors.csv`);
-                  })
-                  .catch((error: unknown) => {
-                    setReportError(errorMessage(error));
-                  })
-                  .finally(() => {
-                    setPreparing(false);
-                  });
-              }}
-            >
-              <Download aria-hidden="true" />
-              {preparing ? 'Preparing…' : 'Download error report'}
-            </Button>
-          ) : null}
-        </div>
-        {reportError === null ? null : (
-          <p role="alert" className="text-sm text-destructive">
-            {reportError}
-          </p>
-        )}
-        <ListFilters
-          label="Filter results"
-          filtered={view.filtered}
-          onClear={view.clear}
-        >
-          <FilterSelect
-            label="Outcome"
-            value={view.values.outcome}
-            allLabel="All outcomes"
-            options={IMPORT_RESULT_OUTCOMES.map((value) => ({
-              value,
-              label: outcomeText(value),
-            }))}
-            onChange={(value) => {
-              view.update({
-                outcome: value as z.output<typeof viewSchema>['outcome'],
-              });
-            }}
-          />
-        </ListFilters>
-        <DataTable
-          label="Results"
-          columns={columns}
-          rows={results.data?.items}
-          rowKey={(result) => result.id}
-          status={results.status}
-          error={results.error}
-          onRetry={results.retry}
-          refreshing={results.refreshing}
-          empty={
-            <p className="text-sm text-muted-foreground">
-              {isRunning(data)
-                ? 'Nothing saved yet.'
-                : view.filtered
-                  ? 'No records with this outcome.'
-                  : 'No records.'}
+      {canFindPeople(data) && can('imports.create') && can('contacts.write') ? (
+        <FindPeopleCard run={data} />
+      ) : null}
+
+      {data.enrichment !== null ? (
+        <EnrichmentResults run={data} />
+      ) : (
+        <section aria-labelledby="results-heading" className="grid gap-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <h2 id="results-heading" className="text-lg font-semibold">
+              Results
+            </h2>
+            {hasProblems ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={preparing}
+                onClick={() => {
+                  setPreparing(true);
+                  setReportError(null);
+                  problemRecords(workspaceId, importId)
+                    .then((records) => {
+                      saveReport(records, `import-${importId}-errors.csv`);
+                    })
+                    .catch((error: unknown) => {
+                      setReportError(errorMessage(error));
+                    })
+                    .finally(() => {
+                      setPreparing(false);
+                    });
+                }}
+              >
+                <Download aria-hidden="true" />
+                {preparing ? 'Preparing…' : 'Download error report'}
+              </Button>
+            ) : null}
+          </div>
+          {reportError === null ? null : (
+            <p role="alert" className="text-sm text-destructive">
+              {reportError}
             </p>
-          }
-          footer={
-            <CursorPagination
-              label="Results"
-              page={pages.page}
-              hasPrevious={pages.hasPrevious}
-              hasNext={nextCursor !== null}
-              onPrevious={pages.previous}
-              onNext={() => {
-                if (nextCursor !== null) {
-                  pages.next(nextCursor);
-                }
+          )}
+          <ListFilters
+            label="Filter results"
+            filtered={view.filtered}
+            onClear={view.clear}
+          >
+            <FilterSelect
+              label="Outcome"
+              value={view.values.outcome}
+              allLabel="All outcomes"
+              options={IMPORT_RESULT_OUTCOMES.map((value) => ({
+                value,
+                label: outcomeText(value),
+              }))}
+              onChange={(value) => {
+                view.update({
+                  outcome: value as z.output<typeof viewSchema>['outcome'],
+                });
               }}
             />
-          }
-        />
-      </section>
+          </ListFilters>
+          <DataTable
+            label="Results"
+            columns={columns}
+            rows={results.data?.items}
+            rowKey={(result) => result.id}
+            status={results.status}
+            error={results.error}
+            onRetry={results.retry}
+            refreshing={results.refreshing}
+            empty={
+              <p className="text-sm text-muted-foreground">
+                {isRunning(data)
+                  ? 'Nothing saved yet.'
+                  : view.filtered
+                    ? 'No records with this outcome.'
+                    : 'No records.'}
+              </p>
+            }
+            footer={
+              <CursorPagination
+                label="Results"
+                page={pages.page}
+                hasPrevious={pages.hasPrevious}
+                hasNext={nextCursor !== null}
+                onPrevious={pages.previous}
+                onNext={() => {
+                  if (nextCursor !== null) {
+                    pages.next(nextCursor);
+                  }
+                }}
+              />
+            }
+          />
+        </section>
+      )}
     </div>
   );
 }

@@ -6,6 +6,8 @@ import {
   type WorkerDefinition,
 } from '@lead-fennec-ai/database';
 import {
+  createContactDataProviders,
+  createEmailVerificationProvider,
   createModelProvider,
   createOrganizationSearchProvider,
   createWebsiteFetcher,
@@ -15,6 +17,10 @@ import { describeStartupError } from '@lead-fennec-ai/shared';
 import { createLogger } from '@lead-fennec-ai/shared/logger';
 import { loadWorkerEnv, modelConfig } from './env.js';
 import { createHealthServer } from './health-server.js';
+import {
+  CONTACT_ENRICHMENT_WORKER,
+  runEnrichmentTask,
+} from './jobs/contact-enrichment.js';
 import {
   LEAD_DISCOVERY_WORKER,
   runDiscoveryTask,
@@ -30,6 +36,7 @@ import {
 import {
   createJobQueue,
   createJobWorker,
+  ENRICHMENT_QUEUE_NAME,
   JOB_QUEUE_NAME,
   QUALIFICATION_QUEUE_NAME,
   relayDueTasks,
@@ -58,6 +65,22 @@ async function main(): Promise<void> {
   // The model (task 09B) is made for each run: without OPENAI_API_KEY and OPENAI_MODEL in
   // staging or production, research runs fail with "model_unavailable" and nothing else stops.
   const model = () => createModelProvider(env.APP_ENV, modelConfig(env));
+  // People lookup (task 08C) uses the same APOLLO_API_KEY as searches. Without a verification
+  // service (staging and production today, O-35) addresses stay unverified: it fails closed.
+  const contactProviders = () =>
+    createContactDataProviders(env.APP_ENV, {
+      apolloApiKey: env.APOLLO_API_KEY,
+    });
+  const verifier = () => {
+    try {
+      return createEmailVerificationProvider(env.APP_ENV);
+    } catch (error) {
+      if (error instanceof LiveProvidersUnavailableError) {
+        return null;
+      }
+      throw error;
+    }
+  };
 
   const prisma = createPrismaClient({ databaseUrl: env.DATABASE_URL });
   const checks = infrastructureReadinessChecks({
@@ -98,6 +121,16 @@ async function main(): Promise<void> {
       queueName: QUALIFICATION_QUEUE_NAME,
       definition: LEAD_QUALIFICATION_WORKER,
       run: (message) => runQualificationTask(prisma, message, { model }),
+    },
+    {
+      name: 'enrichment',
+      queueName: ENRICHMENT_QUEUE_NAME,
+      definition: CONTACT_ENRICHMENT_WORKER,
+      run: (message) =>
+        runEnrichmentTask(prisma, message, {
+          providers: contactProviders,
+          verifier,
+        }),
     },
   ];
   const queues = kinds.map((kind) => {

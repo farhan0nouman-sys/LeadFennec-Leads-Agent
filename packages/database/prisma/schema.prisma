@@ -499,6 +499,9 @@ model Contact {
   /// Domain part of normalized_email, for matching contacts to organizations.
   emailDomain     String?       @map("email_domain")
   linkedinUrl     String?       @map("linkedin_url")
+  /// Name identity (normalizeContactIdentity nameKey): matches a person at the same company
+  /// when the records have no address or profile that tells them apart (task 08C).
+  nameKey         String?       @map("name_key")
   phone           String?
   /// ISO 3166-1 alpha-2, upper case.
   countryCode     String?       @map("country_code") @db.Char(2)
@@ -520,7 +523,9 @@ model Contact {
 
   @@id([tenantId, id])
   @@unique([tenantId, normalizedEmail])
-  @@index([tenantId, organizationId])
+  /// Also serves "contacts of an organization" and its foreign key (a prefix, task 08C).
+  @@index([tenantId, organizationId, nameKey])
+  @@index([tenantId, linkedinUrl])
   @@index([tenantId, emailDomain])
   @@index([tenantId, status, createdAt(sort: Desc)])
   @@map("contacts")
@@ -579,6 +584,8 @@ enum ImportSource {
   APOLLO
   /// Companies found by an organization search for an ICP (task 07A).
   ORGANIZATION_SEARCH
+  /// People found for the companies of an earlier run (task 08C), one company at a time.
+  CONTACT_ENRICHMENT
 
   @@map("import_source")
 }
@@ -685,8 +692,12 @@ model SourceRecord {
   payloadSha256   String               @map("payload_sha256") @db.Char(64)
   /// Organization imports and searches (task 07C); NULL for records from elsewhere.
   outcome         SourceRecordOutcome?
-  /// Why it was excluded or failed: [{ field, message }].
+  /// Why it was excluded or failed: [{ field, message }]. A saved contact's record may also
+  /// say why the person can't be emailed (task 08C).
   issues          Json?
+  /// People found by contact enrichment (task 08C): how well they fit the targeted roles,
+  /// 0–100 (rankRoleRelevance, application code). NULL for other records.
+  confidence      Int?
   fetchedAt       DateTime             @default(now()) @map("fetched_at") @db.Timestamptz(3)
   createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
 
@@ -1025,6 +1036,8 @@ model Verification {
   /// Provider key, e.g. "fake".
   provider        String
   status          VerificationStatus
+  /// The provider's reason in our words (e.g. "catch_all"), or NULL (task 08C).
+  reason          String?
   checkedAt       DateTime           @default(now()) @map("checked_at") @db.Timestamptz(3)
   expiresAt       DateTime?          @map("expires_at") @db.Timestamptz(3)
   createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)

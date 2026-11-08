@@ -39,7 +39,8 @@ const PEOPLE_DISPLAY_LIMIT = 50_000;
 /** Documented: up to 10 people per bulk enrichment request. */
 const BULK_MATCH_MAX = 10;
 
-const ATTRIBUTION = 'People data from Apollo.io.';
+export const APOLLO_PEOPLE_ATTRIBUTION = 'People data from Apollo.io.';
+const ATTRIBUTION = APOLLO_PEOPLE_ATTRIBUTION;
 
 const TOKEN = /^apollo:people:v1:(\d{1,3}):(\d{1,3})$/;
 

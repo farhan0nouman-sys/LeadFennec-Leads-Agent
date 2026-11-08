@@ -1,6 +1,7 @@
 'use client';
 
-// One lead of a campaign (task 10C, docs/decisions.md D-10C-*), in three separate parts:
+// One lead of a campaign (task 10C, docs/decisions.md D-10C-*): the contact's data quality (task
+// 08C) and three separate parts:
 // - Fit: the score, each factor's rating, who rated it, why, and the evidence it rests on;
 // - Eligibility: whether the campaign may email the person now, decided apart from the score;
 // - Qualification: the current state with its reasons, every earlier decision, and a person's
@@ -53,6 +54,7 @@ import {
 } from '@/lib/qualification';
 import { useApiMutation, useApiQuery } from '@/lib/query';
 import { safeLinkUrl } from '@/lib/research';
+import { ContactQualitySection } from './contact-quality';
 import { useFormSubmit } from '@/lib/use-form-submit';
 import { useWorkspace } from '@/lib/workspace';
 
@@ -505,8 +507,9 @@ export function LeadQualification({
     polling ? { poll: QUALIFICATION_RUN_POLL } : {},
   );
   const data = lead.data;
-  // Refreshes while a run is queued or running.
-  const pending = data?.pending === true;
+  // Refreshes while a run or an address recheck is queued or running.
+  const pending =
+    data?.pending === true || data?.quality.recheck.pending === true;
   if (polling !== pending) {
     setPolling(pending);
   }
@@ -599,6 +602,12 @@ export function LeadQualification({
           </AlertDescription>
         </Alert>
       ) : null}
+      <ContactQualitySection
+        quality={data.quality}
+        workspaceId={workspaceId}
+        contactId={contactId}
+        canRecheck={can('verifications.run')}
+      />
       <FitSection fit={data.fit} />
       <EligibilitySection view={data} />
       <QualificationSection

@@ -4,6 +4,206 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## GIT-21: Commit and push the progress log (2026-11-09)
+
+**Status: Done.** The user asked for an audit that everything is pushed, then to commit and push
+the progress log.
+
+| Step | Actual result |
+|---|---|
+| Audit before | Only `docs/build-progress.md` was uncommitted (the GIT-20, M3 and 11C entries). `HEAD` and `origin/feat/05a-app-shell` were both `e9fa20a`. No local branch had a commit missing from GitHub (`feat/03a-data-model` exists only locally under that name, and its commits are on GitHub in the other branches). No stashes, tags or other worktrees. Ignored files are build output, caches and `reference-repos/` (the third-party clones, never pushed); no environment or credential files exist. |
+| Committed and pushed | This entry and the three above, in one commit on `feat/05a-app-shell`, so the log is not left behind again. The commit's id and the remote head are reported in the chat (an entry can't name the commit it is in). |
+
+- **CI has not run:** the workflow runs on pushes to `main`, on pull requests and on manual
+  dispatch, not on pushes to other branches.
+
+---
+
+## GIT-20: Commit and push 11C (2026-11-09)
+
+**Status: Done.** The requests were `git commit`, then `git push`, both while the 11C browser
+rerun was still running.
+
+| Step | Actual result |
+|---|---|
+| Committed | `e9fa20a` on `feat/05a-app-shell`: 11C and the GIT-19 entry; 80 files, 13,404 insertions, 1,993 deletions; working tree clean afterwards. The message says the browser rerun was in progress and that this entry and M3 were not included. |
+| Pushed | `feat/05a-app-shell` → `origin/feat/05a-app-shell`, `0a32e26..e9fa20a`; the remote head is `e9fa20a` (checked with `git ls-remote`) |
+| Remote | `github.com/farhan0nouman-sys/LeadFennec-Leads-Agent` (**public**); `main` unchanged at `7fc44f2`; `feat/04a-auth` unchanged at `3e0b418` |
+| After the push | The browser rerun passed: 64 tests. The checks after the commit (web lint, typecheck and unit tests; the browser run without a database) passed too; see 11C. |
+
+- **CI has not run:** the workflow runs on pushes to `main`, on pull requests and on manual
+  dispatch, not on pushes to other branches.
+- This entry, M3 and the 11C entry were not in `e9fa20a`; they are pushed by GIT-21.
+
+---
+
+## M3: Leads milestone (2026-11-09)
+
+**Status: Reached on local checks, with source and eligibility evidence.** The 11C prompt says to
+mark M3 only with source and eligibility evidence. Both are below, from the 11C regression. The
+plan that defines M3 is missing (O-01), so this records what the 07A–11C prompts asked for, not
+the plan's wording.
+
+**Still open (not passed):**
+- Real PostgreSQL and CI: everything ran on PGlite.
+- A screen-reader pass of the new screens (axe only).
+- Live providers: Apollo, a verification service (O-35) and OpenAI were never called.
+- Commit: 11C is `e9fa20a` on `feat/05a-app-shell`, pushed (GIT-20); this entry is pushed by GIT-21.
+
+| Evidence | What it shows | Where (11C regression) |
+|---|---|---|
+| **Source** | Every lead says why it exists: the people search's source record (provider, run, role match) and the company search that found its company, in both fixture tenants. An imported lead's source is the CSV import, linked on its profile. Each tenant sees only its own. | `apps/worker/src/jobs/pipeline.integration.test.ts` (3); `e2e/lead-workflow.spec.ts` ("Why this lead exists": CSV import); 11B `lead-profile.integration.test.ts` |
+| **Eligibility** | The decision records the lead's own eligibility apart from fit (review: no send policy yet, so a person looks). The full check, decided now, blocks: sending is off, the campaign is a draft, there is no mailbox. A suppressed or erased person is blocked and never imported or listed again. | `pipeline.integration.test.ts`; `suppressions.integration.test.ts`, `contact-import.integration.test.ts`; 10B and 10C suites; `e2e/lead-workflow.spec.ts` |
+| Search, import, export, correction | End to end, in the database and in the browser | `pipeline.integration.test.ts`, `privacy.integration.test.ts`, `e2e/lead-workflow.spec.ts` |
+
+**What M3 means in practice:** a workspace can find companies and people, import people from a
+file, research companies, score and qualify leads, see why each lead exists and whether it may be
+emailed, correct it, export it, and honor a person's request not to be contacted or to be erased.
+Nothing is sent: sending isn't built, and every check blocks it.
+
+---
+
+## 11C: People imports, lead exports, the do-not-contact list, deletion requests (2026-11-09)
+
+**Status: Passed (local checks). Incomplete live checks:**
+- **Real PostgreSQL / CI:** PGlite only.
+- **Retention periods** (24 hours for exports, the life of the workspace for suppressions) and the
+  limits were chosen without the missing plan (O-01, O-45).
+- **Committed and pushed** as `e9fa20a` on `feat/05a-app-shell` (GIT-20), before the browser rerun
+  finished. This entry and M3 are pushed by GIT-21.
+
+### Changed components
+
+| Area | Files |
+|---|---|
+| Shared | New: `contracts/contact-import.ts` (the people file's mapping, request, row normalization and payload), `contracts/exports.ts` (routes, limits, the request, the export, `leadExportCsv`), `contracts/suppressions.ts` (routes, reasons, requests, the entry, the deletion result). Changed: `organization-import.ts` (people fields, issue fields, results with `kind`, `email`, `company`, `contactId`; the options' `contacts`), `lead-discovery.ts` (`CONTACT_CSV`, `contactImport`), `leads.ts` (`doNotContact`), `endpoints.ts` (10 endpoints, 73 in all; `responseType` for the download), `openapi.ts` (a text/csv answer), `workspaces.ts` (4 error codes), `authorization.ts` (`contacts.export`), `navigation.ts` (the do-not-contact page available; `exports` under Leads), `logger.ts` (request logs without the query string), `index.ts`. Tests: `contact-import.test.ts` (4), `exports.test.ts` (3), `logger.test.ts` (+1), `endpoints.test.ts`, `navigation.test.ts`. |
+| Database | `schema.prisma`: `exports` (new), `CONTACT_CSV`, `DELETION_REQUEST`. Migrations: `20261109000000_lead_exports_contact_import` (generated) and `…000100_…_checks` (export checks and triggers, the people import's check, the source record link trigger, the deletion request check, the `contacts.export` grant). New: `tenancy/contact-import.ts`, `tenancy/exports.ts`, `tenancy/suppressions.ts`. Changed: `contact-store.ts` (the known address checked too; country; `suppressedAddresses`), `discovery.ts` (people results, progress, options, cancel), `lead-search.ts` (`doNotContact`), `access.ts`, `index.ts`. Fixtures: an expired export in each tenant. Tests: `contact-import.integration.test.ts` (4), `exports.integration.test.ts` (3), `suppressions.integration.test.ts` (4); tenant tables and models 48 → 49, relations 74 → 75. |
+| Worker | `jobs/contact-import.ts` (the job), `jobs/export-retention.ts` (the sweep), `main.ts` (its queue, the sweep every 15 minutes), `queue.ts`, `run-task.ts`. Test: `jobs/pipeline.integration.test.ts` (3). |
+| API | `workspaces/exports.controller.ts`, `workspaces/suppressions.controller.ts` (new); `discovery.controller.ts` (people import), `leads.controller.ts` (suppress, deletion request), `workspaces.module.ts`, `http/api-errors.ts` (4 errors). Tests: `privacy.integration.test.ts` (3), `route-guards.test.ts` (10 routes). |
+| Web | `lib/api-proxy.ts` (import bodies up to 1 MB; `Content-Disposition` and `nosniff` forwarded). New: `app/workspaces/[workspaceId]/suppressions/page.tsx`, `components/suppressions/suppression-list.tsx`, `components/leads/lead-exports.tsx`, `components/leads/lead-privacy.tsx`, `lib/exports.ts`. Changed: `components/imports/import-forms.tsx` (the people form), `imports-home.tsx`, `run-view.tsx` (rows done, people, their report), `components/leads/lead-list.tsx` (exports, the erased notice), `lead-profile.tsx` (the do-not-contact note, Privacy), `components/data/status-label.tsx`, `lib/imports.ts`. Tests: `lib/imports.test.ts` (+2), `lib/exports.test.ts` (3); browser `e2e/lead-workflow.spec.ts` (4), `e2e/support/db.ts`. |
+| Docs | `docs/decisions.md` D-11C-01 to 07 and O-45; `docs/security/data-retention.md` (new, the retention policy); `docs/api/exports.md`, `docs/api/suppressions.md` (new); `docs/api/discovery.md` (people imports); `docs/api/openapi.json` (regenerated); `docs/security/authorization-review.md` (6 route rows, 3 service rows); README; `CLAUDE.md` (3 rules). This entry and M3. |
+
+### Passed local checks
+
+**Database used:** PGlite 0.5.13 (PostgreSQL 18.6) on 127.0.0.1:54329. It was restarted fresh
+before each database run and stopped at the end.
+
+**Final regression.** The generated Prisma client was deleted first, and Turborepo ran without
+its cache.
+
+| Command | Actual result |
+|---|---|
+| `pnpm install --frozen-lockfile` / `pnpm peers check` | Exit 0 / no peer issues |
+| `pnpm format:check` | Exit 0 |
+| `pnpm typecheck --force` | Exit 0; 15/15 tasks, 0 cached |
+| `turbo run lint --force` + root ESLint | Exit 0; 15/15 tasks, 0 cached; root ESLint OK |
+| `pnpm openapi --check` | Up to date (regenerated) |
+| `pnpm test --force`, no `TEST_*` variables | Exit 0; 12/12 tasks, 0 cached: shared **286**, integrations **381**, ai-agents **63**, web **50**, database **46 passed, 418 skipped**, worker **9 passed, 25 skipped**, api **31 passed, 84 skipped** |
+| `turbo run test --force --concurrency=1` with `TEST_DATABASE_URL` (PGlite) | Exit 0; 12/12 tasks, 0 cached: shared **286**, integrations **381**, ai-agents **63**, database **462 passed, 2 skipped** (the PGlite concurrency skips), api **115**, web **50**, worker **34** |
+| `prisma migrate deploy` (fresh database), `migrate status`, drift `--exit-code` | 35 migrations (2 new); up to date; no difference, exit 0 |
+| `pnpm build --force` | Exit 0; 11/11 tasks, 0 cached |
+| `pnpm test:e2e` with `E2E_DATABASE_URL` (PGlite) | **64 passed** (3.5 min), after a fix (see below). The first run failed 2 tests (61 passed, 1 not run). The web build came from the cache-free build plus the fix |
+| After the fix: `pnpm format:check`, web lint, typecheck and unit tests | Exit 0; 6/6 tasks, 0 cached; **50** passed |
+| `pnpm test:e2e` without it | **9 passed, 55 skipped** |
+| Reference repos / credential and personal-data scan of the 80 committed files | 0 changes in each of the 9 / no matches (apart from this log's own descriptions of earlier scans) |
+
+**Earlier failures in this task (logged honestly):**
+1. **Tests I wrote wrong:**
+   - audit records are ordered by `occurredAt`, not `createdAt`;
+   - `fetch().text()` drops a byte-order mark, so the API test reads the bytes;
+   - the API test harness runs on its own clock, so the expired export is made relative to it;
+   - the pipeline test first expected the live eligibility to be `review`. The decision records
+     the lead's own eligibility; the live check adds the campaign's blocks. The test now asserts
+     both, and the code is `source_policy_unknown`.
+2. **Lint:** 4 errors (an always-false condition, two unnecessary optional chains, an unused
+   initial value).
+3. **OpenAPI** was stale once: the lead detail gained `doNotContact` after the first generation.
+4. **Format:** one test file.
+5. **Tooling:** two long shell heredocs failed before writing anything (scripts written with the
+   Write tool instead); a marker matched twice (nothing written to that file); a `node -e` with
+   backticks failed (nothing written).
+6. **Browser tests, first run (2 failures):**
+   - **The 10C qualification decision's "Saved" message was never seen.** The decision was
+     saved, but the form is keyed by the current decision, so the refreshed decision remounted
+     it and wiped the message. For a person it could vanish at once. A 10C defect, made likelier
+     by the wider refresh since 11B. The message now lives in the section, outside the keyed
+     form (`components/qualification/lead-qualification.tsx`).
+   - **axe found no page title** on the company research page while it showed an earlier
+     version. Nothing in 11C touches that page, and it passed in the rerun without a change,
+     so it is logged as an unexplained flake. If it recurs, look at the title during client
+     navigation.
+
+**Defects found and fixed in passing (not caused by 11C):**
+- **Suppressed people could come back through a profile match (08C).** `saveContacts` checked only
+  the incoming address. A person on the do-not-contact list found again without their address
+  (by LinkedIn profile or name) was matched, and a people search could list them for a campaign
+  again. A known person is now checked with the address the workspace has for them.
+- **The web proxy cut every request at 64 KB (07C).** A company CSV over 64 KB couldn't be imported
+  from the browser, although the API allows 256 KB of text. Import routes now get the API's 1 MB.
+- **Search text reached the logs (11A).** Request logs included the query string (`q`, `contact`).
+  They leave it out now (D-11C-07).
+- **The 10C decision's "Saved" message vanished** when the refreshed decision remounted the form
+  (failure 6 above).
+
+### What 11C proves (local)
+
+- **Imports:** a people file is checked row by row in the request. Failed rows are reported at
+  once, with their reasons, and unmapped columns are never kept. The worker saves the rest in
+  batches of 100 with visible progress. A cancelled import keeps only what was done.
+- **Re-enrollment:** suppressed people can't come back through an import:
+  - an address or a domain on the list is excluded before anything is saved;
+  - a known suppressed person without their address is excluded too, from imports and people
+    searches;
+  - an erased person is excluded the next time the same file is imported (database and browser).
+- **Exports:** a lead search becomes a CSV file of at most 2,000 leads, every cell safe in a
+  spreadsheet, with a byte-order mark. Only its maker can download it, for 24 hours; then it is
+  410 and its content is deleted (download, new export, worker sweep). At most 10 files wait per
+  member, and audits hold counts only.
+- **The do-not-contact list:**
+  - add, repeat, a domain with its subdomains;
+  - reopened leads (Review, blocked);
+  - only a member's own entries removable;
+  - audits without addresses;
+  - another tenant's lead with the same address untouched.
+- **Deletion requests:**
+  - erase a lead and everything about them, and the records naming the address, keeping only the
+    address (no note);
+  - a stale page erases nothing;
+  - by address, also for someone unknown.
+- **Two fixture tenants:** discovery, people, research, qualification and profile review in both
+  tenants with the real jobs (D-11C-05). Then a correction, a people import and exports, neither
+  tenant seeing the other's copy of the same synthetic person.
+
+### Incomplete live checks (not passed)
+
+- Real PostgreSQL and CI; a screen-reader check of the new screens (axe only).
+- The retention sweep on a real schedule (it ran in tests, not in a deployed worker; no Redis here,
+  O-06).
+
+### Blockers
+
+1. The reference plan is missing (O-01).
+2. No email verification service is selected (O-35).
+3. No Docker or Redis (O-06).
+4. Open: O-19 to O-34, O-36 to O-45.
+
+### Manual check
+
+1. In development, open Imports and import a small CSV of people (first, last, email, company)
+   that includes an address you added to the do-not-contact list. Run the worker (or
+   `apps/worker/dist/run-task.js` with the task id), and watch the rows done; download the error
+   report.
+2. In Leads, export the leads, download the file and open it in a spreadsheet: formulas show as
+   text.
+3. Open a lead, erase them under Privacy, then import the same file again: they are excluded.
+4. Open the do-not-contact list: the erased person's address is there, without a note.
+
+### Next prompt
+
+Not given yet: 11C was the last prompt sent. The next one waits for the user.
+
+---
+
 ## GIT-19: Commit and push 11A and 11B (2026-11-08)
 
 **Status: Done.** The requests were `git commit`, then `git push`.

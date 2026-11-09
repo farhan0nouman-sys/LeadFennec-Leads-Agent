@@ -1,6 +1,8 @@
-// Saving people found by contact enrichment (task 08C, docs/decisions.md D-08C-02): one place
-// for the do-not-contact check, the campaign's exclusions and the identity match, inside the
-// caller's transaction. Writes to a workspace's contacts are serialized (a transaction-scoped
+// Saving people found by contact enrichment (task 08C, docs/decisions.md D-08C-02) or imported
+// from a CSV file (task 11C): one place for the do-not-contact check, the campaign's exclusions
+// and the identity match, inside the caller's transaction. A person the workspace already has is
+// checked with the address it has for them too, so someone on the list can't come back through a
+// record without their address (matched by profile or name). Writes to a workspace's contacts are serialized (a transaction-scoped
 // advisory lock), so two runs can never create the same person twice. A person is matched, in
 // this order, by the provider's id for them (an earlier record of theirs), their address, their
 // LinkedIn profile, and their name at the same company when neither record has an address that
@@ -22,9 +24,11 @@ export interface IncomingContact {
   readonly identity: ContactIdentity;
   readonly title: string | null;
   readonly organizationId: string;
-  /** The people provider and its id for the person (the provider mapping). */
+  /** The person's country (ISO 3166-1 alpha-2), when the record has one (CSV imports). */
+  readonly countryCode?: string | null;
+  /** The people provider (or the CSV import) and its id for the person. */
   readonly source: {
-    readonly provider: ContactDataProvider;
+    readonly provider: ContactDataProvider | 'CSV_IMPORT';
     readonly externalId: string | null;
   };
 }
@@ -71,6 +75,7 @@ const SELECT = {
   linkedinUrl: true,
   nameKey: true,
   organizationId: true,
+  countryCode: true,
 } as const;
 
 type Existing = Prisma.ContactGetPayload<{ select: typeof SELECT }>;
@@ -154,6 +159,33 @@ export async function saveContacts(
   );
   const excludedEmails = new Set(exclusions?.emails ?? []);
   const excludedDomains = new Set(exclusions?.domains ?? []);
+  const loaded = new Set(emails);
+
+  /** Loads the list's entries for an address the first lookup didn't cover. */
+  async function load(email: string): Promise<void> {
+    if (loaded.has(email)) {
+      return;
+    }
+    loaded.add(email);
+    const rows = await tx.suppression.findMany({
+      where: {
+        tenantId,
+        OR: [
+          { normalizedEmail: email },
+          { normalizedDomain: { in: domainAndParents(domainOf(email)) } },
+        ],
+      },
+      select: { normalizedEmail: true, normalizedDomain: true },
+    });
+    for (const row of rows) {
+      if (row.normalizedEmail !== null) {
+        suppressedEmails.add(row.normalizedEmail);
+      }
+      if (row.normalizedDomain !== null) {
+        suppressedDomains.add(row.normalizedDomain);
+      }
+    }
+  }
 
   /** Why an address may not be saved for this run, if it may not. */
   const blocked = (email: string | null): EnrichmentIssue | null => {
@@ -269,6 +301,13 @@ export async function saveContacts(
     if (existing.nameKey === null) {
       fill.nameKey = identity.nameKey;
     }
+    if (
+      existing.countryCode === null &&
+      contact.countryCode !== undefined &&
+      contact.countryCode !== null
+    ) {
+      fill.countryCode = contact.countryCode;
+    }
     if (existing.organizationId === null) {
       fill.organization = {
         connect: {
@@ -330,6 +369,16 @@ export async function saveContacts(
     }
     const found = await findExisting(contact);
     if (found !== null) {
+      // The address the workspace has for them counts too (task 11C).
+      const known = found.row.normalizedEmail;
+      if (known !== null && known !== contact.identity.email) {
+        await load(known);
+        const knownIssue = blocked(known);
+        if (knownIssue !== null) {
+          outcomes.push({ outcome: 'EXCLUDED', issues: [knownIssue] });
+          continue;
+        }
+      }
       const fill = await missingDetails(found.row, contact);
       if (Object.keys(fill).length > 0) {
         await tx.contact.update({
@@ -366,6 +415,7 @@ export async function saveContacts(
         normalizedEmail: identity.email,
         emailDomain: identity.email === null ? null : domainOf(identity.email),
         linkedinUrl: identity.linkedinUrl,
+        countryCode: contact.countryCode ?? null,
       },
       select: { id: true },
     });
@@ -378,4 +428,43 @@ export async function saveContacts(
     });
   }
   return outcomes;
+}
+
+/**
+ * The addresses (of those given) on the workspace's do-not-contact list, by the address itself or
+ * its domain or a parent domain (task 11C). Checked before a person's company is saved, so a
+ * suppressed person never brings a company in.
+ */
+export async function suppressedAddresses(
+  tx: Tx,
+  tenantId: string,
+  emails: readonly string[],
+): Promise<Set<string>> {
+  const addresses = unique(emails);
+  if (addresses.length === 0) {
+    return new Set();
+  }
+  const rows = await tx.suppression.findMany({
+    where: {
+      tenantId,
+      OR: [
+        { normalizedEmail: { in: addresses } },
+        {
+          normalizedDomain: {
+            in: unique(addresses.map(domainOf).flatMap(domainAndParents)),
+          },
+        },
+      ],
+    },
+    select: { normalizedEmail: true, normalizedDomain: true },
+  });
+  const byEmail = new Set(rows.flatMap((r) => r.normalizedEmail ?? []));
+  const byDomain = new Set(rows.flatMap((r) => r.normalizedDomain ?? []));
+  return new Set(
+    addresses.filter(
+      (email) =>
+        byEmail.has(email) ||
+        domainAndParents(domainOf(email)).some((d) => byDomain.has(d)),
+    ),
+  );
 }

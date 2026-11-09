@@ -1,6 +1,6 @@
 // Development and test only (task 07C, docs/decisions.md D-07C-01): runs one queued task (a
 // search, a website research since 09C, a lead qualification since 10C, a contact enrichment or
-// an address recheck since 08C) directly, without Redis. `node dist/run-task.js <taskId>` prints
+// an address recheck since 08C, a people import since 11C) directly, without Redis. `node dist/run-task.js <taskId>` prints
 // the outcome. The browser tests use it to run the real job against their database. Elsewhere it
 // refuses to run.
 import { createPrismaClient, JobRejectedError } from '@lead-fennec-ai/database';
@@ -15,6 +15,7 @@ import { describeStartupError } from '@lead-fennec-ai/shared';
 import { z } from 'zod';
 import { loadWorkerEnv, modelConfig } from './env.js';
 import { runEnrichmentTask } from './jobs/contact-enrichment.js';
+import { runContactImportTask } from './jobs/contact-import.js';
 import { runDiscoveryTask } from './jobs/lead-discovery.js';
 import { runQualificationTask } from './jobs/lead-qualification.js';
 import { runResearchTask } from './jobs/website-research.js';
@@ -56,6 +57,7 @@ async function run(): Promise<void> {
         providers: () => createContactDataProviders(env.APP_ENV, {}),
         verifier: () => createEmailVerificationProvider(env.APP_ENV),
       }),
+    () => runContactImportTask(prisma, message),
   ];
   try {
     let outcome: string | null = null;

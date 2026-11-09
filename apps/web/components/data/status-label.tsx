@@ -139,6 +139,19 @@ export const STATUS_LABELS = {
     healthy: { label: 'Healthy', tone: 'success' },
     attention: { label: 'Needs attention', tone: 'danger' },
   },
+  // A lead file (task 11C): downloadable until it expires, then deleted.
+  export: {
+    READY: { label: 'Ready', tone: 'success' },
+    EXPIRED: { label: 'Expired', tone: 'neutral' },
+  },
+  // Why an address or a domain is on the do-not-contact list (task 11C).
+  suppressionReason: {
+    OPT_OUT: { label: 'Asked not to be contacted', tone: 'warning' },
+    HARD_BOUNCE: { label: 'Address bounced', tone: 'danger' },
+    COMPLAINT: { label: 'Complaint', tone: 'danger' },
+    MANUAL: { label: 'Added by a member', tone: 'neutral' },
+    DELETION_REQUEST: { label: 'Data deleted on request', tone: 'info' },
+  },
 } as const satisfies Record<
   string,
   Record<string, { label: string; tone: StatusTone }>

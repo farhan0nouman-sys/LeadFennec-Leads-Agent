@@ -115,6 +115,7 @@ export async function loadFixtureTenants(
         });
         await tx.contactNote.createMany({ data: f.contactNotes, ...opts });
         await tx.contactTag.createMany({ data: f.contactTags, ...opts });
+        await tx.export.createMany({ data: f.exports, ...opts });
         await tx.draft.createMany({ data: f.drafts, ...opts });
         await tx.approval.createMany({ data: f.approvals, ...opts });
         await tx.outboundIntent.createMany({

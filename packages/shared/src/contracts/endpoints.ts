@@ -83,6 +83,27 @@ import {
   recheckRequestSchema,
 } from './enrichment-runs.js';
 import {
+  CONTACT_IMPORT_ROUTES,
+  contactImportRequestSchema,
+} from './contact-import.js';
+import {
+  EXPORT_ROUTES,
+  exportPageSchema,
+  exportSchema,
+  leadExportRequestSchema,
+} from './exports.js';
+import {
+  SUPPRESSION_ROUTES,
+  addSuppressionRequestSchema,
+  addSuppressionResponseSchema,
+  deletionRequestSchema,
+  deletionResultSchema,
+  leadDeletionRequestSchema,
+  leadSuppressRequestSchema,
+  suppressionListQuerySchema,
+  suppressionPageSchema,
+} from './suppressions.js';
+import {
   DISCOVERY_ROUTES,
   discoveryAcceptedSchema,
   discoveryRequestSchema,
@@ -170,6 +191,16 @@ export const ENDPOINT_TAGS = [
       'People of the workspace: the quality of their data and the checks of their addresses.',
   },
   {
+    name: 'exports',
+    description:
+      'Files of leads made from a search: bounded, spreadsheet-safe, downloadable by the member who made them until they expire.',
+  },
+  {
+    name: 'suppressions',
+    description:
+      'The do-not-contact list, and deletion requests that erase a person but keep their address on the list.',
+  },
+  {
     name: 'settings',
     description:
       "Workspace settings: the send policy (which recipients' countries and which data sources may be emailed).",
@@ -220,6 +251,8 @@ export const CACHE_RESOURCES = {
   sendPolicy: 'workspace',
   campaignLeads: 'workspace',
   campaignLead: 'workspace',
+  exports: 'workspace',
+  suppressions: 'workspace',
 } as const;
 
 export type CacheResource = keyof typeof CACHE_RESOURCES;
@@ -245,6 +278,8 @@ export interface EndpointSpec {
   readonly status: 200 | 201 | 202 | 204;
   /** The success body; null for 204. */
   readonly response: z.ZodType | null;
+  /** The success body's media type when it isn't JSON (a downloaded file); a link, not callApi. */
+  readonly responseType?: 'text/csv';
   /** Non-error answers besides `status` (the readiness probe's 503). */
   readonly otherResponses?: readonly {
     readonly status: number;
@@ -313,6 +348,12 @@ const researchVersionParams = z
     organizationId: z.uuid(),
     researchId: z.uuid(),
   })
+  .strict();
+const exportParams = z
+  .object({ workspaceId: z.uuid(), exportId: z.uuid() })
+  .strict();
+const suppressionParams = z
+  .object({ workspaceId: z.uuid(), suppressionId: z.uuid() })
   .strict();
 const invitationParams = z
   .object({ workspaceId: z.uuid(), invitationId: z.uuid() })
@@ -854,6 +895,21 @@ export const API = {
       errors: ['import_not_cancellable'],
       invalidates: ['importRun', 'importRuns', 'importResults', 'activity'],
     }),
+    contacts: endpoint({
+      id: 'imports.contacts',
+      method: 'POST',
+      path: CONTACT_IMPORT_ROUTES.contacts(':workspaceId'),
+      tag: 'imports',
+      summary:
+        "Imports people from a CSV file with a column mapping (also needs contacts.write, and lead_lists.write to add them to a lead list). Every row is checked now and failed rows are reported; the worker saves the rest in batches, so the run's progress can be followed. A person on the do-not-contact list is excluded: never saved or listed again.",
+      access: 'workspace',
+      permission: 'imports.create',
+      params: workspaceParams,
+      body: contactImportRequestSchema,
+      status: 201,
+      response: importRunSchema,
+      invalidates: ['importRuns', 'activity'],
+    }),
   },
   leads: {
     search: endpoint({
@@ -973,6 +1029,191 @@ export const API = {
         'leads',
         'campaignLead',
         'campaignLeads',
+        'activity',
+      ],
+    }),
+    suppress: endpoint({
+      id: 'leads.suppress',
+      method: 'POST',
+      path: SUPPRESSION_ROUTES.suppressLead(':workspaceId', ':contactId'),
+      tag: 'suppressions',
+      summary:
+        "Puts the person's address on the do-not-contact list: their drafts are invalidated, their scheduled sends cancelled and their decisions sent back to Review, with eligibility decided again (blocked). Repeating it changes nothing. 409 no_address without an address. Audited without the address.",
+      access: 'workspace',
+      permission: 'suppressions.manage',
+      params: contactParams,
+      body: leadSuppressRequestSchema,
+      status: 200,
+      response: leadDetailSchema,
+      errors: ['no_address'],
+      invalidates: [
+        'lead',
+        'leads',
+        'campaignLead',
+        'campaignLeads',
+        'suppressions',
+        'activity',
+      ],
+    }),
+    deletionRequest: endpoint({
+      id: 'leads.deletionRequest',
+      method: 'POST',
+      path: SUPPRESSION_ROUTES.deleteLead(':workspaceId', ':contactId'),
+      tag: 'suppressions',
+      summary:
+        'Erases the person on their request (also needs contacts.write) if `version` is the current one (409 otherwise): the contact and everything about them (sources, evidence, checks, scores, decisions, campaign leads, drafts, notes, tags) and the import records that name their address are deleted, and only their address stays, on the do-not-contact list. Audited without the address.',
+      access: 'workspace',
+      permission: 'suppressions.manage',
+      params: contactParams,
+      body: leadDeletionRequestSchema,
+      status: 200,
+      response: deletionResultSchema,
+      errors: ['version_conflict'],
+      invalidates: [
+        'lead',
+        'leads',
+        'leadEvidence',
+        'campaignLead',
+        'campaignLeads',
+        'importResults',
+        'enrichmentResults',
+        'leadSummary',
+        'suppressions',
+        'activity',
+      ],
+    }),
+  },
+  exports: {
+    list: endpoint({
+      id: 'exports.list',
+      method: 'GET',
+      path: EXPORT_ROUTES.exports(':workspaceId'),
+      tag: 'exports',
+      summary:
+        "The member's own lead files, newest first, with when each expires (also needs contacts.export). Expired ones are listed without content.",
+      access: 'workspace',
+      permission: 'contacts.read',
+      params: workspaceParams,
+      query: pageQuerySchema,
+      status: 200,
+      response: exportPageSchema,
+      cache: 'exports',
+    }),
+    create: endpoint({
+      id: 'exports.create',
+      method: 'POST',
+      path: EXPORT_ROUTES.exports(':workspaceId'),
+      tag: 'exports',
+      summary:
+        'Makes a CSV file of the leads a search finds, from the first one: at most 2,000 (more are cut, and the export says so), every cell safe to open in a spreadsheet. The member who made it can download it for 24 hours. 409 export_limit_reached with 10 files waiting. Audited.',
+      access: 'workspace',
+      permission: 'contacts.export',
+      params: workspaceParams,
+      body: leadExportRequestSchema,
+      status: 201,
+      response: exportSchema,
+      errors: ['export_limit_reached'],
+      invalidates: ['exports', 'activity'],
+    }),
+    download: endpoint({
+      id: 'exports.download',
+      method: 'GET',
+      path: EXPORT_ROUTES.download(':workspaceId', ':exportId'),
+      tag: 'exports',
+      summary:
+        "The file (text/csv, as an attachment), for the member who made it while they keep contacts.export; 410 export_expired once it has expired (its content is deleted then). Another member's file is 404. Audited.",
+      access: 'workspace',
+      permission: 'contacts.read',
+      params: exportParams,
+      status: 200,
+      response: z.string(),
+      responseType: 'text/csv',
+      errors: ['export_expired'],
+    }),
+  },
+  suppressions: {
+    list: endpoint({
+      id: 'suppressions.list',
+      method: 'GET',
+      path: SUPPRESSION_ROUTES.suppressions(':workspaceId'),
+      tag: 'suppressions',
+      summary:
+        "The workspace's do-not-contact list, newest first; filter by part of the address or domain, or by kind.",
+      access: 'workspace',
+      permission: 'suppressions.manage',
+      params: workspaceParams,
+      query: suppressionListQuerySchema,
+      status: 200,
+      response: suppressionPageSchema,
+      cache: 'suppressions',
+    }),
+    add: endpoint({
+      id: 'suppressions.add',
+      method: 'POST',
+      path: SUPPRESSION_ROUTES.suppressions(':workspaceId'),
+      tag: 'suppressions',
+      summary:
+        "Adds an address or a whole domain (with its subdomains). The workspace's leads it covers get their drafts invalidated, scheduled sends cancelled and decisions sent back to Review (at most 1,000 leads; sending checks the list again anyway). Repeating it changes nothing. Audited without the address.",
+      access: 'workspace',
+      permission: 'suppressions.manage',
+      params: workspaceParams,
+      body: addSuppressionRequestSchema,
+      status: 200,
+      response: addSuppressionResponseSchema,
+      invalidates: [
+        'suppressions',
+        'leads',
+        'lead',
+        'campaignLead',
+        'campaignLeads',
+        'activity',
+      ],
+    }),
+    remove: endpoint({
+      id: 'suppressions.remove',
+      method: 'DELETE',
+      path: SUPPRESSION_ROUTES.suppression(':workspaceId', ':suppressionId'),
+      tag: 'suppressions',
+      summary:
+        'Removes an entry a member added by hand; one from a request, a bounce or a complaint stays (409 suppression_not_removable). Audited without the address.',
+      access: 'workspace',
+      permission: 'suppressions.manage',
+      params: suppressionParams,
+      status: 204,
+      response: null,
+      errors: ['suppression_not_removable'],
+      invalidates: [
+        'suppressions',
+        'leads',
+        'lead',
+        'campaignLead',
+        'campaignLeads',
+        'activity',
+      ],
+    }),
+    deletionRequest: endpoint({
+      id: 'suppressions.deletionRequest',
+      method: 'POST',
+      path: SUPPRESSION_ROUTES.deletionRequests(':workspaceId'),
+      tag: 'suppressions',
+      summary:
+        "Erases a person by their address on their request (also needs contacts.write): their contact and everything about them, and the import records that name the address, are deleted; the address stays on the do-not-contact list, without a note. It works when the workspace doesn't know them, too. Audited without the address.",
+      access: 'workspace',
+      permission: 'suppressions.manage',
+      params: workspaceParams,
+      body: deletionRequestSchema,
+      status: 200,
+      response: deletionResultSchema,
+      invalidates: [
+        'lead',
+        'leads',
+        'leadEvidence',
+        'campaignLead',
+        'campaignLeads',
+        'importResults',
+        'enrichmentResults',
+        'leadSummary',
+        'suppressions',
         'activity',
       ],
     }),
@@ -1343,6 +1584,10 @@ export const API_ERROR_STATUS: Readonly<Record<ApiErrorCode, number>> = {
   no_email_address: 409,
   email_taken: 409,
   assignment_not_possible: 409,
+  export_limit_reached: 409,
+  export_expired: 410,
+  suppression_not_removable: 409,
+  no_address: 409,
 };
 
 /** Mutations need the session's CSRF token (and every non-GET route checks the origin). */

@@ -20,6 +20,8 @@ export const RESEARCH_QUEUE_NAME = 'lead-fennec-research';
 export const QUALIFICATION_QUEUE_NAME = 'lead-fennec-qualification';
 /** Contact enrichment and address rechecks (task 08C). */
 export const ENRICHMENT_QUEUE_NAME = 'lead-fennec-enrichment';
+/** People imports from CSV files (task 11C). */
+export const IMPORT_QUEUE_NAME = 'lead-fennec-imports';
 
 export type PublishJob = (envelope: JobEnvelope) => Promise<void>;
 

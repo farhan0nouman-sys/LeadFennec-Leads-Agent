@@ -1,6 +1,6 @@
 import { Writable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { createLogger, resolveRequestId } from './logger.js';
+import { createLogger, requestLogFields, resolveRequestId } from './logger.js';
 
 function memoryLogger() {
   const lines: Record<string, unknown>[] = [];
@@ -99,6 +99,25 @@ describe('createLogger', () => {
     expect(lines[0]).toMatchObject({
       link: 'http://example.test',
       note: 'user:name@host',
+    });
+  });
+});
+
+describe('requestLogFields', () => {
+  it('logs a request without its query string, which can hold names and addresses', () => {
+    expect(
+      requestLogFields({
+        id: 'r1',
+        method: 'GET',
+        url: '/workspaces/w1/suppressions?q=pat%40acme.example&kind=email',
+        query: { q: 'pat@acme.example', kind: 'email' },
+        params: {},
+      }),
+    ).toEqual({
+      id: 'r1',
+      method: 'GET',
+      url: '/workspaces/w1/suppressions',
+      params: {},
     });
   });
 });

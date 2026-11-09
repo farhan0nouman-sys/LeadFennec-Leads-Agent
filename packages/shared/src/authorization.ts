@@ -20,6 +20,11 @@ export const PERMISSION_CATALOG = [
     key: 'contacts.write',
     description: 'Create and edit organizations and contacts',
   },
+  // Task 11C: a file of leads leaves the app, so it needs its own grant (Client Admins only).
+  {
+    key: 'contacts.export',
+    description: 'Export leads to a file',
+  },
   { key: 'lead_lists.read', description: 'View lead lists' },
   { key: 'lead_lists.write', description: 'Create and edit lead lists' },
   { key: 'imports.create', description: 'Import contacts' },

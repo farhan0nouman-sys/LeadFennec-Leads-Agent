@@ -5,7 +5,8 @@
 // what happened to each record, filtered by outcome, with a downloadable error report whose
 // cells can't run as formulas. A running search refreshes itself (lib/polling.ts). A people
 // search (task 08C) shows its progress and its people instead, and a finished company run offers
-// to find people at its companies.
+// to find people at its companies. A people file (task 11C) shows how many of its rows are done,
+// and its people, linked to their profiles.
 import {
   API,
   IMPORT_RESULT_OUTCOMES,
@@ -43,6 +44,7 @@ import {
   runTitle,
 } from '@/lib/imports';
 import { IMPORT_RUN_POLL } from '@/lib/polling';
+import { leadProfileHref } from '@/lib/leads';
 import { companyProfileHref } from '@/lib/research';
 import { useApiMutation, useApiQuery } from '@/lib/query';
 import { useCursorTrail, useListParams } from '@/lib/use-list-params';
@@ -57,7 +59,12 @@ const REPORT_LIMIT = 100;
 
 function Counts({ run }: { readonly run: ImportRun }) {
   const items: [string, number][] = [
-    [run.source === 'CSV' ? 'Rows read' : 'Companies found', run.counts.found],
+    [
+      run.source === 'CSV' || run.source === 'CONTACT_CSV'
+        ? 'Rows read'
+        : 'Companies found',
+      run.counts.found,
+    ],
     ['Saved', run.counts.saved],
     ['of them new', run.counts.created],
     ['Excluded', run.counts.excluded],
@@ -83,7 +90,45 @@ function Counts({ run }: { readonly run: ImportRun }) {
   );
 }
 
+/** A people file's rows done, as a progress bar and in words. */
+function RowsProgress({
+  progress,
+}: {
+  readonly progress: NonNullable<ImportRun['contactImport']>;
+}) {
+  return (
+    <div className="grid gap-1">
+      <progress
+        className="h-2 w-full"
+        aria-label="Rows done"
+        max={Math.max(progress.rows, 1)}
+        value={progress.processed}
+      />
+      <p className="text-xs text-muted-foreground" data-testid="rows-done">
+        {`${formatCount(progress.processed)} of ${formatCount(progress.rows)} rows done`}
+      </p>
+    </div>
+  );
+}
+
 function statusSentence(run: ImportRun): string {
+  if (run.contactImport !== null) {
+    const { processed, rows } = run.contactImport;
+    switch (run.status) {
+      case 'PENDING':
+        return 'Queued: the import starts shortly.';
+      case 'PROCESSING':
+        return run.errorCode === null
+          ? `Importing: ${String(processed)} of ${String(rows)} rows done.`
+          : `Waiting to try again. ${runErrorText(run.errorCode, true)}`;
+      case 'COMPLETED':
+        return 'Finished.';
+      case 'CANCELLED':
+        return 'Cancelled. People saved before that were kept.';
+      case 'FAILED':
+        return 'Stopped. People saved before that were kept.';
+    }
+  }
   if (run.enrichment !== null) {
     const { done, total } = run.enrichment.companies;
     switch (run.status) {
@@ -142,8 +187,12 @@ async function problemRecords(
 }
 
 /** Saves the error report as a file (built with toCsv: formulas stay text). */
-function saveReport(results: readonly ImportResult[], fileName: string) {
-  const blob = new Blob([errorReportCsv(results)], {
+function saveReport(
+  results: readonly ImportResult[],
+  fileName: string,
+  people: boolean,
+) {
+  const blob = new Blob([errorReportCsv(results, people)], {
     type: 'text/csv;charset=utf-8',
   });
   const url = URL.createObjectURL(blob);
@@ -214,6 +263,40 @@ export function RunView({ importId }: { readonly importId: string }) {
     );
   }
 
+  const people = data.source === 'CONTACT_CSV';
+  const personColumns: DataColumn<ImportResult>[] = [
+    {
+      key: 'position',
+      header: 'Row',
+      cell: (result) => String(result.position),
+    },
+    {
+      key: 'name',
+      header: 'Person',
+      rowHeader: true,
+      cell: (result) => {
+        const name =
+          result.name === null || result.name === '' ? '—' : result.name;
+        // A saved person opens their lead profile (task 11B).
+        return result.contactId === null || !can('contacts.read') ? (
+          name
+        ) : (
+          <Link
+            href={leadProfileHref(workspaceId, result.contactId)}
+            className="underline underline-offset-4"
+          >
+            {name}
+          </Link>
+        );
+      },
+    },
+    { key: 'email', header: 'Email', cell: (result) => result.email ?? '—' },
+    {
+      key: 'company',
+      header: 'Company',
+      cell: (result) => result.company ?? '—',
+    },
+  ];
   const columns: DataColumn<ImportResult>[] = [
     {
       key: 'position',
@@ -276,7 +359,9 @@ export function RunView({ importId }: { readonly importId: string }) {
           data.enrichment !== null
             ? 'People at the companies of an earlier run, for the profile’s roles. Nobody is emailed.'
             : data.search === null
-              ? 'What happened to each row of the file.'
+              ? people
+                ? 'What happened to each person in the file. Nobody is emailed.'
+                : 'What happened to each row of the file.'
               : `${data.search.attribution} Companies only; people are found later.`
         }
         actions={
@@ -284,13 +369,14 @@ export function RunView({ importId }: { readonly importId: string }) {
             <ConfirmButton
               variant="outline"
               confirm={{
-                title: 'Cancel this search?',
-                description:
-                  data.enrichment === null
+                title: people ? 'Cancel this import?' : 'Cancel this search?',
+                description: people
+                  ? 'The import stops before its next batch. People already saved stay in the workspace; the rest of the file is not kept.'
+                  : data.enrichment === null
                     ? 'The search stops before its next page. Companies already saved stay in the workspace.'
                     : 'The search stops before its next company. People already saved stay in the workspace.',
-                confirmLabel: 'Cancel search',
-                cancelLabel: 'Keep searching',
+                confirmLabel: people ? 'Cancel import' : 'Cancel search',
+                cancelLabel: people ? 'Keep importing' : 'Keep searching',
                 pendingLabel: 'Cancelling…',
                 destructive: true,
                 onConfirm: async () => {
@@ -302,7 +388,7 @@ export function RunView({ importId }: { readonly importId: string }) {
                 },
               }}
             >
-              Cancel search
+              {people ? 'Cancel import' : 'Cancel search'}
             </ConfirmButton>
           ) : undefined
         }
@@ -319,10 +405,13 @@ export function RunView({ importId }: { readonly importId: string }) {
             <Alert variant="destructive">
               <AlertTitle>Why it stopped</AlertTitle>
               <AlertDescription className="text-destructive">
-                {runErrorText(data.errorCode)}
+                {runErrorText(data.errorCode, people)}
               </AlertDescription>
             </Alert>
           ) : null}
+          {data.contactImport === null ? null : (
+            <RowsProgress progress={data.contactImport} />
+          )}
           {data.enrichment === null ? (
             <Counts run={data} />
           ) : (
@@ -361,7 +450,11 @@ export function RunView({ importId }: { readonly importId: string }) {
                   setReportError(null);
                   problemRecords(workspaceId, importId)
                     .then((records) => {
-                      saveReport(records, `import-${importId}-errors.csv`);
+                      saveReport(
+                        records,
+                        `import-${importId}-errors.csv`,
+                        people,
+                      );
                     })
                     .catch((error: unknown) => {
                       setReportError(errorMessage(error));
@@ -403,7 +496,7 @@ export function RunView({ importId }: { readonly importId: string }) {
           </ListFilters>
           <DataTable
             label="Results"
-            columns={columns}
+            columns={people ? [...personColumns, ...columns.slice(3)] : columns}
             rows={results.data?.items}
             rowKey={(result) => result.id}
             status={results.status}

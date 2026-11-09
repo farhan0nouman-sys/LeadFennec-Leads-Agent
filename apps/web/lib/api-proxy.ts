@@ -14,6 +14,17 @@ const API_ROOTS = new Set(['auth', 'workspaces', 'invitations', 'platform']);
 const SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 const METHODS = new Set(['GET', 'POST', 'PATCH', 'DELETE']);
 const MAX_BODY_BYTES = 64 * 1024;
+/**
+ * CSV imports carry their file (up to 256 KB of text, a little more as JSON): the API's own
+ * body limit, 1 MB, applies to them (task 11C). Every other request stays at 64 KB.
+ */
+const IMPORT_BODY_BYTES = 1024 * 1024;
+const IMPORT_PATH = /^\/workspaces\/[^/]+\/imports\/(csv|contacts)$/;
+
+/** The most bytes the proxy forwards for a request to `path`. */
+export function maxBodyBytes(path: string): number {
+  return IMPORT_PATH.test(path) ? IMPORT_BODY_BYTES : MAX_BODY_BYTES;
+}
 const TIMEOUT_MS = 15_000;
 
 /** Request headers the API needs: content type, the session cookie, CSRF and origin checks. */
@@ -30,6 +41,9 @@ const REQUEST_HEADERS = [
 const RESPONSE_HEADERS = [
   'content-type',
   'cache-control',
+  // A downloaded file (lead exports, task 11C) is an attachment with the API's file name.
+  'content-disposition',
+  'x-content-type-options',
   'retry-after',
   'x-request-id',
 ];
@@ -91,7 +105,7 @@ export async function proxyToApi(
   let body: ArrayBuffer | undefined;
   if (request.method !== 'GET') {
     body = await request.arrayBuffer();
-    if (body.byteLength > MAX_BODY_BYTES) {
+    if (body.byteLength > maxBodyBytes(path)) {
       return errorResponse(
         413,
         'validation_failed',

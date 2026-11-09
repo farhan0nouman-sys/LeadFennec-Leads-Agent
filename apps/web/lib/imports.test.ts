@@ -6,7 +6,9 @@ import {
 import { describe, expect, it } from 'vitest';
 import {
   canFindPeople,
+  contactMappingFrom,
   errorReportCsv,
+  guessContactMapping,
   guessMapping,
   mappingFrom,
   runErrorText,
@@ -47,6 +49,10 @@ describe('import screens', () => {
         outcome: 'CREATED',
         name: 'Saved Co',
         domain: 'saved.example',
+        kind: 'company',
+        email: null,
+        company: null,
+        contactId: null,
         externalId: null,
         organizationId: '00000000-0000-7000-8000-000000000002',
         issues: [],
@@ -57,6 +63,10 @@ describe('import screens', () => {
         outcome: 'FAILED',
         name: '=HYPERLINK("http://evil.example","x")',
         domain: '@evil.example',
+        kind: 'company',
+        email: null,
+        company: null,
+        contactId: null,
         externalId: null,
         organizationId: null,
         issues: [
@@ -73,6 +83,10 @@ describe('import screens', () => {
         outcome: 'EXCLUDED',
         name: 'Rival, Inc.',
         domain: 'rival.example',
+        kind: 'company',
+        email: null,
+        company: null,
+        contactId: null,
         externalId: null,
         organizationId: null,
         issues: [
@@ -128,6 +142,82 @@ describe('import screens', () => {
   });
 });
 
+// People files (task 11C): a mapping guess, the required columns, and a report of people whose
+// cells stay text in a spreadsheet.
+describe('people imports', () => {
+  it('guesses a people mapping and needs a first, a last and a company name', () => {
+    const guess = guessContactMapping([
+      'First Name',
+      'Surname',
+      'Work Email',
+      'Job Title',
+      'Company',
+      'Website',
+      'LinkedIn',
+      'Notes',
+    ]);
+    expect(guess).toEqual({
+      firstName: 'First Name',
+      lastName: 'Surname',
+      email: 'Work Email',
+      title: 'Job Title',
+      company: 'Company',
+      companyDomain: 'Website',
+      linkedinUrl: 'LinkedIn',
+    });
+    expect(contactMappingFrom({ firstName: 'First Name', lastName: '' })).toBe(
+      null,
+    );
+    expect(
+      contactMappingFrom({
+        firstName: 'First Name',
+        lastName: 'Surname',
+        company: 'Company',
+        email: '',
+      }),
+    ).toEqual({
+      firstName: 'First Name',
+      lastName: 'Surname',
+      company: 'Company',
+    });
+  });
+
+  it('writes a people report a spreadsheet can only read as text', () => {
+    const csv = errorReportCsv(
+      [
+        {
+          id: '00000000-0000-7000-8000-000000000011',
+          position: 3,
+          kind: 'person',
+          outcome: 'EXCLUDED',
+          name: 'Pat Doe',
+          domain: 'acme.example',
+          email: 'pat@acme.example',
+          company: '=cmd|calc',
+          externalId: null,
+          organizationId: null,
+          contactId: null,
+          issues: [
+            {
+              field: 'email',
+              message: 'This address is on the do-not-contact list.',
+            },
+          ],
+        },
+      ],
+      true,
+    );
+    expect(csv.split('\r\n')).toEqual([
+      'Row,Outcome,Person,Email,Company,Field,Reason',
+      "3,Excluded,Pat Doe,pat@acme.example,'=cmd|calc,Email address,This address is on the do-not-contact list.",
+      '',
+    ]);
+    expect(runErrorText('internal_error', true)).toBe(
+      'Something went wrong while importing the file.',
+    );
+  });
+});
+
 // Finding people for a run's companies (task 08C).
 describe('people search', () => {
   const run = (overrides: Partial<ImportRun>): ImportRun => ({
@@ -135,6 +225,7 @@ describe('people search', () => {
     source: 'ORGANIZATION_SEARCH',
     status: 'COMPLETED',
     enrichment: null,
+    contactImport: null,
     search: null,
     fileName: null,
     counts: {

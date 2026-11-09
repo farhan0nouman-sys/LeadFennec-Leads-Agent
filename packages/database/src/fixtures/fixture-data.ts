@@ -197,6 +197,8 @@ export interface FixtureTenant extends FixtureOutreach, FixtureBilling {
   /** A member's note and a tag on the shared contact (task 11B). */
   readonly contactNotes: Prisma.ContactNoteCreateManyInput[];
   readonly contactTags: Prisma.ContactTagCreateManyInput[];
+  /** A lead file the admin made, expired with its content deleted (task 11C). */
+  readonly exports: Prisma.ExportCreateManyInput[];
 }
 
 /** Ids of every fixture row, for tests that need to reference them. */
@@ -229,6 +231,7 @@ export function fixtureIds(key: FixtureKey) {
     leadQualification: fixtureId(g, 113),
     contactNote: fixtureId(g, 114),
     contactTag: fixtureId(g, 115),
+    leadExport: fixtureId(g, 116),
     verification: fixtureId(g, 120),
     emailAccount: fixtureId(g, 130),
     templateIntro: fixtureId(g, 140),
@@ -1064,6 +1067,7 @@ function buildLeadScore(
   | 'leadQualifications'
   | 'contactNotes'
   | 'contactTags'
+  | 'exports'
 > {
   const alpha = key === 'alpha';
   const tenantId = ids.tenant;
@@ -1185,6 +1189,25 @@ function buildLeadScore(
         contactId: ids.contactShared,
         tag: alpha ? 'decision maker' : 'clinic owner',
         createdAt: new Date('2026-10-10T11:00:00Z'),
+      },
+    ],
+    exports: [
+      {
+        tenantId,
+        id: ids.leadExport,
+        kind: 'LEADS',
+        status: 'EXPIRED',
+        requestedByMembershipId: ids.membershipAdmin,
+        fileName: 'leads-202610101200.csv',
+        filters: alpha ? { country: 'US' } : { q: 'clinic' },
+        rowCount: 1,
+        truncated: false,
+        byteSize: 120,
+        contentSha256: payloadSha256({ fixture: `export:${key}` }),
+        content: null,
+        createdAt: new Date('2026-10-10T12:00:00Z'),
+        expiresAt: new Date('2026-10-11T12:00:00Z'),
+        purgedAt: new Date('2026-10-11T13:00:00Z'),
       },
     ],
   };

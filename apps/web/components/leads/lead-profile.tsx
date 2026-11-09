@@ -6,7 +6,8 @@
 // tags, campaigns with their decisions, and the activity of those decisions. Members with the
 // permissions correct the data, tag, note, assign to a campaign, and approve or reject the lead
 // in a campaign. Everything from imports, providers, pages and notes is untrusted text: shown as
-// text only, and linked only when it is an http(s) URL.
+// text only, and linked only when it is an http(s) URL. Members with suppressions.manage put the
+// lead on the do-not-contact list or erase it on the person's request (task 11C).
 import { API, type LeadDetail } from '@lead-fennec-ai/shared';
 import { ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
@@ -20,6 +21,7 @@ import {
   NoteFormView,
   TagsFormView,
 } from '@/components/leads/lead-forms';
+import { LeadPrivacy } from '@/components/leads/lead-privacy';
 import { ContactQualitySection } from '@/components/qualification/contact-quality';
 import { buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -189,6 +191,11 @@ export function LeadProfile({ contactId }: { readonly contactId: string }) {
           </Link>
         }
       />
+      {data.doNotContact ? (
+        <p role="note" className="text-sm font-medium">
+          On the do-not-contact list: this lead can’t be emailed.
+        </p>
+      ) : null}
       {data.tags.length === 0 ? null : (
         <ul aria-label="Tags" className="flex flex-wrap gap-2">
           {data.tags.map((tag) => (
@@ -385,6 +392,15 @@ export function LeadProfile({ contactId }: { readonly contactId: string }) {
             <CorrectionFormView workspaceId={workspaceId} lead={data} />
           </Section>
         </>
+      ) : null}
+      {can('suppressions.manage') ? (
+        <Section id="privacy" title="Privacy">
+          <LeadPrivacy
+            workspaceId={workspaceId}
+            lead={data}
+            canErase={canWrite}
+          />
+        </Section>
       ) : null}
     </div>
   );

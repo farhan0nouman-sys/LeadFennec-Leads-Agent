@@ -9,6 +9,7 @@ import type { DiscoveryProviderInfo } from '@lead-fennec-ai/database';
 import {
   DISCOVERY_ROUTES,
   cancelImportRequestSchema,
+  contactImportRequestSchema,
   csvImportRequestSchema,
   discoveryRequestSchema,
   importResultsQuerySchema,
@@ -97,6 +98,30 @@ export class DiscoveryController {
     body: z.output<typeof csvImportRequestSchema>,
   ) {
     return requireWorkspace(request).discovery.importCsv(body);
+  }
+
+  /**
+   * A people file (task 11C): every row is checked now (failed rows reported), and the worker
+   * saves the rest in batches. Also needs contacts.write (and lead_lists.write with a list),
+   * which the repository checks.
+   */
+  @Post(':workspaceId/imports/contacts')
+  @HttpCode(201)
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(
+    OriginGuard,
+    SessionGuard,
+    CsrfGuard,
+    WorkspaceGuard,
+    PermissionGuard,
+  )
+  @RequirePermissions('imports.create')
+  importContacts(
+    @Req() request: WorkspaceRequest,
+    @Body(new ZodPipe(contactImportRequestSchema))
+    body: z.output<typeof contactImportRequestSchema>,
+  ) {
+    return requireWorkspace(request).contactImports.request(body);
   }
 
   @Get(':workspaceId/imports')

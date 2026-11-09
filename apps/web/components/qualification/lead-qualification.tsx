@@ -263,10 +263,16 @@ function DecisionForm({
   view,
   workspaceId,
   canApprove,
+  onSaved,
 }: {
   readonly view: LeadQualificationView;
   readonly workspaceId: string;
   readonly canApprove: boolean;
+  /**
+   * The saved decision's words. The form starts afresh for each new decision (its key), so the
+   * message lives in the section, or the refreshed decision would wipe it at once.
+   */
+  readonly onSaved: (message: string | null) => void;
 }) {
   const decide = useApiMutation(API.qualification.decide);
   const states = decisionStates(view);
@@ -276,7 +282,6 @@ function DecisionForm({
   );
   const [note, setNote] = useState('');
   const [accept, setAccept] = useState(false);
-  const [saved, setSaved] = useState<string | null>(null);
   const form = useFormSubmit({
     schema: qualificationDecisionRequestSchema,
     submit: (body) =>
@@ -291,7 +296,7 @@ function DecisionForm({
     onSuccess: (result) => {
       setNote('');
       setAccept(false);
-      setSaved(
+      onSaved(
         `Saved: ${QUALIFICATION_STATE_LABELS[result.qualification?.state ?? state]}.`,
       );
     },
@@ -309,7 +314,7 @@ function DecisionForm({
       className="grid gap-3 rounded-lg border p-4"
       onSubmit={(event) => {
         event.preventDefault();
-        setSaved(null);
+        onSaved(null);
         void form.handleSubmit({
           version: view.qualification?.version ?? 0,
           state,
@@ -368,9 +373,6 @@ function DecisionForm({
         <SubmitButton pending={form.pending} pendingLabel="Saving…">
           Save decision
         </SubmitButton>
-        <p role="status" className="text-sm">
-          {saved ?? ''}
-        </p>
       </div>
     </form>
   );
@@ -394,6 +396,7 @@ function QualificationSection({
   readonly canApprove: boolean;
 }) {
   const current = view.qualification;
+  const [saved, setSaved] = useState<string | null>(null);
   // A decision made before the person became blocked stays in the history, but sends nothing.
   const blockedNow = view.eligibility.checks.some(
     (check) => check.scope === 'lead' && check.status === 'blocked',
@@ -473,7 +476,13 @@ function QualificationSection({
             view={view}
             workspaceId={workspaceId}
             canApprove={canApprove}
+            onSaved={setSaved}
           />
+        ) : null}
+        {canDecide ? (
+          <p role="status" className="text-sm">
+            {saved ?? ''}
+          </p>
         ) : null}
         {view.history.length === 0 ? null : (
           <DataTable

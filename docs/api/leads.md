@@ -135,3 +135,13 @@ Each answers with the lead's detail as it now stands.
 
 Approving or rejecting a lead in a campaign is the qualification decision
 (`docs/api/qualification.md`).
+
+## Changes (task 11C)
+
+- **Detail:** gains `doNotContact`: the lead's address, its domain or a parent domain is on the
+  do-not-contact list, so the lead can't be emailed or added to a campaign.
+- **Privacy:** a lead's own address goes on the list with `POST …/leads/:contactId/suppress`, and
+  a lead is erased with `POST …/leads/:contactId/deletion-request` (`docs/api/suppressions.md`).
+- **Exports:** a search becomes a CSV file (`docs/api/exports.md`).
+- **Logs:** search parameters (`q`, `contact` and the rest) are never logged; request logs leave
+  out the query string.

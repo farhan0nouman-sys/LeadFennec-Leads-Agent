@@ -325,6 +325,20 @@ if needed; next prompt ID.
   cancelled, decisions back to Review with eligibility decided again. Never keep an approval
   of old data. Assignment checks the campaign in the workspace and refuses blocks that apply
   before sending; add a refusal there, never in a page.
+- **People imports** (`docs/decisions.md` D-11C-01): import people only through
+  `scope.contactImports` (rows checked in the request, saved by the `contact_import` worker in
+  batches). Save people only through `saveContacts` and companies through `saveOrganizations`;
+  check the do-not-contact list before saving anything, and never bring back a suppressed or
+  erased person (the known address counts too). Keep only mapped columns.
+- **Exports** (`docs/decisions.md` D-11C-02): files of leads only through `scope.exports`
+  (`contacts.export`, the maker's own, read through `scope.leads.search`), every cell through
+  `toCsv`, bounded, and deleted at expiry. Never put a token in a download link; audit counts
+  only.
+- **Do-not-contact and deletion requests** (`docs/decisions.md` D-11C-03, D-11C-04,
+  `docs/security/data-retention.md`): change the list only through `scope.suppressions` (the
+  contacts lock; reopen the leads it covers). A deletion request keeps only the address (no
+  note). Never put an address, a domain or a note in an audit record or a log, and never log
+  query strings.
 - **Campaign wizard** (`docs/decisions.md` D-06B-*): a stage turns its form into the sections
   of a save and checks them with `updateCampaignRequestSchema` (`apps/web/lib/campaign-wizard.ts`);
   map every issue path, the page's or the API's, to a field of the stage, and never write a

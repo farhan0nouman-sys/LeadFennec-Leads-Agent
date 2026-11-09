@@ -6,7 +6,11 @@ import {
   AlreadyMemberError,
   AssignmentNotPossibleError,
   EmailTakenError,
+  ExportExpiredError,
+  ExportLimitError,
   LeadCorrectionError,
+  LeadHasNoAddressError,
+  SuppressionNotRemovableError,
   LeadVersionConflictError,
   CampaignConfigurationError,
   CampaignNameTakenError,
@@ -319,6 +323,34 @@ export function toApiException(error: unknown): ApiHttpException | null {
       { issues: error.issues },
     );
   }
+  if (error instanceof ExportLimitError) {
+    return new ApiHttpException(
+      409,
+      'export_limit_reached',
+      'You have the most files waiting to be downloaded. Wait until one expires, then export again.',
+    );
+  }
+  if (error instanceof ExportExpiredError) {
+    return new ApiHttpException(
+      410,
+      'export_expired',
+      'This file has expired and was deleted. Export the leads again.',
+    );
+  }
+  if (error instanceof SuppressionNotRemovableError) {
+    return new ApiHttpException(
+      409,
+      'suppression_not_removable',
+      'This entry came from a request, a bounce or a complaint, so it stays on the list.',
+    );
+  }
+  if (error instanceof LeadHasNoAddressError) {
+    return new ApiHttpException(
+      409,
+      'no_address',
+      'This lead has no email address to put on the list.',
+    );
+  }
   if (error instanceof NoEmailAddressError) {
     return new ApiHttpException(
       409,
@@ -435,6 +467,10 @@ function send(
   EmailTakenError,
   LeadCorrectionError,
   AssignmentNotPossibleError,
+  ExportLimitError,
+  ExportExpiredError,
+  SuppressionNotRemovableError,
+  LeadHasNoAddressError,
   CsvImportError,
   ImportNotCancellableError,
   ResearchNotPossibleError,

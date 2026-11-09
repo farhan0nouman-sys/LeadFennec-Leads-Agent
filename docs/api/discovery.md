@@ -191,3 +191,30 @@ With Apollo, a request may ask for up to 1000 companies (Lead Fennec's cap; Apol
 Apollo's exact ones (for example "information technology & services"). Found companies carry
 an id, name, domain and website only: Apollo's search documents no industry, size or country.
 Details: `docs/decisions.md` D-07B-*.
+
+## People from a CSV file (task 11C)
+
+`POST /workspaces/:workspaceId/imports/contacts` (`imports.create`; also `contacts.write`, and
+`lead_lists.write` to name a lead list). Body: `{ fileName, content, mapping, leadListId? }`.
+Decisions: `docs/decisions.md` D-11C-01.
+
+- **Mapping:** `firstName`, `lastName` and `company` are required. Optional: `email`,
+  `linkedinUrl`, `title`, `companyDomain`, `country`. Each person needs an address, a LinkedIn
+  profile or a company domain.
+- **Limits:** the CSV import's: 256 KB, 1,000 rows, 30 columns, 1,000 characters a cell.
+- **In the request:** every row is checked. Failed rows are reported at once, by field, and the
+  answer (`201`) is the run: `source: CONTACT_CSV`, PENDING, with `contactImport: { leadListId,
+  rows, processed }`.
+- **The worker** saves the other rows in batches of 100, one transaction each. `processed` moves
+  with every batch.
+  - `POST …/imports/:importId/cancel` stops it before its next batch. The rows not yet imported
+    are deleted.
+- **Results** (`GET …/imports/:importId/results`) are people (`kind: person`, with `email`,
+  `company` and `contactId`):
+  - CREATED or MATCHED: matched by address, profile or name at the company, never a second
+    contact;
+  - EXCLUDED: their address or its domain (or a parent domain) is on the do-not-contact list, or
+    so is the address the workspace already has for them;
+  - FAILED: the row's reasons.
+- **Lead list:** people with an address go on `leadListId` (another workspace's list is "Not
+  found in this workspace."), unless their address's latest check is invalid.

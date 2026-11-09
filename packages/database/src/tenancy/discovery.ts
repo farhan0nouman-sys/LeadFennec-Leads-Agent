@@ -3,12 +3,17 @@
 // search worker runs a request page by page. Every run is an `imports` row; every record it
 // received is a `source_records` row with its outcome (created, matched, excluded, failed),
 // so the counts and the results always agree. Companies are saved through saveOrganizations
-// (suppression check, identity match, no duplicates). Nothing here touches contacts.
+// (suppression check, identity match, no duplicates). People imports from a CSV file (task 11C)
+// are saved by contact-import.ts; their runs, results and cancellation are read here too.
 import {
+  CONTACT_IMPORT_BATCH_ROWS,
+  CONTACT_IMPORT_FIELDS,
+  CONTACT_IMPORT_LIMITS,
   CsvError,
   DISCOVERY_DEFAULT_RESULTS,
   DISCOVERY_MAX_RESULTS,
   DISCOVERY_PROVIDERS,
+  IMPORT_ISSUE_FIELDS,
   IMPORT_RESULT_OUTCOMES,
   ORGANIZATION_IMPORT_FIELDS,
   ORGANIZATION_IMPORT_LIMITS,
@@ -47,6 +52,7 @@ import {
 import { writeAuditRecord } from './audit.js';
 import {
   RecordNotFoundError,
+  hasPermission,
   requirePermission,
   requireReadPermission,
 } from './authorization.js';
@@ -194,11 +200,14 @@ const sourceMetadataSchema = z
 
 /** What every result's payload carries for display; the rest stays as received. */
 const displaySchema = z.looseObject({
+  kind: z.string().nullish(),
   name: z.string().nullish(),
   domain: z.string().nullish(),
+  email: z.string().nullish(),
+  company: z.string().nullish(),
 });
 
-const ISSUE_FIELDS = [...ORGANIZATION_IMPORT_FIELDS, 'row'] as const;
+const ISSUE_FIELDS = IMPORT_ISSUE_FIELDS;
 /** Issues as stored; a field this contract doesn't name (an enrichment run's) reads as "row". */
 const issuesSchema = z.array(
   z
@@ -247,6 +256,7 @@ function toRun(
     };
   }
   const handled = row.importedRows + row.skippedRows + row.failedRows;
+  const people = row.source === 'CONTACT_CSV';
   return {
     id: row.id,
     source: row.source,
@@ -255,6 +265,14 @@ function toRun(
       row.source === 'CONTACT_ENRICHMENT'
         ? enrichmentInfo(row, skippedCompanies)
         : null,
+    // A people file's progress: its rows done (task 11C). A row is never repeated there.
+    contactImport: people
+      ? {
+          leadListId: row.leadListId,
+          rows: row.totalRows,
+          processed: handled,
+        }
+      : null,
     search,
     fileName: row.fileName,
     counts: {
@@ -263,7 +281,7 @@ function toRun(
       created,
       excluded: row.skippedRows,
       failed: row.failedRows,
-      repeated: Math.max(0, row.totalRows - handled),
+      repeated: people ? 0 : Math.max(0, row.totalRows - handled),
     },
     pagesFetched: row.pagesFetched,
     errorCode: row.errorCode,
@@ -519,6 +537,7 @@ export function createDiscoveryRepository(
               payload: true,
               externalId: true,
               organizationId: true,
+              contactId: true,
               issues: true,
             },
           }),
@@ -527,15 +546,21 @@ export function createDiscoveryRepository(
       return {
         nextCursor: page.nextCursor,
         items: page.items.map((row) => {
-          const display = displaySchema.safeParse(row.payload);
+          const parsed = displaySchema.safeParse(row.payload);
+          const display = parsed.success ? parsed.data : null;
+          const person = display?.kind === 'person';
           return {
             id: row.id,
             position: row.importRowNumber ?? 1,
+            kind: person ? ('person' as const) : ('company' as const),
             outcome: z.enum(IMPORT_RESULT_OUTCOMES).parse(row.outcome),
-            name: display.success ? (display.data.name ?? null) : null,
-            domain: display.success ? (display.data.domain ?? null) : null,
+            name: display?.name ?? null,
+            domain: display?.domain ?? null,
+            email: person ? (display.email ?? null) : null,
+            company: person ? (display.company ?? null) : null,
             externalId: row.externalId,
             organizationId: row.organizationId,
+            contactId: row.contactId,
             issues: row.issues === null ? [] : issuesSchema.parse(row.issues),
           };
         }),
@@ -568,6 +593,23 @@ export function createDiscoveryRepository(
           maxRows: ORGANIZATION_IMPORT_LIMITS.maxRows,
           fields: [...ORGANIZATION_IMPORT_FIELDS],
         },
+        // People files (task 11C): they create contacts, and may fill a lead list.
+        contacts: hasPermission(actor, 'contacts.write')
+          ? {
+              maxBytes: CONTACT_IMPORT_LIMITS.maxChars,
+              maxRows: CONTACT_IMPORT_LIMITS.maxRows,
+              rowsPerBatch: CONTACT_IMPORT_BATCH_ROWS,
+              fields: [...CONTACT_IMPORT_FIELDS],
+              leadLists: hasPermission(actor, 'lead_lists.write')
+                ? await prisma.leadList.findMany({
+                    where: { tenantId, status: 'ACTIVE' },
+                    orderBy: [{ name: 'asc' }, { id: 'asc' }],
+                    take: 200,
+                    select: { id: true, name: true },
+                  })
+                : [],
+            }
+          : null,
       };
     },
 
@@ -582,6 +624,12 @@ export function createDiscoveryRepository(
         }
         if (row.status === 'COMPLETED' || row.status === 'FAILED') {
           throw new ImportNotCancellableError();
+        }
+        // A people file's rows not imported yet are not kept (task 11C): only what was done is.
+        if (row.source === 'CONTACT_CSV') {
+          await tx.sourceRecord.deleteMany({
+            where: { tenantId, importId: id, outcome: null },
+          });
         }
         const updated = await tx.import.update({
           where: { tenantId_id: { tenantId, id } },

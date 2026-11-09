@@ -1,10 +1,11 @@
 'use client';
 
 // The Imports page (task 07C): find companies for an ideal customer profile, or import them
-// from a CSV file, and the workspace's imports so far. The page checks access on the server
+// from a CSV file, import people from a CSV file (task 11C), and the workspace's imports so far. The page checks access on the server
 // first; the data comes through the workspace-scoped cache.
 import { API } from '@lead-fennec-ai/shared';
 import {
+  ContactCsvImportForm,
   CsvImportForm,
   DiscoveryForm,
 } from '@/components/imports/import-forms';
@@ -32,7 +33,7 @@ export function ImportsHome() {
     <div className="grid gap-6">
       <PageHeader
         title="Imports"
-        description="Bring companies into the workspace. A company already saved is matched, never added twice; domains on the suppression list are excluded."
+        description="Bring companies and people into the workspace. Someone already saved is matched, never added twice; addresses and domains on the do-not-contact list are excluded."
       />
       {options.data === undefined ? (
         options.status === 'error' ? (
@@ -72,6 +73,20 @@ export function ImportsHome() {
               <CsvImportForm options={options.data} />
             </CardContent>
           </Card>
+          {options.data.contacts === null ? null : (
+            <Card className="lg:col-span-2">
+              <CardHeader>
+                <CardTitle>Import people from a CSV file</CardTitle>
+                <CardDescription>
+                  Each person with their company. Every row is checked first,
+                  then imported in batches you can follow.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ContactCsvImportForm options={options.data.contacts} />
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
       <section aria-labelledby="runs-heading" className="grid gap-3">

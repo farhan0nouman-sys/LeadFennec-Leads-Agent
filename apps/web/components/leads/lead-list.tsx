@@ -1,7 +1,8 @@
 'use client';
 
 // The workspace's leads (tasks 11A and 11B, docs/decisions.md D-11A-*): searched through the
-// lead search API with its allowlisted filters and sorts, one page at a time. The search, its
+// lead search API with its allowlisted filters and sorts, one page at a time. Members with
+// contacts.export can export the search to a file (task 11C). The search, its
 // filters and its sort live in the address bar (validated). Names, titles and companies come
 // from imports and providers: untrusted text, shown as text only.
 import {
@@ -11,6 +12,7 @@ import {
 } from '@lead-fennec-ai/shared';
 import { Users } from 'lucide-react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { z } from 'zod';
 import { DataTable, type DataColumn } from '@/components/data/data-table';
 import {
@@ -21,7 +23,9 @@ import {
 import { CursorPagination } from '@/components/data/pagination';
 import { Status } from '@/components/data/status-label';
 import { EmptyState } from '@/components/feedback/empty-state';
+import { LeadExports } from '@/components/leads/lead-exports';
 import { PageHeader } from '@/components/ui/typography';
+import { exportFilters } from '@/lib/exports';
 import { formatDateTime } from '@/lib/format';
 import { leadProfileHref } from '@/lib/leads';
 import { useApiQuery } from '@/lib/query';
@@ -56,11 +60,13 @@ const VERIFICATION_LABELS: Readonly<
 };
 
 export function LeadList() {
-  const { current } = useWorkspace();
+  const { current, can } = useWorkspace();
   const workspaceId = current.workspace.id;
   const view = useListParams(viewSchema);
   const pages = useCursorTrail(`${workspaceId}:${view.viewKey}`);
   const { q, verification, sort } = view.values;
+  // Set after a lead was erased on request (task 11C): the list says so.
+  const erased = useSearchParams().get('erased') === '1';
   const leads = useApiQuery(API.leads.search, {
     params: { workspaceId },
     query: {
@@ -135,6 +141,12 @@ export function LeadList() {
         title="Leads"
         description="The workspace's people: where each came from, how good the data is, and the campaigns they're in."
       />
+      {erased ? (
+        <p role="status" className="text-sm">
+          The lead was erased. Only their address stays, on the do-not-contact
+          list.
+        </p>
+      ) : null}
       <ListFilters
         label="Find leads"
         filtered={view.filtered}
@@ -217,6 +229,9 @@ export function LeadList() {
           />
         }
       />
+      {can('contacts.export') ? (
+        <LeadExports filters={exportFilters(view.values)} />
+      ) : null}
     </div>
   );
 }

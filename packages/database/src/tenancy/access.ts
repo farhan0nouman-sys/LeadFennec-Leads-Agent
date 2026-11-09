@@ -32,9 +32,18 @@ import {
   type CampaignRepository,
 } from './campaigns.js';
 import {
+  createContactImportRepository,
+  type ContactImportRepository,
+} from './contact-import.js';
+import {
   createDiscoveryRepository,
   type DiscoveryRepository,
 } from './discovery.js';
+import { createExportRepository, type ExportRepository } from './exports.js';
+import {
+  createSuppressionRepository,
+  type SuppressionRepository,
+} from './suppressions.js';
 import {
   createEnrichmentRepository,
   type EnrichmentRepository,
@@ -97,6 +106,12 @@ export interface TenantScope {
   readonly enrichment: EnrichmentRepository;
   /** Searching the workspace's people, one lead in detail and its evidence (task 11A). */
   readonly leads: LeadSearchRepository;
+  /** People imports from CSV files, saved by the worker in batches (task 11C). */
+  readonly contactImports: ContactImportRepository;
+  /** Lead files: bounded, spreadsheet-safe, for their maker only, until they expire (11C). */
+  readonly exports: ExportRepository;
+  /** The do-not-contact list and deletion requests (task 11C). */
+  readonly suppressions: SuppressionRepository;
   readonly invitations: InvitationRepository;
   readonly members: MemberRepository;
   readonly notifications: NotificationRepository;
@@ -115,6 +130,7 @@ function buildScope(
   options: ScopeOptions,
 ): TenantScope {
   const now = options.now ?? (() => new Date());
+  const leads = createLeadSearchRepository(prisma, tenantId, actor, now);
   return {
     tenantId,
     actor,
@@ -131,7 +147,16 @@ function buildScope(
     eligibility: createSendEligibilityService(prisma, tenantId, actor, now),
     qualification: createQualificationRepository(prisma, tenantId, actor, now),
     enrichment: createEnrichmentRepository(prisma, tenantId, actor, now),
-    leads: createLeadSearchRepository(prisma, tenantId, actor, now),
+    leads,
+    contactImports: createContactImportRepository(prisma, tenantId, actor, now),
+    exports: createExportRepository(prisma, tenantId, actor, now, leads),
+    suppressions: createSuppressionRepository(
+      prisma,
+      tenantId,
+      actor,
+      now,
+      (contactId) => leads.detail(contactId),
+    ),
     invitations: createInvitationRepository(prisma, tenantId, actor, now),
     members: createMemberRepository(prisma, tenantId, actor),
     notifications: createNotificationRepository(prisma, tenantId, actor, now),

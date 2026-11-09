@@ -576,6 +576,23 @@ list and each lead's profile.
   research) withdraws the lead's drafts and scheduled sends and sends every campaign's
   decision back to Review.
 
+## People imports, exports and the do-not-contact list
+
+Task 11C (`docs/api/discovery.md`, `docs/api/exports.md`, `docs/api/suppressions.md`,
+`docs/security/data-retention.md`, `docs/decisions.md` D-11C-01 to D-11C-07):
+
+- **People imports:** a CSV file of people is checked row by row, then imported by the worker
+  in batches you can follow on the run's page. People on the do-not-contact list are excluded,
+  and a known person is checked with the address the workspace already has for them.
+- **Exports:** members with `contacts.export` (Client Admins) export a lead search to a CSV file
+  (at most 2,000 leads, safe to open in a spreadsheet) that only they can download, for 24
+  hours.
+- **Do-not-contact list:** its own page; adding an address or a domain reopens the leads it
+  covers. Only a member's own entries can be removed.
+- **Deletion requests:** erase a person and everything about them, keeping only their address
+  on the list.
+- **Logs:** request logs leave out query strings, which can hold names and addresses.
+
 ## Screens
 
 The web app has the account and team screens (`docs/decisions.md` D-04C-*): sign-in,

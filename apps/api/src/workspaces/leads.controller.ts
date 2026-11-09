@@ -7,10 +7,13 @@
 import {
   leadAssignmentRequestSchema,
   leadCorrectionRequestSchema,
+  leadDeletionRequestSchema,
+  leadSuppressRequestSchema,
   leadEvidenceQuerySchema,
   leadNoteRequestSchema,
   leadSearchQuerySchema,
   leadTagsRequestSchema,
+  type DeletionResult,
   type LeadDetail,
   type LeadSearchPage,
 } from '@lead-fennec-ai/shared';
@@ -170,6 +173,56 @@ export class LeadsController {
     body: z.output<typeof leadAssignmentRequestSchema>,
   ): Promise<LeadDetail> {
     return requireWorkspace(request).leads.assign(
+      param(request, 'contactId'),
+      body,
+    );
+  }
+
+  // Privacy (task 11C): the lead's address on the do-not-contact list, and a deletion request
+  // that erases the lead and keeps only the address there. The repository checks the
+  // permissions again (contacts.write too for a deletion).
+
+  /** 409 no_address for a lead without an address. */
+  @Post(':workspaceId/leads/:contactId/suppress')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(
+    OriginGuard,
+    SessionGuard,
+    CsrfGuard,
+    WorkspaceGuard,
+    PermissionGuard,
+  )
+  @RequirePermissions('suppressions.manage')
+  suppress(
+    @Req() request: WorkspaceRequest,
+    @Body(new ZodPipe(leadSuppressRequestSchema))
+    body: z.output<typeof leadSuppressRequestSchema>,
+  ): Promise<LeadDetail> {
+    return requireWorkspace(request).suppressions.suppressLead(
+      param(request, 'contactId'),
+      body,
+    );
+  }
+
+  /** 409 version_conflict when the lead changed since the member saw it. */
+  @Post(':workspaceId/leads/:contactId/deletion-request')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(
+    OriginGuard,
+    SessionGuard,
+    CsrfGuard,
+    WorkspaceGuard,
+    PermissionGuard,
+  )
+  @RequirePermissions('suppressions.manage')
+  deletionRequest(
+    @Req() request: WorkspaceRequest,
+    @Body(new ZodPipe(leadDeletionRequestSchema))
+    body: z.output<typeof leadDeletionRequestSchema>,
+  ): Promise<DeletionResult> {
+    return requireWorkspace(request).suppressions.deleteLead(
       param(request, 'contactId'),
       body,
     );

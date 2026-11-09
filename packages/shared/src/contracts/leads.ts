@@ -415,6 +415,11 @@ export const leadDetailSchema = z.strictObject({
   status: z.enum(CONTACT_STATUSES),
   /** Name it in every change (task 11B): a stale version is refused. */
   version: z.int().min(1),
+  /**
+   * The address, or its domain, is on the do-not-contact list (task 11C): the lead can't be
+   * emailed or added to a campaign's list.
+   */
+  doNotContact: z.boolean(),
   createdAt: iso,
   lastActivityAt: iso,
   company: companySchema.nullable(),

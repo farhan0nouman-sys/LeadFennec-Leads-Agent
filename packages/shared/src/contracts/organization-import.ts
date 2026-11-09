@@ -43,6 +43,37 @@ export const ORGANIZATION_IMPORT_FIELDS = [
 export type OrganizationImportField =
   (typeof ORGANIZATION_IMPORT_FIELDS)[number];
 
+/**
+ * What a column of a people file can be mapped to (task 11C, contact-import.ts). First name, last
+ * name and company are required.
+ */
+export const CONTACT_IMPORT_FIELDS = [
+  'firstName',
+  'lastName',
+  'email',
+  'linkedinUrl',
+  'title',
+  'company',
+  'companyDomain',
+  'country',
+] as const;
+export type ContactImportField = (typeof CONTACT_IMPORT_FIELDS)[number];
+
+/** What an import result's issue can name: a mapped field, the person, or the row. */
+export const IMPORT_ISSUE_FIELDS = [
+  ...ORGANIZATION_IMPORT_FIELDS,
+  'firstName',
+  'lastName',
+  'email',
+  'linkedinUrl',
+  'title',
+  'company',
+  'companyDomain',
+  'person',
+  'row',
+] as const;
+export type ImportIssueField = (typeof IMPORT_ISSUE_FIELDS)[number];
+
 export const ORGANIZATION_IMPORT_FIELD_LABELS: Readonly<
   Record<OrganizationImportField, string>
 > = {
@@ -109,8 +140,8 @@ export const csvImportRequestSchema = z
   .strict();
 
 export interface ImportIssue {
-  /** A mapped field, or "row" for the row as a whole. */
-  readonly field: OrganizationImportField | 'row';
+  /** A mapped field, the person, or "row" for the row as a whole. */
+  readonly field: ImportIssueField;
   readonly message: string;
 }
 
@@ -127,10 +158,12 @@ export interface ImportedOrganization {
 // eslint-disable-next-line no-control-regex
 const UNSAFE = /[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
 
-const clean = (value: string | undefined): string =>
+/** A cell as text: control characters and bidirectional overrides removed, spaces collapsed. */
+export const cleanImportCell = (value: string | undefined): string =>
   (value ?? '').replace(UNSAFE, ' ').replace(/\s+/g, ' ').trim();
+const clean = cleanImportCell;
 
-function websiteOf(value: string): string | null {
+export function websiteOf(value: string): string | null {
   const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(value)
     ? value
     : `https://${value}`;
@@ -255,11 +288,11 @@ export function normalizeImportRow(
 
 /** What happened to one received record. */
 export const IMPORT_RESULT_OUTCOMES = [
-  /** A new organization was saved. */
+  /** A new organization (or person) was saved. */
   'CREATED',
-  /** The organization was already in the workspace; it was kept, not duplicated. */
+  /** The organization (or person) was already in the workspace; it was kept, not duplicated. */
   'MATCHED',
-  /** The domain is on the workspace's suppression list: not saved. */
+  /** The domain (or address) is on the workspace's do-not-contact list: not saved. */
   'EXCLUDED',
   /** The record couldn't be used: not saved. */
   'FAILED',
@@ -268,7 +301,7 @@ export type ImportResultOutcome = (typeof IMPORT_RESULT_OUTCOMES)[number];
 
 const issueSchema = z
   .object({
-    field: z.enum([...ORGANIZATION_IMPORT_FIELDS, 'row']),
+    field: z.enum(IMPORT_ISSUE_FIELDS),
     message: z.string(),
   })
   .strict();
@@ -278,14 +311,22 @@ export const importResultSchema = z
     id: z.uuid(),
     /** The CSV row number (the header is row 1), or the position in the search results. */
     position: z.number().int().min(1),
+    /** A company (company imports and searches) or a person (people imports, task 11C). */
+    kind: z.enum(['company', 'person']),
     outcome: z.enum(IMPORT_RESULT_OUTCOMES),
-    /** The company as received (untrusted text: escape it when shown). */
+    /** The company, or the person's name, as received (untrusted text: escape it when shown). */
     name: z.string().nullable(),
+    /** The company's domain. */
     domain: z.string().nullable(),
+    /** People: their address and their company's name, as received; null for companies. */
+    email: z.string().nullable(),
+    company: z.string().nullable(),
     /** The provider's id for the record (searches). */
     externalId: z.string().nullable(),
-    /** The saved organization (CREATED, MATCHED). */
+    /** The saved organization (CREATED, MATCHED; a person's company). */
     organizationId: z.uuid().nullable(),
+    /** The saved person (people imports, CREATED or MATCHED). */
+    contactId: z.uuid().nullable(),
     issues: z.array(issueSchema),
   })
   .strict();
@@ -337,6 +378,22 @@ export const importOptionsSchema = z
         fields: z.array(z.enum(ORGANIZATION_IMPORT_FIELDS)),
       })
       .strict(),
+    /**
+     * People imports (task 11C): the same limits, the fields, and the lead lists a file can be
+     * added to (with lead_lists.write; empty otherwise). Null without contacts.write.
+     */
+    contacts: z
+      .object({
+        maxBytes: z.number().int().min(1),
+        maxRows: z.number().int().min(1),
+        rowsPerBatch: z.number().int().min(1),
+        fields: z.array(z.enum(CONTACT_IMPORT_FIELDS)),
+        leadLists: z.array(
+          z.object({ id: z.uuid(), name: z.string() }).strict(),
+        ),
+      })
+      .strict()
+      .nullable(),
   })
   .strict();
 

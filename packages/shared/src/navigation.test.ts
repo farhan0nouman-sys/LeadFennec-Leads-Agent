@@ -72,7 +72,14 @@ describe('section registry', () => {
       WORKSPACE_SECTIONS.filter((s) => s.status === 'available').map(
         (s) => s.key,
       ),
-    ).toEqual(['overview', 'leads', 'imports', 'campaigns', 'team']);
+    ).toEqual([
+      'overview',
+      'leads',
+      'imports',
+      'campaigns',
+      'team',
+      'suppressions',
+    ]);
     expect(ADMIN_SECTIONS.map((s) => s.key)).toContain('workspaces');
   });
 });

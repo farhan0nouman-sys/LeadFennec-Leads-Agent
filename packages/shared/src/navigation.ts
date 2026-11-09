@@ -80,7 +80,8 @@ export const WORKSPACE_SECTIONS = [
     primaryAction: 'Find leads',
     // A company's profile with its website research (task 09C) sits below this section.
     detailLabel: 'Company profile',
-    apiResources: ['leads', 'organizations', 'contacts'],
+    // Lead exports (task 11C): reading one also needs contacts.export (checked by the API).
+    apiResources: ['leads', 'organizations', 'contacts', 'exports'],
   },
   {
     key: 'lead_lists',
@@ -204,7 +205,7 @@ export const WORKSPACE_SECTIONS = [
     group: 'settings',
     path: 'suppressions',
     permission: 'suppressions.manage',
-    status: 'unavailable',
+    status: 'available',
     description: 'Addresses and domains that must never be contacted.',
     primaryAction: 'Add an address',
     apiResources: ['suppressions'],

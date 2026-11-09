@@ -4470,6 +4470,194 @@ retaining stale approvals. Unauthorized assignments and stale edits fail safely.
 | `apps/web/e2e/lead-profile.spec.ts` (3) | The list finds the lead (and a filter that matches nothing); the profile shows its source, data, campaigns and research; an approval goes back to Review after a correction, with the reason and the note; a second, stale page's edit is refused without overwriting; tags, a note and an assignment are saved; axe on every screen |
 | `apps/web/lib/leads.test.ts` (2) | Only changed fields are sent; tags read from text |
 
+## 11C: People imports, lead exports, the do-not-contact list, deletion requests (2026-11-09)
+
+**Basis.** The plan is still missing (O-01); this follows the 11C prompt:
+- "finish authorized CSV import/export workflows, including progress, row error reports, size
+  limits, spreadsheet-safe output and expiring download access";
+- "add suppression and deletion request actions; preserve only required suppression data under
+  the documented retention policy";
+- "test discovery through qualification and profile review with two fixture tenants".
+
+The completion check: search, import, export and correction work end to end, and suppressed
+leads can't be re-enrolled through import. M3 is marked only with source and eligibility
+evidence.
+
+### D-11C-01: People imports from a CSV file
+
+- **Route:** `POST …/imports/contacts` (`imports.create`; the repository also requires
+  `contacts.write`, and `lead_lists.write` to name a lead list). Body: `{ fileName, content,
+  mapping, leadListId? }`.
+- **Fields:** first name, last name and company name are required. Optional: email address,
+  LinkedIn profile, title, company domain, country.
+  - Each person must be identifiable: an address, a profile or a company domain.
+  - Identity comes only from `normalizeContactIdentity` and `normalizeCompanyIdentity`.
+- **Limits:** the company import's (256 KB of text, 1,000 rows, 30 columns, 1,000 characters a
+  cell).
+  - The web proxy now forwards import bodies up to the API's 1 MB. It used to cut every request at
+    64 KB, so a company file over 64 KB couldn't be imported from the browser (a 07C defect).
+- **In the request:** the file is parsed and every row checked (`normalizeContactImportRow`).
+  - One source record is kept per row: the mapped cells only (unmapped columns are never kept),
+    plus the name, the address (normalized when it is one), the company and its domain.
+  - A failed row is FAILED at once, with its reasons by field.
+  - A valid row waits (outcome NULL) for the worker.
+  - The import is `CONTACT_CSV`. It is PENDING with a `contact_import.run` task, or COMPLETED at
+    once when every row failed.
+- **The worker** (`contact_import` worker, its own queue) saves the waiting rows in batches of
+  100, one transaction per batch.
+  - The counts move with every batch: the run's `contactImport` says how many rows are done.
+  - An interrupted run resumes at its next waiting row.
+  - Cancelling (the existing route) stops it before its next batch and deletes the rows not yet
+    imported.
+- **Each row's person:**
+  1. **Excluded before anything is saved** when their address, its domain or a parent domain is
+     on the do-not-contact list. Their company isn't saved either.
+  2. **Their company** through `saveOrganizations`: a suppressed domain excludes the company's
+     people.
+  3. **The person** through `saveContacts`: matched by address, profile or name at the company,
+     never a second contact.
+- **A fix to `saveContacts` (it was a gap since 08C):** a known person is now also checked with
+  the address the workspace already has for them. Before, someone on the list who came back
+  without their address (matched by LinkedIn profile or name) was matched, and a people search
+  could put them on a campaign's lead list again. Now they are excluded, from imports and people
+  searches alike.
+- **Lead list:** people with an address go on the named list unless the address's latest check is
+  invalid. Others are saved with the reason ("No email address: not added to the lead list.").
+- **Results and error report:**
+  - results now carry `kind` (company or person), `email`, `company` and `contactId`;
+  - the run page shows people linked to their profiles, the rows done (a progress bar and words),
+    and a people error report (row, outcome, person, address, company, field, reason) built with
+    `toCsv`.
+
+### D-11C-02: Lead exports
+
+- **Permission:** new `contacts.export` ("Export leads to a file"), for Client Admins only. A file
+  of leads leaves the app, so `contacts.read` isn't enough.
+  - The hand-written migration grants it to every existing workspace's Client Admin role.
+- **Routes:**
+
+  | Route | Answer |
+  |---|---|
+  | `POST …/exports` | `201`: makes the file |
+  | `GET …/exports` | `200`: the member's own files |
+  | `GET …/exports/:exportId/download` | `200`: the file itself |
+
+  - Reads sit in the Leads section, so their guard asks for `contacts.read`; the repository
+    requires `contacts.export` and the requester's own membership on every route.
+- **The file:**
+  - the leads a lead search finds (the same filters, from the first lead), read through
+    `scope.leads.search` page by page, so the search's own permission checks apply;
+  - at most 2,000 leads and 4 MB: more are cut, and `truncated` says so;
+  - a UTF-8 byte-order mark, then a header row and one row per lead;
+  - every cell goes through `toCsv` (`leadExportCsv`), so nothing can run as a spreadsheet
+    formula.
+- **Download:**
+  - `text/csv; charset=utf-8`, an attachment with a server-made file name, `no-store`, `nosniff`;
+  - only the member who made it, while they keep the permission (another member's file is 404);
+  - the address holds only the workspace and file ids, never a token; the browser sends the
+    session cookie through the web proxy, which now forwards `Content-Disposition`.
+- **Expiry:** 24 hours after it was made, a file can't be downloaded (`410 export_expired`) and
+  its content is deleted (status EXPIRED). What was exported stays: the search, the counts and
+  the content's hash.
+  - The content is deleted by the download that finds it expired, before every new export, and by
+    the worker's retention sweep. The sweep runs every 15 minutes over every workspace, through
+    each workspace's own system scope.
+  - A trigger keeps an expired file expired, and its content can only be deleted.
+- **At most 10 files** wait per member (`409 export_limit_reached`).
+- **Audits** hold counts only (rows, truncated), never the search text or a lead's data.
+
+### D-11C-03: The do-not-contact list
+
+- **The page** (`…/suppressions`, `suppressions.manage`, now available):
+  - the list, newest first, searchable by part of an address or domain, filtered by kind;
+  - "Add an address or a domain" (a reason, and an optional note);
+  - removal of the entries a member added by hand;
+  - "Erase a person on request" (D-11C-04).
+- **Routes:**
+
+  | Route | Answer |
+  |---|---|
+  | `GET …/suppressions` | The list |
+  | `POST …/suppressions` | `{ suppression, created, reopenedLeads }`; repeating it changes nothing |
+  | `DELETE …/suppressions/:suppressionId` | `204` |
+  | `POST …/leads/:contactId/suppress` | The lead's own address on the list |
+
+- **A domain covers its subdomains**, as everywhere since 07C.
+- **Removal:** only entries with reason MANUAL and source MANUAL can be removed. A person's
+  request, a bounce, a complaint or a deletion request stays (`409 suppression_not_removable`).
+- **Leads it covers are reopened** in the same transaction (`markLeadsStale`, at most 1,000
+  leads): their drafts are invalidated, their scheduled sends cancelled, and their decisions sent
+  back to Review with eligibility decided again (blocked). Sending checks the list again before
+  every attempt anyway.
+- **The lead's profile** says when its address is on the list (`doNotContact` in the detail) and
+  offers "Add to the do-not-contact list". A lead without an address is `409 no_address`.
+- **Locking:** writes take the workspace's contacts lock (saveContacts' own), so an import that
+  runs at the same time sees the new entry.
+- **Audits** hold the kind, the reason and counts, never the address or domain.
+
+### D-11C-04: Deletion requests
+
+- **Routes** (both need `suppressions.manage`; the repository also requires `contacts.write`):
+
+  | Route | Erases |
+  |---|---|
+  | `POST …/leads/:contactId/deletion-request` | A lead, at the version the member saw (`409 version_conflict` otherwise) |
+  | `POST …/suppressions/deletion-requests` | A person by their address, also someone the workspace never saved |
+
+- **Deleted in one transaction:**
+  - the contact, and everything that belongs to them, by the foreign keys' cascades: sources,
+    evidence, research, address checks, scores, decisions, campaign leads with their drafts,
+    approvals, sends, threads and replies, list memberships, notes and tags;
+  - the import and search records that name the address without being the person's own (for
+    example excluded or failed rows).
+- **Kept: only the address**, on the list with reason DELETION_REQUEST and no note. A CHECK refuses
+  a note on such an entry. An earlier entry for the address keeps its reason but loses its note.
+  The person is never imported or contacted again.
+- **A person without an address** is erased, but nothing can be kept to stop them from being
+  imported again; the profile says so (O-45).
+- **Audit:** `privacy.deletion_request_completed` with the counts, never the address.
+- **The profile's button** asks for confirmation, then returns to the leads list with a notice.
+
+### D-11C-05: Discovery to profile review in two fixture tenants
+
+`apps/worker/src/jobs/pipeline.integration.test.ts` runs every step in both fixture tenants with
+the worker's real jobs and the fake providers:
+1. a company search;
+2. people at those companies (checked, listed);
+3. the company's website research;
+4. the lead's qualification in a campaign.
+
+Then the lead's profile shows:
+- why the lead exists: the people search's source record, with its role match, and the company's
+  search;
+- its research, checks, score and decision with eligibility.
+
+Then a correction reopens the decision, a people import matches the known person and excludes
+the suppressed one, and each tenant exports only its own leads. The fakes find the same synthetic
+people in both tenants, so each step also shows that neither tenant can read the other's copy.
+`apps/web/e2e/lead-workflow.spec.ts` does import, search, correction, export, erasure and
+re-import in the browser, with two workspaces.
+
+### D-11C-06: Tests
+
+| File | What it shows |
+|---|---|
+| `packages/database/src/contact-import.integration.test.ts` (4) | Every row checked in the request (failed rows at once, unmapped columns never kept, a formula kept as text); batches with progress; matched, created, excluded (an address, a domain under a suppressed one) and failed rows; the lead list rule; a cancelled import keeps only what was done; an erased person and a suppressed one matched by profile are never imported again (nor matched by a people search); lead list, permissions, workers, platform admins, tenancy |
+| `packages/database/src/exports.integration.test.ts` (3) | A spreadsheet-safe file of a search (BOM, formulas as text), for its maker only; another workspace and a member without the permission refused; audits with counts; expiry refuses and deletes the content, which can't be written again; 2,005 matches cut at 2,000; 10 files waiting at most; the sweep deletes expired content in its workspace only |
+| `packages/database/src/suppressions.integration.test.ts` (4) | Add (normalized), repeat, a domain with its subdomains, reopened leads (Review, blocked), removal rules, search and filters, audits without addresses; another workspace's lead with the same address untouched; a lead without an address; a deletion request erases the lead and everything about them and the records naming the address, keeps only the address (no note), and a stale version erases nothing; erasure by address, also for someone unknown; the database refuses a note on a deletion request's entry |
+| `apps/worker/src/jobs/pipeline.integration.test.ts` (3) | D-11C-05 |
+| `apps/api/src/workspaces/privacy.integration.test.ts` (3) | Over HTTP: a people file (201, failed rows reported, a 180 KB file accepted, another workspace's list, strict body, CSRF, 404); an export's headers, BOM and formulas, 403 without the permission, 404 for another workspace, 410 once expired; the list (add, repeat, 400, 409 not removable, 204), a lead suppressed and erased (409 stale, then 200, then 404), erasure by address; 403, 404, CSRF |
+| `apps/web/lib/imports.test.ts` (+2), `lib/exports.test.ts` (3) | A people mapping guess and the required columns; a people report keeps formulas as text; the download link carries ids only; the proxy lets only CSV imports carry a file |
+| `apps/web/e2e/lead-workflow.spec.ts` (4) | In the browser, two workspaces: import with progress and a report; search, profile, correction; export and download (BOM, the corrected title, not the suppressed person); erasure, then the same file again excluded; the list page (add, remove, a request stays); the other workspace sees nothing; axe |
+
+### D-11C-07: Request logs leave out the query string
+
+Searches put names, addresses and domains in the query string: the lead search's `q` and
+`contact` (11A), and the do-not-contact list's `q`. pino-http logged the request's URL and query,
+so these reached the logs. The shared HTTP logger options now log the path without its query
+(`requestLogFields`). The path holds only route names and ids. The API test checks that a list
+search never reaches the logs.
+
 ## Open choices (need a decision from the user)
 
 | ID | Choice | Current state | Options |
@@ -4518,3 +4706,4 @@ retaining stale approvals. Unauthorized assignments and stale edits fail safely.
 | O-42 | Contact enrichment (08C) | Chosen without the plan (D-08C-01 to D-08C-07): 25 companies a run, 5 people a company (3 by default), a 30-day reuse window, rechecks once a day per contact and 50 a day per workspace; location judged per company (a company whose country is unknown is looked up); people go to a lead list only through a campaign (no screen manages lead lists yet); `LEAD_ENRICHMENTS` counts the people looked up. No live Apollo run has been made: the adapters were tested with fixtures only (08B). | Confirm the limits and the location rule against the plan. Decide whether enrichment should also start from lead lists or single companies. Authorize a live Apollo run (it spends credits), then compare its credits with the counted usage. |
 | O-43 | Lead search (11A) | Chosen without the plan (D-11A-01 to D-11A-06): a lead is a person of the workspace; the filters, sorts and their meanings (location falls back to the company's country; eligibility is the status recorded with the newest qualification, not a live decision); 100 rows a page and a 5-second statement timeout; last activity counts data, checks, scores, qualifications and enrollments. Text search has no trigram index (`pg_trgm` can't be loaded by the local test database), so contains-matching scans the workspace's people. No screen uses the search yet, and there is no export. | Confirm the filters, sorts and limits against the plan. Decide whether to enable `pg_trgm` in staging and production (and its index) once the workspace sizes are known, and how an export should be bounded (rows, rate, audit) when one is needed. |
 | O-44 | Lead profile and corrections (11B) | Chosen without the plan (D-11B-01 to D-11B-04): which fields are material (name, title, address, country; not the LinkedIn profile); a material correction or a company research correction invalidates live drafts, cancels scheduled sends and sends every campaign's decision back to Review; assignment adds to a campaign's lead list and is refused only for blocks that apply before sending (archived, do-not-contact, campaign exclusions); tags are free labels (20 a lead). No screen manages lead lists or removes a lead from a campaign yet. | Confirm the material fields and the staleness rules against the plan, and whether a correction should also rescore the lead. Decide whether assignment should also enroll (when enrollment is built), how a lead leaves a campaign, and whether tags need a workspace vocabulary. |
+| O-45 | People imports, exports, suppression and retention (11C) | Chosen without the plan (D-11C-01 to D-11C-04, `docs/security/data-retention.md`): people files of 1,000 rows in batches of 100; exports of at most 2,000 leads, for Client Admins only (`contacts.export`), downloadable for 24 hours by their maker, at most 10 waiting; entries kept for the life of the workspace, removable only when a member added them; a deletion request keeps only the address, without a note. Known gaps: a person without an address can be erased but not recognized again (the list holds addresses and domains only); raw provider notifications and outbox events aren't searched by a deletion request; backups and log retention depend on hosting (O-06). | Confirm the periods and limits against the plan or legal advice; decide whether the list needs LinkedIn profiles too, who may export, and how long exports and suppressions are kept. |

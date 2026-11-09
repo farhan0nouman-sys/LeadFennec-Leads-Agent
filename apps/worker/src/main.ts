@@ -22,6 +22,14 @@ import {
   runEnrichmentTask,
 } from './jobs/contact-enrichment.js';
 import {
+  CONTACT_IMPORT_WORKER,
+  runContactImportTask,
+} from './jobs/contact-import.js';
+import {
+  EXPORT_RETENTION_INTERVAL_MS,
+  purgeExpiredExports,
+} from './jobs/export-retention.js';
+import {
   LEAD_DISCOVERY_WORKER,
   runDiscoveryTask,
 } from './jobs/lead-discovery.js';
@@ -37,6 +45,7 @@ import {
   createJobQueue,
   createJobWorker,
   ENRICHMENT_QUEUE_NAME,
+  IMPORT_QUEUE_NAME,
   JOB_QUEUE_NAME,
   QUALIFICATION_QUEUE_NAME,
   relayDueTasks,
@@ -132,6 +141,12 @@ async function main(): Promise<void> {
           verifier,
         }),
     },
+    {
+      name: 'contact_import',
+      queueName: IMPORT_QUEUE_NAME,
+      definition: CONTACT_IMPORT_WORKER,
+      run: (message) => runContactImportTask(prisma, message),
+    },
   ];
   const queues = kinds.map((kind) => {
     const queue = createJobQueue(env.REDIS_URL, kind.queueName);
@@ -184,9 +199,31 @@ async function main(): Promise<void> {
       });
   }, RELAY_INTERVAL_MS);
 
+  // Expired lead files lose their content (task 11C, docs/security/data-retention.md).
+  let sweeping = false;
+  const retention = setInterval(() => {
+    if (sweeping) {
+      return;
+    }
+    sweeping = true;
+    purgeExpiredExports(prisma)
+      .then((files) => {
+        if (files > 0) {
+          logger.info({ files }, 'expired exports purged');
+        }
+      })
+      .catch((error: unknown) => {
+        logger.error({ err: error }, 'export retention sweep failed');
+      })
+      .finally(() => {
+        sweeping = false;
+      });
+  }, EXPORT_RETENTION_INTERVAL_MS);
+
   function shutdown(signal: NodeJS.Signals): void {
     logger.info({ signal }, 'shutting down');
     clearInterval(relay);
+    clearInterval(retention);
     void Promise.allSettled(
       queues.flatMap(({ queue, worker }) => [worker.close(), queue.close()]),
     ).then(() => prisma.$disconnect());

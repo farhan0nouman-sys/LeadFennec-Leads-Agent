@@ -41,6 +41,7 @@ import {
   requireReadPermission,
 } from './authorization.js';
 import { CHECK_STATUS, contactQualities } from './contact-quality.js';
+import { suppressedAddresses } from './contact-store.js';
 import {
   createLeadChangeRepository,
   type LeadChangeRepository,
@@ -867,6 +868,7 @@ export function createLeadSearchRepository(
           lastName: true,
           title: true,
           email: true,
+          normalizedEmail: true,
           linkedinUrl: true,
           countryCode: true,
           status: true,
@@ -1032,6 +1034,10 @@ export function createLeadSearchRepository(
         throw new RecordNotFoundError('contact');
       }
       const organization = contact.organization;
+      const doNotContact =
+        contact.normalizedEmail !== null &&
+        (await suppressedAddresses(prisma, tenantId, [contact.normalizedEmail]))
+          .size > 0;
       return {
         id: contact.id,
         name: displayName(contact.firstName, contact.lastName),
@@ -1043,6 +1049,7 @@ export function createLeadSearchRepository(
         countryCode: contact.countryCode ?? organization?.countryCode ?? null,
         status: contact.status,
         version: contact.version,
+        doNotContact,
         createdAt: contact.createdAt.toISOString(),
         lastActivityAt: contact.lastActivityAt.toISOString(),
         company:

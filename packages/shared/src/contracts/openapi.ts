@@ -84,7 +84,10 @@ function responses(spec: EndpointSpec): JsonObject {
         ? {}
         : {
             content: {
-              [JSON_CONTENT]: { schema: jsonSchema(spec.response, 'output') },
+              // A downloaded file (task 11C) is its own media type, not JSON.
+              [spec.responseType ?? JSON_CONTENT]: {
+                schema: jsonSchema(spec.response, 'output'),
+              },
             },
           }),
     },

@@ -81,6 +81,7 @@ model Tenant {
   contacts        Contact[]
   contactNotes    ContactNote[]
   contactTags     ContactTag[]
+  exports         Export[]
   leadLists       LeadList[]
   leadListMembers LeadListMember[]
   imports         Import[]
@@ -362,6 +363,8 @@ model Membership {
   approvals              Approval[]
   qualificationDecisions LeadQualification[]
   contactNotes           ContactNote[]
+  /// Lead files this member made (task 11C); only they can download them.
+  exports                Export[]
   notifications          Notification[]
   /// Invitations this member sent, and the invitations that created or reactivated it.
   invitationsSent        Invitation[]        @relation("InvitationInviter")
@@ -628,6 +631,60 @@ model ContactTag {
   @@map("contact_tags")
 }
 
+enum ExportKind {
+  /// The leads a search found (task 11C).
+  LEADS
+
+  @@map("export_kind")
+}
+
+enum ExportStatus {
+  /// Downloadable by the member who made it until expiresAt.
+  READY
+  /// Past expiresAt: the content is deleted.
+  EXPIRED
+
+  @@map("export_status")
+}
+
+/// A file a member made (task 11C, docs/decisions.md D-11C-*): bounded, spreadsheet-safe, and
+/// downloadable only by that member, with the permission, until it expires. Then its content is
+/// deleted; what was exported (the search, the counts, the hash) stays.
+model Export {
+  tenantId                String       @map("tenant_id") @db.Uuid
+  id                      String       @default(uuid(7)) @db.Uuid
+  kind                    ExportKind
+  status                  ExportStatus @default(READY)
+  requestedByMembershipId String       @map("requested_by_membership_id") @db.Uuid
+  fileName                String       @map("file_name")
+  /// The validated search the file was made from.
+  filters                 Json
+  rowCount                Int          @map("row_count")
+  /// More leads matched than the file holds.
+  truncated               Boolean
+  byteSize                Int          @map("byte_size")
+  /// SHA-256 (hex) of the content; kept after the content is deleted.
+  contentSha256           String       @map("content_sha256") @db.Char(64)
+  /// The CSV (personal data: never logged); NULL once the file expired.
+  content                 String?      @db.Text
+  createdAt               DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt               DateTime     @map("expires_at") @db.Timestamptz(3)
+  downloadedAt            DateTime?    @map("downloaded_at") @db.Timestamptz(3)
+  downloadCount           Int          @default(0) @map("download_count")
+  /// When the content was deleted.
+  purgedAt                DateTime?    @map("purged_at") @db.Timestamptz(3)
+
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  requestedBy Membership @relation(fields: [tenantId, requestedByMembershipId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([tenantId, id])
+  /// A member's files, newest first (also serves the foreign key).
+  @@index([tenantId, requestedByMembershipId, createdAt(sort: Desc)])
+  /// The retention sweep: files still READY past their time.
+  @@index([tenantId, status, expiresAt])
+  @@map("exports")
+}
+
 // ─── Provenance and imports ───────────────────────────────────────────────────
 
 enum ImportSource {
@@ -637,6 +694,8 @@ enum ImportSource {
   ORGANIZATION_SEARCH
   /// People found for the companies of an earlier run (task 08C), one company at a time.
   CONTACT_ENRICHMENT
+  /// People from a CSV file (task 11C), saved by the worker in batches of rows.
+  CONTACT_CSV
 
   @@map("import_source")
 }
@@ -1728,6 +1787,8 @@ enum SuppressionReason {
   HARD_BOUNCE
   COMPLAINT
   MANUAL
+  /// The person's data was erased on their request (task 11C): only the address is kept.
+  DELETION_REQUEST
 
   @@map("suppression_reason")
 }

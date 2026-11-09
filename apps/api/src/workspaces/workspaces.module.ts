@@ -5,6 +5,7 @@ import { CampaignsController } from './campaigns.controller.js';
 import { DashboardController } from './dashboard.controller.js';
 import { DiscoveryController } from './discovery.controller.js';
 import { EnrichmentController } from './enrichment.controller.js';
+import { ExportsController } from './exports.controller.js';
 import { LeadsController } from './leads.controller.js';
 import {
   contactProvider,
@@ -13,6 +14,7 @@ import {
 import { ResearchController } from './research.controller.js';
 import { QualificationController } from './qualification.controller.js';
 import { SendPolicyController } from './send-policy.controller.js';
+import { SuppressionsController } from './suppressions.controller.js';
 import { organizationSearchProvider } from './discovery-provider.js';
 import { InvitationsController } from './invitations.controller.js';
 import { PlatformController } from './platform.controller.js';
@@ -35,6 +37,8 @@ import { WorkspacesController } from './workspaces.controller.js';
     EnrichmentController,
     // After DashboardController: GET …/leads/summary must match before …/leads/:contactId.
     LeadsController,
+    ExportsController,
+    SuppressionsController,
   ],
   providers: [
     WorkspaceGuard,

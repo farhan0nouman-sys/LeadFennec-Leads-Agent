@@ -266,6 +266,7 @@ export const importRunSchema = z
       'APOLLO',
       'ORGANIZATION_SEARCH',
       'CONTACT_ENRICHMENT',
+      'CONTACT_CSV',
     ]),
     status: z.enum(IMPORT_STATUSES),
     /**
@@ -273,6 +274,18 @@ export const importRunSchema = z
      * companies done. Their counts are people: found, saved, excluded, failed.
      */
     enrichment: enrichmentRunInfoSchema.nullable(),
+    /**
+     * People imports from a CSV file only (task 11C): the lead list that receives them, and how
+     * many of the file's rows are done (failed rows are done when the file is accepted).
+     */
+    contactImport: z
+      .object({
+        leadListId: z.uuid().nullable(),
+        rows: count,
+        processed: count,
+      })
+      .strict()
+      .nullable(),
     /** Organization searches only. */
     search: z
       .object({

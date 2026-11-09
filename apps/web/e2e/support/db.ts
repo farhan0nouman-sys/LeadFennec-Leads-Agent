@@ -483,6 +483,36 @@ export class E2eDatabase {
     return id;
   }
 
+  /** The queued job task of a people import (task 11C). */
+  async contactImportTaskId(
+    workspaceId: string,
+    importId: string,
+  ): Promise<string> {
+    const { rows } = await this.client.query<{ id: string }>(
+      `SELECT id FROM job_tasks
+       WHERE tenant_id = $1 AND task_type = 'contact_import.run' AND idempotency_key = $2`,
+      [workspaceId, `import:${importId}`],
+    );
+    const id = rows[0]?.id;
+    if (id === undefined) {
+      throw new Error('No task for this people import');
+    }
+    return id;
+  }
+
+  /** What the do-not-contact list keeps for an address (task 11C). */
+  async suppressionOf(workspaceId: string, email: string) {
+    const { rows } = await this.client.query<{
+      reason: string;
+      note: string | null;
+    }>(
+      `SELECT reason::text AS reason, note FROM suppressions
+       WHERE tenant_id = $1 AND normalized_email = $2`,
+      [workspaceId, email],
+    );
+    return rows[0] ?? null;
+  }
+
   /** The newest queued recheck of a contact's address (task 08C). */
   async recheckTaskId(workspaceId: string, contactId: string): Promise<string> {
     const { rows } = await this.client.query<{ id: string }>(

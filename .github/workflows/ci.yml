@@ -1,7 +1,8 @@
 # Verifies every push to main and every pull request: install from the lockfile, format,
 # lint, typecheck, unit + integration tests (with real PostgreSQL/Redis test databases),
-# build, and a Playwright browser smoke test. Uses no secrets; tests cannot reach the
-# network beyond loopback (packages/shared/src/testing/network-guard.ts).
+# build, and Playwright browser tests (a smoke test, and the account and team scenarios against
+# the built API). Uses no secrets; tests cannot reach the network beyond loopback
+# (packages/shared/src/testing/network-guard.ts; the browser tests only use 127.0.0.1).
 # Action versions and image digests: docs/decisions.md (D-02C-07).
 name: CI
 
@@ -28,6 +29,7 @@ jobs:
       # CI only; local telemetry is an open choice (docs/decisions.md O-02).
       NEXT_TELEMETRY_DISABLED: '1'
       TURBO_TELEMETRY_DISABLED: '1'
+      CHECKPOINT_DISABLE: '1'
       # Isolated test stores (database name must end in _test; Redis DB must not be 0).
       TEST_DATABASE_URL: postgresql://leadfennec:ci-ephemeral-not-secret@127.0.0.1:5432/leadfennec_test
       TEST_REDIS_URL: redis://127.0.0.1:6379/15
@@ -90,8 +92,12 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm --filter @lead-fennec-ai/web exec playwright install --with-deps --only-shell chromium
 
-      - name: Browser smoke test
+      # The account and team scenarios run the built API against the public schema of the test
+      # database (the other suites use their own schemas).
+      - name: Browser tests
         run: pnpm test:e2e
+        env:
+          E2E_DATABASE_URL: postgresql://leadfennec:ci-ephemeral-not-secret@127.0.0.1:5432/leadfennec_test
 
       - name: Upload Playwright report
         if: failure()

@@ -12,6 +12,7 @@ export default defineConfig([
     '**/.next/**',
     '**/.turbo/**',
     '**/next-env.d.ts',
+    '**/src/generated/**',
     '**/.vitest/**',
     '**/test-results/**',
     '**/playwright-report/**',
@@ -33,6 +34,21 @@ export default defineConfig([
   {
     files: ['**/*.{js,mjs,cjs}'],
     extends: [tseslint.configs.disableTypeChecked],
+  },
+  {
+    rules: {
+      // Prisma Client offers partial unique constraints (schema names ending in "_partial")
+      // as findUnique/upsert keys but drops their WHERE clause, so a lookup can return a row
+      // the constraint does not cover. docs/decisions.md D-03B-01.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'Property[key.name=/_partial$/]',
+          message:
+            'Partial unique keys are constraints, not lookup keys: Prisma ignores their WHERE clause (docs/decisions.md D-03B-01). Filter with findFirst instead.',
+        },
+      ],
+    },
   },
   {
     // Nest modules are empty classes configured by decorators.

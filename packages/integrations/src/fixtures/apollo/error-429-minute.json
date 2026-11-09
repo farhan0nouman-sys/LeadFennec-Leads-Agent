@@ -1,0 +1,16 @@
+{
+  "message": "Synthetic: legacy message field (removed by Apollo on 2027-02-16).",
+  "error_details": {
+    "code": "USAGE.RATE_LIMIT.API_RATE_LIMIT_EXCEEDED",
+    "message": "Synthetic: the team reached this endpoint's per-minute limit.",
+    "suggestions": [
+      { "label": "Wait for the number of seconds in retry-after." }
+    ],
+    "context": {
+      "window": {
+        "value": "minute",
+        "description": "Synthetic window description."
+      }
+    }
+  }
+}

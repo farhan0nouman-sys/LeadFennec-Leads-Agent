@@ -11,6 +11,7 @@ pnpm-lock.yaml
 **/.next/
 **/.turbo/
 **/next-env.d.ts
+**/src/generated/
 **/.vitest/
 **/test-results/
 **/playwright-report/

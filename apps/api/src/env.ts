@@ -1,6 +1,7 @@
 import {
   appEnvSchema,
   healthCheckTimeoutSchema,
+  httpUrlSchema,
   logLevelSchema,
   parseEnv,
   portSchema,
@@ -9,14 +10,60 @@ import {
 } from '@lead-fennec-ai/shared';
 import { z } from 'zod';
 
-export const apiEnvSchema = z.object({
-  APP_ENV: appEnvSchema,
-  LOG_LEVEL: logLevelSchema,
-  API_PORT: portSchema(3001),
-  DATABASE_URL: postgresUrlSchema,
-  REDIS_URL: redisUrlSchema,
-  HEALTH_CHECK_TIMEOUT_MS: healthCheckTimeoutSchema,
-});
+export const apiEnvSchema = z
+  .object({
+    APP_ENV: appEnvSchema,
+    LOG_LEVEL: logLevelSchema,
+    API_PORT: portSchema(3001),
+    DATABASE_URL: postgresUrlSchema,
+    /** Most PostgreSQL connections this process opens (default 10). */
+    DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+    REDIS_URL: redisUrlSchema,
+    /**
+     * Reverse proxies in front of the API whose X-Forwarded-For entry is trusted (Express
+     * "trust proxy" hop count). 0: the client address is the socket's. 1: behind the web app's
+     * proxy. Rate limits per client address depend on it (D-04C-06).
+     */
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+    HEALTH_CHECK_TIMEOUT_MS: healthCheckTimeoutSchema,
+    /**
+     * Public URL of the web app (no path): emailed links point here, and mutations whose
+     * Origin is anything else are refused. Defaults to http://localhost:3000 in development
+     * and test; required (https) in staging and production.
+     */
+    WEB_APP_URL: httpUrlSchema.optional(),
+  })
+  .transform((env, ctx) => {
+    const local = env.APP_ENV === 'development' || env.APP_ENV === 'test';
+    const raw =
+      env.WEB_APP_URL ?? (local ? 'http://localhost:3000' : undefined);
+    if (raw === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['WEB_APP_URL'],
+        message: 'is required outside development and test',
+      });
+      return z.NEVER;
+    }
+    const url = new URL(raw);
+    if (!local && url.protocol !== 'https:') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['WEB_APP_URL'],
+        message: 'must be an https:// URL outside development and test',
+      });
+      return z.NEVER;
+    }
+    if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['WEB_APP_URL'],
+        message: 'must be an origin without a path, query or fragment',
+      });
+      return z.NEVER;
+    }
+    return { ...env, WEB_APP_URL: url.origin };
+  });
 
 export type ApiEnv = z.output<typeof apiEnvSchema>;
 

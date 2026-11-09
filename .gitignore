@@ -7,6 +7,8 @@ dist/
 .turbo/
 *.tsbuildinfo
 next-env.d.ts
+# Prisma Client, generated from prisma/schema.prisma by `prisma generate`
+**/src/generated/
 coverage/
 
 # Test output (Vitest 5 artifacts, Playwright reports and traces)

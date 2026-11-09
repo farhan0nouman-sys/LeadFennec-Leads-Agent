@@ -3,28 +3,36 @@
   "ui": "stream",
   "concurrency": "20",
   "tasks": {
+    "generate": {
+      "inputs": ["prisma/schema.prisma", "prisma.config.mjs"],
+      "outputs": ["src/generated/**"]
+    },
     "build": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "generate"],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
     "typecheck": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build", "generate"]
     },
     "lint": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build", "generate"]
     },
     "test": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "generate"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/vitest.shared.mjs"],
       "env": ["TEST_DATABASE_URL", "TEST_REDIS_URL"]
     },
     "test:e2e": {
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build",
+        "@lead-fennec-ai/api#build",
+        "@lead-fennec-ai/worker#build"
+      ],
       "cache": false,
-      "passThroughEnv": ["CI", "PLAYWRIGHT_BROWSERS_PATH"]
+      "passThroughEnv": ["CI", "PLAYWRIGHT_BROWSERS_PATH", "E2E_DATABASE_URL"]
     },
     "dev": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "generate"],
       "cache": false,
       "persistent": true,
       "passThroughEnv": [
@@ -32,10 +40,21 @@
         "LOG_LEVEL",
         "API_PORT",
         "API_BASE_URL",
+        "WEB_APP_URL",
         "DATABASE_URL",
+        "DATABASE_POOL_MAX",
+        "TRUST_PROXY_HOPS",
         "REDIS_URL",
         "WORKER_HEALTH_PORT",
-        "HEALTH_CHECK_TIMEOUT_MS"
+        "HEALTH_CHECK_TIMEOUT_MS",
+        "APOLLO_API_KEY",
+        "WEBSITE_FETCH_BLOCKED_HOSTS",
+        "WEBSITE_FETCH_ALLOWED_HOSTS",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "OPENAI_REASONING_EFFORT",
+        "OPENAI_INPUT_USD_PER_MTOK",
+        "OPENAI_OUTPUT_USD_PER_MTOK"
       ]
     }
   }

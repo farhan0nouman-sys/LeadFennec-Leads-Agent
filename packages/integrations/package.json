@@ -17,7 +17,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@lead-fennec-ai/shared": "workspace:*"
+    "@lead-fennec-ai/shared": "workspace:*",
+    "parse5": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

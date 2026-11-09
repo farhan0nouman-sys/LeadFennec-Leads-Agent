@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { FakeMailboxProvider } from './fakes.js';
-import { LiveProvidersForbiddenError, createProviders } from './registry.js';
+import {
+  contactDataDeclaration,
+  createProviders,
+  emailVerificationAvailable,
+  LiveProvidersForbiddenError,
+  LiveProvidersUnavailableError,
+} from './registry.js';
 
 describe('createProviders', () => {
   it('returns fakes in fake mode', () => {
@@ -23,7 +29,23 @@ describe('createProviders', () => {
       /No live provider adapters/,
     );
     expect(() => createProviders('production', 'live')).toThrow(
-      /No live provider adapters/,
+      LiveProvidersUnavailableError,
     );
+  });
+});
+
+describe('contact enrichment declarations (task 08C)', () => {
+  it('name the people provider without credentials, and fail verification closed when live', () => {
+    for (const env of ['development', 'test'] as const) {
+      expect(contactDataDeclaration(env)).toMatchObject({ source: 'FAKE' });
+      expect(emailVerificationAvailable(env)).toBe(true);
+    }
+    for (const env of ['staging', 'production'] as const) {
+      expect(contactDataDeclaration(env)).toEqual({
+        source: 'APOLLO',
+        attribution: 'People data from Apollo.io.',
+      });
+      expect(emailVerificationAvailable(env)).toBe(false);
+    }
   });
 });

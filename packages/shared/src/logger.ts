@@ -18,11 +18,16 @@ export const REDACTED_PATHS = [
   'req.headers.cookie',
   'req.headers["proxy-authorization"]',
   'req.headers["x-api-key"]',
+  'req.headers["x-csrf-token"]',
   'res.headers["set-cookie"]',
   ...[
     'password',
+    'newPassword',
+    'passwordHash',
     'secret',
     'token',
+    'csrfToken',
+    'sessionToken',
     'accessToken',
     'refreshToken',
     'apiKey',
@@ -31,6 +36,8 @@ export const REDACTED_PATHS = [
     'REDIS_URL',
     'TEST_DATABASE_URL',
     'TEST_REDIS_URL',
+    'APOLLO_API_KEY',
+    'OPENAI_API_KEY',
   ].flatMap((key) => [key, `*.${key}`]),
 ];
 
@@ -75,10 +82,31 @@ export function resolveRequestId(
     : randomUUID();
 }
 
+/**
+ * A request as logged: without its query string (task 11C). Searches put names, addresses and
+ * domains there (`q`, `contact`, an address on the do-not-contact list), and logs must not hold
+ * personal data; the path holds only route names and ids.
+ */
+export function requestLogFields(
+  req: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(req)) {
+    if (key === 'query') {
+      continue;
+    }
+    fields[key] =
+      key === 'url' && typeof value === 'string' ? value.split('?')[0] : value;
+  }
+  return fields;
+}
+
 /** pino-http options shared by every HTTP server: request IDs echoed in X-Request-Id. */
 export function httpLoggerOptions(logger: Logger): HttpLoggerOptions {
   return {
     logger,
+    // pino-http hands this the standard serialized request.
+    serializers: { req: requestLogFields },
     genReqId(req: IncomingMessage, res: ServerResponse) {
       const id = resolveRequestId(req.headers[REQUEST_ID_HEADER]);
       res.setHeader('X-Request-Id', id);

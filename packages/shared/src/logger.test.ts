@@ -1,6 +1,6 @@
 import { Writable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { createLogger, resolveRequestId } from './logger.js';
+import { createLogger, requestLogFields, resolveRequestId } from './logger.js';
 
 function memoryLogger() {
   const lines: Record<string, unknown>[] = [];
@@ -35,12 +35,21 @@ describe('createLogger', () => {
       {
         password: 'pw-1',
         provider: { apiKey: 'key-1', token: 'tok-1' },
+        env: { APOLLO_API_KEY: 'apollo-1', OPENAI_API_KEY: 'openai-1' },
         req: { headers: { authorization: 'Bearer abc', cookie: 'sid=1' } },
       },
       'secrets',
     );
     const line = JSON.stringify(lines[0]);
-    for (const secret of ['pw-1', 'key-1', 'tok-1', 'Bearer abc', 'sid=1']) {
+    for (const secret of [
+      'pw-1',
+      'key-1',
+      'tok-1',
+      'apollo-1',
+      'openai-1',
+      'Bearer abc',
+      'sid=1',
+    ]) {
       expect(line).not.toContain(secret);
     }
     expect(line).toContain('[REDACTED]');
@@ -90,6 +99,25 @@ describe('createLogger', () => {
     expect(lines[0]).toMatchObject({
       link: 'http://example.test',
       note: 'user:name@host',
+    });
+  });
+});
+
+describe('requestLogFields', () => {
+  it('logs a request without its query string, which can hold names and addresses', () => {
+    expect(
+      requestLogFields({
+        id: 'r1',
+        method: 'GET',
+        url: '/workspaces/w1/suppressions?q=pat%40acme.example&kind=email',
+        query: { q: 'pat@acme.example', kind: 'email' },
+        params: {},
+      }),
+    ).toEqual({
+      id: 'r1',
+      method: 'GET',
+      url: '/workspaces/w1/suppressions',
+      params: {},
     });
   });
 });

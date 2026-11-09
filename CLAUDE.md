@@ -72,19 +72,298 @@ if needed; next prompt ID.
   - Don't copy code without checking the license. Only `google-maps-scraper-kit` and
     `Lead-Generation-System-using-Google-Map` ship an MIT license file. `agentsource-plugin`,
     `leadGenerationAgent` and `outreach-agent` have no license, and `OpenOutreach` is GPLv3.
-- Git repository initialized 2026-11-01 on `main`, with no remote yet. `reference-repos/` is
-  git-ignored. Commit, push or rewrite history only when asked; new work goes on branches.
+- Git: default branch `main`, remote `origin` = github.com/farhan0nouman-sys/LeadFennec-Leads-Agent
+  (**public**). `reference-repos/` is git-ignored. Commit, push or rewrite history only when
+  asked; new work goes on branches. This repository's `.git/config` sets the GitHub noreply
+  commit email.
 - Local development: `pnpm dev` starts PostgreSQL and Redis (Docker Compose) and all apps. See
   `docs/local-development.md`. Decisions and pinned versions: `docs/decisions.md`.
 - Apps read configuration only from `process.env`, validated at startup. A new variable must be
   added in four places: the app's env schema, `.env.example` (fake placeholder),
   `turbo.json` → `tasks.dev.passThroughEnv`, and `docs/local-development.md`.
 
+## Database
+
+- **Location:** the schema is `packages/database/prisma/schema.prisma` (Prisma 7.10.1).
+  Migrations are in `prisma/migrations`. Never edit an applied migration; add a new one
+  (`README.md` → Migrations). Rules Prisma can't express go in hand-written SQL migrations.
+- **Tenant-owned tables:**
+  - `tenant_id` NOT NULL, a composite primary key `(tenant_id, id)`, and the immutability
+    trigger.
+  - Every reference to another tenant-owned row is a composite foreign key
+    `(tenant_id, x_id) → (tenant_id, id)`.
+  - Never use `onDelete: SetNull` (it nulls `tenant_id`); use NoAction or Cascade.
+- **Tenant-scoped queries:**
+  - API handlers and workers get tenant data only through the entry points in
+    `packages/database/src/tenancy/access.ts`:
+    - `memberScope` (active member of an active tenant);
+    - `platformAdminScope` (stated reason, audited, read-only client);
+    - `systemScope` (named worker);
+    - `platformConsole` (the only cross-tenant view, audited).
+  - Use `scope.db` (the tenant-scoped client) and the scope's repositories. Never hand a
+    raw `PrismaClient` to request or job code.
+  - A platform admin never gets implicit tenant access. Any new admin write is a repository
+    method that writes an audit record in the same transaction.
+  - Repository code inside the database package filters every query by `tenantId`. Prisma
+    unique lookups use `tenantId_id`.
+  - Background workers (relays, schedulers) iterate `tenants` and then run tenant-scoped
+    queries.
+  - Keys named `*_partial` are partial unique constraints, not lookup keys: Prisma ignores
+    their WHERE clause, and ESLint forbids them.
+  - Lists page with `paginate` (`src/pagination.ts`): keyset on `id`, never OFFSET.
+- **One table per concept** (`docs/decisions.md` D-03C-01):
+  - a tenant's plan and billing state live only in `subscriptions`;
+  - limits only in `plan_limits` and `tenant_limit_overrides`;
+  - usage only in `usage_ledger_entries` (totals are sums, never stored counters);
+  - raw provider notifications only in `inbound_events`, payment facts in `payment_events`;
+  - audit in `audit_records` (tenant) or `platform_audit_records` (platform).
+
+  Extend these tables; never add a copy (the structure test lists forbidden duplicates).
+- **Budgets:** paid work (AI, enrichment, verification, sending) reserves usage first
+  (`scope.usage.reserve`), then commits what was used or releases the hold. Read plan,
+  status and limits from the database, never from the billing provider at request time.
+- **Append-only rows** (triggers reject updates): draft content, approvals, payment facts,
+  usage ledger entries, audit and platform audit records, scores and their evidence citations.
+  Correct with a new row.
+- **Identity keys:** only from `normalizeEmail` / `normalizeDomain` (`@lead-fennec-ai/shared`).
+  Keep the raw value in its own column.
+- **Time:**
+  - Timestamps are `timestamptz` (UTC instants).
+  - Where local time matters, store the IANA zone from `normalizeTimeZone` next to the
+    instant, never a fixed offset.
+  - Set the timestamps of one row from one clock.
+- **Credentials:** never store tokens, passwords or API keys in the database. Store a secret
+  reference (`parseSecretRef`, `<store>://<path>`); development uses `fake://`. Users'
+  own passwords are stored only as Argon2id hashes (`user_credentials`), and session and
+  emailed tokens only as SHA-256 (`docs/decisions.md` D-04A-*).
+- **Sending:**
+  - Every outbound email goes through `outbound_intents`, one per campaign lead and sequence
+    step.
+  - An intent references an immutable draft version and, when approval is required, the
+    APPROVED decision on that exact version.
+  - Drafts and approvals are append-only.
+  - Check `suppressions` before creating an intent and again before each attempt.
+- **Untrusted data:** JSON payloads, excerpts and message content (`source_records.payload`,
+  `evidence.excerpt`, `inbound_events.payload`, `inbound_messages`) are never executed. AI
+  output is validated before it's written to `research`, `scores` or `drafts`.
+- **Don't run** `prisma migrate dev`, `prisma migrate reset` (they can reset data) or
+  `prisma dev` (it downloads unpinned code at runtime).
+
+## Authentication
+
+- **Contract:** `packages/shared/src/contracts/auth.ts` is the auth API contract
+  (`docs/api/auth.md`). Change it first, then the API and its tests.
+- **Tokens:**
+  - Never log, return or put in a URL path or query string: passwords, session tokens,
+    emailed tokens or CSRF tokens.
+  - The session token lives only in the `__Host-lf_session` cookie.
+  - Emailed links carry their token in the URL fragment.
+- **No account enumeration:** responses about an account (register, resend, reset, sign-in)
+  must not reveal whether it exists, through their content or their timing.
+- **CSRF:** every new cookie-authenticated mutation uses `OriginGuard`, `SessionGuard` and
+  `CsrfGuard` (`apps/api/src/auth/auth-guards.ts`).
+- **Workspace routes:**
+  - put the workspace id in the path as `:workspaceId`;
+  - use `WorkspaceGuard` (active membership, else `404`) and `PermissionGuard` with
+    `@RequirePermissions` (`apps/api/src/workspaces/workspace-guards.ts`);
+  - go through the scope's repositories, which check permissions again;
+  - never take a user id or a tenant id from the request.
+- **Permissions:** new keys go into `PERMISSION_CATALOG` / `SYSTEM_ROLES`
+  (`packages/shared/src/authorization.ts`), the only catalog.
+- **Jobs:**
+  - a queue message is only `{ v: 1, taskId }` (`enqueueJob`);
+  - workers call `claimJob` with their `defineWorker` definition and use the returned scope;
+  - never trust a tenant id carried in a job.
+- **Platform admins:** add operations only as explicit `/platform/*` routes with a required
+  reason. Each one writes audit records in the same transaction as its change.
+- **New API routes:** add each one to the endpoint list
+  (`packages/shared/src/contracts/endpoints.ts`, with the contract's own schemas; the API
+  contract test fails otherwise), run `pnpm openapi` to regenerate `docs/api/openapi.json`,
+  and add it to `apps/api/src/http/route-guards.test.ts` and
+  `docs/security/authorization-review.md` after checking its guards and repository checks.
+  A cacheable read names its `cache` resource; a mutation lists what it `invalidates`.
+  `scope.db` checks no permission: routes use repositories or call `requirePermission`.
+- **Audit:** membership changes go to the workspace's `audit_records`; a user's own security
+  events go to `platform_audit_records` (`recordSecurityEvent`). Never put tokens, passwords,
+  CSRF tokens or email addresses in audit metadata.
+- **Web app:**
+  - the browser calls the API only through `/api/*` (`apps/web/lib/api-proxy.ts`); add new
+    API roots there deliberately;
+  - client code calls the API only through the endpoint list
+    (`packages/shared/src/contracts/endpoints.ts`): `callApi(API.…)`, `useApiQuery` for reads
+    (cached per user and workspace) and `useApiMutation` for changes (it invalidates the
+    endpoint's `invalidates` in the request's own workspace); forms validate with the shared
+    request schemas (`useFormSubmit`);
+  - keep the CSRF token in memory only; read emailed tokens with `useLinkToken`, which removes
+    them from the address bar;
+  - redirects after sign-in go through `safeNextPath`.
+- **Pages:** every page is listed once in `packages/shared/src/navigation.ts` (path, group,
+  permission, status, API resources). A new page:
+  - is a server component that calls `requireWorkspaceSection` / `requirePlatformAdmin`
+    (`apps/web/lib/server/access.ts`) before rendering anything; never rely on hidden
+    navigation alone;
+  - gets its own folder when built (it then replaces the `[section]` shell), and its section's
+    status becomes `available`;
+  - lists its API resources in the section, so the route test can check that its GET routes
+    need the section's permission.
+- **Server components** call the API only through `lib/server/api.ts` (an endpoint of the list,
+  the session cookie, nothing else). Pass client components a `ShellUser`, never the session or
+  its CSRF token.
+- **Dashboard** (`docs/decisions.md` D-05C-*): aggregates live under the section that owns
+  the data and need its permission (`leads/summary`, `campaigns/summary`, `activity`,
+  `integrations/health`), through `scope.dashboard`. A metric a later feature provides is
+  listed in `DASHBOARD_METRICS` as `unavailable` until its summary field exists; never show
+  a made-up number. Live panels refresh with `useApiQuery(…, { poll })` and a policy from
+  `apps/web/lib/polling.ts` (visible pages only, back-off, a stop after 30 minutes); never
+  a bare `setInterval`.
+- **Campaigns** (`docs/decisions.md` D-06A-*): configure through `scope.campaigns`. Every save
+  names the version it started from (compare-and-set; `409 version_conflict` otherwise) and
+  changes DRAFT campaigns only. Check every referenced id against the workspace before
+  writing, even for an incomplete draft, and answer "Not found in this workspace." for
+  another workspace's record. New campaigns and copies start as DRAFT with HUMAN approval;
+  a copy never takes leads, drafts, approvals, sends or schedules.
+- **Campaign activation** (`docs/decisions.md` D-06C-*): a campaign starts only through
+  `scope.campaigns.activate` (version check, then every check of `evaluateActivation`). Add a
+  rule there, never in the page. A service that isn't built stays `false` in `BUILT_SERVICES`
+  and blocks with a reason; flip it only in the task that builds it.
+- **Lead discovery** (`docs/decisions.md` D-07A-*): an organization search is an `imports` row
+  (`ORGANIZATION_SEARCH`) created only through `scope.discovery.request`, which checks the ICP
+  with `planOrganizationSearch` against the provider's declared capabilities before writing
+  anything. Its inputs are immutable. Searches find companies only; people and contacts are
+  separate steps. Company identity comes only from `normalizeCompanyIdentity`. Providers sit
+  behind `OrganizationSearchProvider`; development and tests use the fake. The Apollo
+  adapter (`docs/decisions.md` D-07B-*) maps only documented parameters and fields; add one
+  only after checking Apollo's docs. Provider keys stay with the process that calls the
+  provider (the worker); the API uses `organizationSearchDeclaration` only. Companies are
+  saved only through `saveOrganizations` (suppression check, identity match, no duplicates),
+  and every received record gets a `source_records` row with its outcome. A search saves one
+  page per transaction (`saveSearchPage`). Paid provider pages reserve
+  `ORGANIZATION_SEARCH_CREDITS` first. Every exported CSV cell goes through `csvCell` /
+  `toCsv` (formula injection, D-07C-05).
+- **Contacts** (`docs/decisions.md` D-08A-*): people search, contact enrichment and email
+  verification are separate providers. Contact identity comes only from
+  `normalizeContactIdentity`. An agent's or provider's answer is checked with
+  `parseContactEnrichmentOutput` (provenance required) before use. An address's status comes
+  only from an email check; never add a "verified" field or treat a provider's claim as one.
+  Automatic sending needs `emailSendEligibility(...).automatic`: `risky` and `unknown` never
+  qualify. The Apollo people adapters (`docs/decisions.md` D-08B-01 to D-08B-06) send only
+  documented parameters and never request personal emails or phone numbers. They drop guessed
+  (extrapolated) addresses, keep Apollo's email status as a claim, and count credits as Apollo
+  reports them. Live verification has no provider and must keep failing closed until one is
+  chosen (O-35).
+- **Contact enrichment** (`docs/decisions.md` D-08C-*): people are found only through
+  `scope.enrichment.request`, as a `CONTACT_ENRICHMENT` run of at most 25 companies. Its targets
+  and exclusions are copied in and never change. Save people only through `saveContacts`
+  (do-not-contact list, exclusions, the identity match; never a second contact for a known
+  person). Save a company only through `saveCompany`, in one transaction with the hold of the
+  usage it paid for (`settleReservation`): a paid lookup reserves first, a retry never charges
+  twice, and a person looked up within 30 days is reused (the agent's `known` callback), not
+  looked up again. People who can't be emailed are kept with reasons and never added to a
+  campaign's list. Contact quality comes only from `contactQuality` and is never stored or
+  treated as permission. Rechecks go through `scope.enrichment.requestRecheck` (limits, failing
+  closed). A live verifier must reserve `EMAIL_VERIFICATIONS` the same way.
+- **Website fetching** (`docs/decisions.md` D-09A-*): fetch public pages only through a
+  `WebsiteFetcher` from `createWebsiteFetcher` (the fake in development and tests); never
+  call `fetch` or `http.request` on a URL from a page, a provider or a user. It checks every
+  URL and redirect (`parseFetchTarget`, every DNS answer, the access lists, robots.txt) and
+  connects to the checked address only. Change limits only within the policy schema's
+  ceilings. Pass the workspace id as `cacheScope`. Page text, titles and links are
+  untrusted: validate before use, escape when rendering, and follow links only through the
+  fetcher.
+- **AI models** (`docs/decisions.md` D-09B-*): call models only through a `ModelProvider`
+  from `createModelProvider` (the fake in development and tests), and never give a model
+  tools. Prompts are versioned constants with a pinned hash; change their text only with a new
+  version. Untrusted text (pages, emails) goes only in the request's JSON input, never in the
+  instructions. Validate every answer with its zod schema, then check every cited quote
+  against the extract it cites. A claim that fails is a review item, never a fact, and a field
+  without a verified fact is unknown. Pass every cost event on (`onCost`).
+- **Website research** (`docs/decisions.md` D-09C-*): research runs only as
+  `website_research.run` jobs queued by `scope.research.request`, and reads pages only through
+  the fetcher. Each page read is a `WEBSITE` source record and each extract an evidence row.
+  Never update a completed version or evidence: add a version (refresh, reuse, correction)
+  through `scope.research`. The current version is the highest `version`, never the latest
+  timestamp. Corrections are compare-and-set and audited without their text. After changing the
+  prompt, fields or checks, regenerate the evaluation baseline
+  (`pnpm --filter @lead-fennec-ai/ai-agents run evaluate`) and review its diff.
+- **Lead scoring** (`docs/decisions.md` D-10A-*): only `calculateLeadScore` turns factor
+  assessments into a score; rules, a model or a person only propose assessments, and an assessed
+  factor cites its evidence. A factor without evidence is `missing` and earns 0 points: never
+  give it a neutral value or move its weight to other factors. Weights are whole numbers adding
+  up to 100, and the missing-data policy may only move a lead to Review. Save scores through
+  `scope.scoring` with their validated inputs (`leadScoreInputsSchema`), hash and citations; a
+  score never changes, a new calculation is a new version. Change the rules or the calculation
+  only with a new version (`LEAD_SCORE_RULES_VERSION`, `LEAD_SCORE_METHOD`), and keep
+  `reproduceLeadScore` able to recalculate every stored score.
+- **Send eligibility** (`docs/decisions.md` D-10B-*): whether a campaign may email a person comes
+  only from `evaluateSendEligibility` (through `scope.eligibility.evaluate`), which never takes a
+  score. Report fit and eligibility side by side; only `eligible` permits sending. Add a check
+  there, with a reason code, never in a page or a job. Nothing unknown is permission: an unset
+  policy, an unnamed country or source, an unknown country and an unchecked or stale address are
+  review or blocked. A block is never overridable, by a score or by a person. Decide eligibility
+  from the facts when asked; never cache or store it as permission. Change the send policy only
+  through `scope.eligibility.updatePolicy` (compare-and-set, audited).
+- **Lead qualification** (`docs/decisions.md` D-10C-*): the LeadQualificationAgent only proposes
+  ratings of supported need and timing, citing research facts; never let a model score, decide a
+  state or touch eligibility. Pass its checked proposals to `scope.scoring.scoreLead`, which
+  checks every citation again. States come only from `classifyLead`, always with reasons; add a
+  rule there. Decisions are append-only (`scope.qualification`): a person's needs a note, a
+  version check and an audit record without the note; a blocked person is never qualified. What
+  may be sent comes only from `contactDecision`. Change the prompt or its schema only with a new
+  version.
+- **Lead search** (`docs/decisions.md` D-11A-*): search people only through `scope.leads`.
+  Add a filter or sort only to `leadSearchQuerySchema` and the fixed SQL fragments in
+  `lead-search.ts`: every value a bind parameter, never request text in the SQL, text through
+  `likeContains`. Repeat the tenant in every join, and pass every row read back through
+  `assertTenant`. Pages are keyset pages on (sort key, id) with a cursor bound to its search;
+  keep the page cap and the statement timeout. Never write `contacts.last_activity_at`: its
+  triggers keep it. The recorded eligibility filter is not permission to send.
+- **Lead changes** (`docs/decisions.md` D-11B-*): change a lead only through `scope.leads`
+  (`correct`, `setTags`, `addNote`, `assign`). Every change but a note names `contacts.version`
+  (409 when stale) and raises it. A correction keeps its reason as a note, never in the audit
+  record. A material change (name, title, address, country, or a company research correction)
+  must call `markLeadsStale` in the same transaction: drafts INVALIDATED, scheduled sends
+  cancelled, decisions back to Review with eligibility decided again. Never keep an approval
+  of old data. Assignment checks the campaign in the workspace and refuses blocks that apply
+  before sending; add a refusal there, never in a page.
+- **People imports** (`docs/decisions.md` D-11C-01): import people only through
+  `scope.contactImports` (rows checked in the request, saved by the `contact_import` worker in
+  batches). Save people only through `saveContacts` and companies through `saveOrganizations`;
+  check the do-not-contact list before saving anything, and never bring back a suppressed or
+  erased person (the known address counts too). Keep only mapped columns.
+- **Exports** (`docs/decisions.md` D-11C-02): files of leads only through `scope.exports`
+  (`contacts.export`, the maker's own, read through `scope.leads.search`), every cell through
+  `toCsv`, bounded, and deleted at expiry. Never put a token in a download link; audit counts
+  only.
+- **Do-not-contact and deletion requests** (`docs/decisions.md` D-11C-03, D-11C-04,
+  `docs/security/data-retention.md`): change the list only through `scope.suppressions` (the
+  contacts lock; reopen the leads it covers). A deletion request keeps only the address (no
+  note). Never put an address, a domain or a note in an audit record or a log, and never log
+  query strings.
+- **Campaign wizard** (`docs/decisions.md` D-06B-*): a stage turns its form into the sections
+  of a save and checks them with `updateCampaignRequestSchema` (`apps/web/lib/campaign-wizard.ts`);
+  map every issue path, the page's or the API's, to a field of the stage, and never write a
+  second set of rules or messages in the page. Mark what isn't built ("Not available yet");
+  never show a connection, a send or a start that didn't happen.
+- **Screens** use the shared components (`docs/decisions.md` D-05B-04): `DataTable` with
+  `CursorPagination`, `ListFilters` with `useListParams` (address-bar state, validated),
+  `StatusLabel`, the form fields with `useFormSubmit`, `ConfirmButton` before anything
+  destructive, `EmptyState`, `RetryState` and `ErrorBoundary`. Never show a raw error
+  message; show the API's message or a generic one.
+- **Fixtures** for demonstrations live in `apps/web/fixtures` and are used only by the demo
+  pages under `app/dev` (development and test only, 404 elsewhere). ESLint keeps production
+  code from importing them and demos from calling the API or its cache.
+- **Browser tests:** scenarios that need the API go in `apps/web/e2e`, skip without
+  `E2E_DATABASE_URL`, and use `e2e/support/db.ts` instead of an inbox
+  (`e2e/support/accounts.ts` for accounts). Check new screens with `@axe-core/playwright`.
+- **Account email:** goes through `TransactionalMailProvider`; tests read links from the
+  fake's `sent` list.
+
 ## Testing and logging
 
-- **Tests:** `src/**/*.test.ts` next to the code (`*.integration.test.ts` for integration),
-  Vitest via each package's `vitest.config.mjs`, which merges `vitest.shared.mjs`. Browser smoke
-  tests use Playwright in `apps/web/e2e`. See `README.md` for commands.
+- **Tests:** `src/**/*.test.ts` next to the code (`*.integration.test.ts` for integration;
+  `lib/**/*.test.ts` in the web app), Vitest via each package's `vitest.config.mjs`, which
+  merges `vitest.shared.mjs`. Browser tests use Playwright in `apps/web/e2e`. See `README.md`
+  for commands.
 - **No network in tests.** The network guard blocks all non-loopback connections. Never disable
   it or route around it. Tests use fake providers (`createFakeProviders()`); never live adapters.
 - **Test databases:** only through `assertTestDatabaseUrl` / `assertTestRedisUrl` (`_test`

@@ -12,8 +12,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@lead-fennec-ai/ai-agents": "workspace:*",
     "@lead-fennec-ai/database": "workspace:*",
+    "@lead-fennec-ai/integrations": "workspace:*",
     "@lead-fennec-ai/shared": "workspace:*",
+    "bullmq": "catalog:",
+    "ioredis": "catalog:",
     "pino": "catalog:",
     "pino-http": "catalog:",
     "zod": "catalog:"

@@ -5,32 +5,48 @@ packages:
 # Single source of pinned versions. Packages reference these with "catalog:".
 # Versions, sources and compatibility notes: docs/decisions.md (D-02A-*, D-02B-*, D-02C-*).
 catalog:
+  '@axe-core/playwright': 4.14.0
   '@eslint/js': 10.0.1
   '@nestjs/cli': 12.0.11
   '@nestjs/common': 12.3.2
   '@nestjs/core': 12.3.2
   '@nestjs/platform-express': 12.3.2
   '@nestjs/testing': 12.3.2
+  '@nestjs/throttler': 6.7.1
+  '@node-rs/argon2': 2.2.2
   '@playwright/test': 1.64.1
+  '@prisma/adapter-pg': 7.10.1
+  '@prisma/client': 7.10.1
+  '@tailwindcss/postcss': 4.3.3
   '@types/node': 24.19.2
   '@types/pg': 8.23.1
   '@types/react': 19.3.0
   '@types/react-dom': 19.3.0
+  bullmq: 6.7.0
+  class-variance-authority: 0.7.1
+  clsx: 2.1.1
+  cookie: 2.0.1
   eslint: 10.14.0
   eslint-config-next: 16.4.3
   eslint-config-prettier: 10.1.8
   globals: 17.13.0
   ioredis: 6.0.0
+  lucide-react: 1.66.0
   nestjs-pino: 5.3.1
   next: 16.4.3
+  parse5: 8.1.0
   pg: 8.23.1
   pino: 10.4.0
   pino-http: 11.0.0
+  postcss: 8.5.32
   prettier: 3.9.10
+  prisma: 7.10.1
   react: 19.3.1
   react-dom: 19.3.1
   reflect-metadata: 0.2.2
   rxjs: 7.8.2
+  tailwind-merge: 3.7.0
+  tailwindcss: 4.3.3
   tslib: 2.8.1
   tsx: 4.23.15
   turbo: 2.11.10
@@ -43,10 +59,17 @@ catalog:
 saveExact: true
 
 # Reviewed dependency build scripts (pnpm fails on unreviewed ones by default).
-# Both are fallbacks that fetch or verify a native binary; pnpm already installs the
-# platform binary as an optional dependency, so the scripts stay disabled.
+# esbuild / unrs-resolver: fallbacks that fetch or verify a native binary that pnpm already
+# installs as an optional dependency, so they stay disabled.
+# @prisma/engines: downloads Prisma's schema (migration) engine from binaries.prisma.sh,
+# required by `prisma migrate`. prisma: preinstall only checks the Node.js version.
+# msgpackr-extract (BullMQ, via msgpackr, task 07C): an optional native speed-up whose script
+# would compile or load a prebuilt binary; msgpackr works without it, so it stays disabled.
 allowBuilds:
+  '@prisma/engines': true
   esbuild: false
+  msgpackr-extract: false
+  prisma: false
   unrs-resolver: false
 
 # eslint-config-next 16.4 supports ESLint 10, but three plugins it bundles don't list

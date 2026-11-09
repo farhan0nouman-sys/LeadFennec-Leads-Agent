@@ -1,0 +1,29 @@
+{
+  "breadcrumbs": [],
+  "partial_results_only": false,
+  "has_join": false,
+  "disable_eu_prospecting": false,
+  "partial_results_limit": 10000,
+  "pagination": {
+    "page": 2,
+    "per_page": 2,
+    "total_entries": 3,
+    "total_pages": 2
+  },
+  "accounts": [],
+  "organizations": [
+    {
+      "id": "6a1f0000000000000000a003",
+      "name": "Fabrikam Robotics",
+      "website_url": "http://fabrikam-robotics.example",
+      "linkedin_url": null,
+      "phone": null,
+      "founded_year": 2005,
+      "primary_domain": "FABRIKAM-ROBOTICS.EXAMPLE",
+      "show_intent": false
+    }
+  ],
+  "model_ids": ["6a1f0000000000000000a003"],
+  "num_fetch_result": null,
+  "derived_params": null
+}

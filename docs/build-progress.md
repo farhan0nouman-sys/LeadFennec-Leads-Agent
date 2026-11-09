@@ -4,6 +4,42 @@ Newest entry first. A check is listed as passed only if it ran and succeeded.
 
 ---
 
+## CI-01: First CI run on real PostgreSQL, and its fix (2026-11-09)
+
+**Status: Fixed and checked locally on real PostgreSQL; CI rerun pending.** Pull request #1
+(`feat/05a-app-shell` → `main`) ran CI for the first time. "Unit and integration tests" failed in
+the worker (20 of 31 tests): `relation "imports" does not exist` and `relation "research" does not
+exist`. Turborepo stopped there; the database and API suites would have failed too.
+
+**Cause:** `createPrismaClient({ schema })` passed the schema only to the Prisma adapter, which
+qualifies the queries Prisma builds. Raw SQL (the `FOR UPDATE` row locks, lead search) and the
+hand-written triggers name tables without a schema, so on real PostgreSQL they ran against
+`public`, which the suites' own schemas leave empty. PGlite hid it: its one shared session kept the
+`search_path` that `MigratedSchema.migrate` had set. Production uses `public` and was not affected.
+
+**Change:** `packages/database/src/client.ts` sets `search_path` on every pooled connection
+(`-c search_path=<schema>`) when a schema is given, and refuses a schema name that would need
+quoting. New `packages/database/src/client.integration.test.ts` checks both; it fails without the
+change (`current_schema()` was `public`).
+
+| Check (PostgreSQL 16, time zone UTC, Redis 7; Node 24.15.0) | Actual result |
+|---|---|
+| Before the change: `turbo run test --continue` | Failed: worker 20 failed / 11 passed / 3 skipped (as in CI); database 20 files failed; API 8 files failed |
+| `pnpm format:check` | Exit 0 |
+| `turbo run lint` and the root `eslint` | 15/15, exit 0 |
+| `turbo run typecheck` | 15/15 |
+| `turbo run test --continue --force` | 12/12: shared 286, integrations 381, ai-agents 63, web 50, database **466**, worker **34**, API **115**; none skipped |
+| `turbo run build` | 11/11 |
+| Browser tests | **Not run:** Playwright's Chromium download is blocked in this environment. They use the `public` schema, which this change does not touch. |
+
+- Local runs needed `PRISMA_SCHEMA_ENGINE_BINARY` set (the engine download is blocked) and
+  Turborepo's `--env-mode=loose`; CI needs neither.
+- The local server first used the machine's time zone, which failed two time checks in
+  `outreach-schema.integration.test.ts`; with UTC (as in CI) they pass.
+- **Next:** check the CI rerun on pull request #1, including the browser tests.
+
+---
+
 ## GIT-21: Commit and push the progress log (2026-11-09)
 
 **Status: Done.** The user asked for an audit that everything is pushed, then to commit and push
